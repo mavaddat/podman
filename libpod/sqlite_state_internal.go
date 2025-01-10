@@ -1,3 +1,5 @@
+//go:build !remote
+
 package libpod
 
 import (
@@ -8,7 +10,7 @@ import (
 	"strings"
 
 	"github.com/containers/common/libnetwork/types"
-	"github.com/containers/podman/v4/libpod/define"
+	"github.com/containers/podman/v5/libpod/define"
 	"github.com/sirupsen/logrus"
 
 	// SQLite backend for database/sql
@@ -385,12 +387,6 @@ func (s *SQLiteState) rewriteContainerConfig(ctr *Container, newCfg *ContainerCo
 }
 
 func (s *SQLiteState) addContainer(ctr *Container) (defErr error) {
-	for net := range ctr.config.Networks {
-		opts := ctr.config.Networks[net]
-		opts.Aliases = append(opts.Aliases, ctr.config.ID[:12])
-		ctr.config.Networks[net] = opts
-	}
-
 	configJSON, err := json.Marshal(ctr.config)
 	if err != nil {
 		return fmt.Errorf("marshalling container config json: %w", err)

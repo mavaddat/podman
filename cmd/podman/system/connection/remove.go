@@ -1,22 +1,28 @@
 package connection
 
 import (
-	"errors"
+	"slices"
 
 	"github.com/containers/common/pkg/config"
-	"github.com/containers/podman/v4/cmd/podman/common"
-	"github.com/containers/podman/v4/cmd/podman/registry"
-	"github.com/containers/podman/v4/cmd/podman/system"
+	"github.com/containers/podman/v5/cmd/podman/common"
+	"github.com/containers/podman/v5/cmd/podman/registry"
+	"github.com/containers/podman/v5/cmd/podman/system"
 	"github.com/spf13/cobra"
 )
 
 var (
 	// Skip creating engines since this command will obtain connection information to said engines.
 	rmCmd = &cobra.Command{
-		Use:               "remove [options] NAME",
-		Aliases:           []string{"rm"},
-		Long:              `Delete named destination from podman configuration`,
-		Short:             "Delete named destination",
+		Use:     "remove [options] NAME",
+		Aliases: []string{"rm"},
+		Long:    `Delete named destination from podman configuration`,
+		Short:   "Delete named destination",
+		Args: func(cmd *cobra.Command, args []string) error {
+			if rmOpts.All {
+				return nil
+			}
+			return cobra.ExactArgs(1)(cmd, args)
+		},
 		ValidArgsFunction: common.AutocompleteSystemConnections,
 		RunE:              rm,
 		Example: `podman system connection remove devl
@@ -47,32 +53,31 @@ func init() {
 }
 
 func rm(cmd *cobra.Command, args []string) error {
-	cfg, err := config.ReadCustomConfig()
-	if err != nil {
-		return err
-	}
+	return config.EditConnectionConfig(func(cfg *config.ConnectionsFile) error {
+		if rmOpts.All {
+			cfg.Connection.Connections = nil
+			cfg.Connection.Default = ""
 
-	if rmOpts.All {
-		if cfg.Engine.ServiceDestinations != nil {
-			for k := range cfg.Engine.ServiceDestinations {
-				delete(cfg.Engine.ServiceDestinations, k)
+			// Clear all the connections in any existing farms
+			for k := range cfg.Farm.List {
+				cfg.Farm.List[k] = []string{}
+			}
+			return nil
+		}
+
+		delete(cfg.Connection.Connections, args[0])
+		if cfg.Connection.Default == args[0] {
+			cfg.Connection.Default = ""
+		}
+
+		// If there are existing farm, remove the deleted connection that might be part of a farm
+		for k, v := range cfg.Farm.List {
+			index := slices.Index(v, args[0])
+			if index > -1 {
+				cfg.Farm.List[k] = append(v[:index], v[index+1:]...)
 			}
 		}
-		cfg.Engine.ActiveService = ""
-		return cfg.Write()
-	}
 
-	if len(args) != 1 {
-		return errors.New("accepts 1 arg(s), received 0")
-	}
-
-	if cfg.Engine.ServiceDestinations != nil {
-		delete(cfg.Engine.ServiceDestinations, args[0])
-	}
-
-	if cfg.Engine.ActiveService == args[0] {
-		cfg.Engine.ActiveService = ""
-	}
-
-	return cfg.Write()
+		return nil
+	})
 }

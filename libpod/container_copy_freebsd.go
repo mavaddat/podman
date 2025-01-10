@@ -1,3 +1,5 @@
+//go:build !remote
+
 package libpod
 
 // On FreeBSD, the container's mounts are in the global mount
@@ -8,6 +10,6 @@ func (c *Container) joinMountAndExec(f func() error) error {
 
 // Similarly, we can just use resolvePath for both running and stopped
 // containers.
-func (c *Container) resolveCopyTarget(mountPoint string, containerPath string) (string, string, error) {
+func (c *Container) resolveCopyTarget(mountPoint string, containerPath string) (string, string, *Volume, error) {
 	return c.resolvePath(mountPoint, containerPath)
 }

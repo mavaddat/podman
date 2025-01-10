@@ -10,10 +10,10 @@ import (
 
 	"github.com/containers/common/pkg/completion"
 	"github.com/containers/common/pkg/report"
-	"github.com/containers/podman/v4/cmd/podman/common"
-	"github.com/containers/podman/v4/cmd/podman/registry"
-	"github.com/containers/podman/v4/cmd/podman/validate"
-	"github.com/containers/podman/v4/pkg/domain/entities"
+	"github.com/containers/podman/v5/cmd/podman/common"
+	"github.com/containers/podman/v5/cmd/podman/registry"
+	"github.com/containers/podman/v5/cmd/podman/validate"
+	"github.com/containers/podman/v5/pkg/domain/entities"
 	"github.com/docker/go-units"
 	"github.com/spf13/cobra"
 )
@@ -319,7 +319,7 @@ func (d *dfSummary) Reclaimable() string {
 	return fmt.Sprintf("%s (%d%%)", units.HumanSize(float64(d.RawReclaimable)), percent)
 }
 
-func (d dfSummary) MarshalJSON() ([]byte, error) {
+func (d *dfSummary) MarshalJSON() ([]byte, error) {
 	// need to create a new type here to prevent infinite recursion in MarshalJSON() call
 	type rawDf dfSummary
 
@@ -329,5 +329,5 @@ func (d dfSummary) MarshalJSON() ([]byte, error) {
 		TotalCount  int
 		Size        string
 		Reclaimable string
-	}{rawDf(d), d.Total, d.Size(), d.Reclaimable()})
+	}{rawDf(*d), d.Total, d.Size(), d.Reclaimable()})
 }

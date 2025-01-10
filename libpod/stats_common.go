@@ -1,12 +1,11 @@
-//go:build linux || freebsd
-// +build linux freebsd
+//go:build !remote && (linux || freebsd)
 
 package libpod
 
 import (
 	"fmt"
 
-	"github.com/containers/podman/v4/libpod/define"
+	"github.com/containers/podman/v5/libpod/define"
 )
 
 // GetContainerStats gets the running stats for a given container.
@@ -41,6 +40,12 @@ func (c *Container) GetContainerStats(previousStats *define.ContainerStats) (*de
 			SystemNano: uint64(c.state.StartedTime.UnixNano()),
 		}
 	}
+
+	netStats, err := getContainerNetIO(c)
+	if err != nil {
+		return nil, err
+	}
+	stats.Network = netStats
 
 	if err := c.getPlatformContainerStats(stats, previousStats); err != nil {
 		return nil, err

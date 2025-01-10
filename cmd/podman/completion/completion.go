@@ -7,13 +7,13 @@ import (
 	"strings"
 
 	commonComp "github.com/containers/common/pkg/completion"
-	"github.com/containers/podman/v4/cmd/podman/registry"
+	"github.com/containers/podman/v5/cmd/podman/registry"
 	"github.com/spf13/cobra"
 )
 
 const (
 	completionDescription = `Generate shell autocompletions.
-  Valid arguments are bash, zsh, and fish.
+  Valid arguments are bash, zsh, fish, and powershell.
   Please refer to the man page to see how you can load these completions.`
 )
 

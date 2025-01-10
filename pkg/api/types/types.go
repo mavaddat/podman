@@ -1,3 +1,5 @@
+//go:build !remote
+
 package types
 
 type APIContextKey int
@@ -7,4 +9,5 @@ const (
 	RuntimeKey
 	IdleTrackerKey
 	ConnKey
+	CompatDecoderKey
 )

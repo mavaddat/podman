@@ -18,6 +18,15 @@ import re
 import os
 import subprocess
 
+# Define the canonical URL for our custom docs.podman.io domain configured on Read the Docs
+html_baseurl = os.environ.get("READTHEDOCS_CANONICAL_URL", "")
+
+# Tell Jinja2 templates the build is running on Read the Docs
+if os.environ.get("READTHEDOCS", "") == "True":
+    if "html_context" not in globals():
+        html_context = {}
+    html_context["READTHEDOCS"] = True
+
 # We have to run the preprocessor to create the actual markdown files from .in files.
 # Do it here so the it can work on readthedocs as well.
 path = os.path.join(os.path.abspath(os.path.dirname(
@@ -49,13 +58,14 @@ templates_path = ["_templates"]
 # List of patterns, relative to source directory, that match files and
 # directories to ignore when looking for source files.
 # This pattern also affects html_static_path and html_extra_path.
-exclude_patterns = []
+exclude_patterns = ["markdown/options"]
 
 master_doc = "index"
 
 # Configure smartquotes to only transform quotes and ellipses, not dashes
 smartquotes_action = "qe"
 
+locale_dirs = ["locale/"]
 
 # -- Options for HTML output -------------------------------------------------
 

@@ -1,19 +1,17 @@
 ## How to build
 
 ```sh
-$ make ARCH=<amd64 | aarch64> NO_CODESIGN=1 pkginstaller
+$ make ARCH=<amd64 | aarch64 | universal> NO_CODESIGN=1 pkginstaller
 
 # or to create signed pkg
-$ make ARCH=<amd64 | aarch64> CODESIGN_IDENTITY=<ID> PRODUCTSIGN_IDENTITY=<ID> pkginstaller
+$ make ARCH=<amd64 | aarch64 | universal> CODESIGN_IDENTITY=<ID> PRODUCTSIGN_IDENTITY=<ID> pkginstaller
 
 # or to prepare a signed and notarized pkg for release
-$ make ARCH=<amd64 | aarch64> CODESIGN_IDENTITY=<ID> PRODUCTSIGN_IDENTITY=<ID> NOTARIZE_USERNAME=<appleID> NOTARIZE_PASSWORD=<appleID-password> NOTARIZE_TEAM=<team-id> notarize
+$ make ARCH=<amd64 | aarch64 | universal> CODESIGN_IDENTITY=<ID> PRODUCTSIGN_IDENTITY=<ID> NOTARIZE_USERNAME=<appleID> NOTARIZE_PASSWORD=<appleID-password> NOTARIZE_TEAM=<team-id> notarize
 ```
 
 The generated pkg will be written to `out/podman-macos-installer-*.pkg`.
-Currently the pkg installs `podman`, `qemu`, `gvproxy` and `podman-mac-helper` to `/opt/podman`
-
-The `qemu` build it uses is from [containers/podman-machine-qemu](https://github.com/containers/podman-machine-qemu)
+Currently the pkg installs `podman`, `vfkit`, `gvproxy` and `podman-mac-helper` to `/opt/podman`
 
 ## Uninstalling
 

@@ -1,25 +1,26 @@
+//go:build !remote
+
 package compat
 
 import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"maps"
 	"net"
 	"net/http"
 
 	nettypes "github.com/containers/common/libnetwork/types"
 	netutil "github.com/containers/common/libnetwork/util"
-	"github.com/containers/podman/v4/libpod"
-	"github.com/containers/podman/v4/libpod/define"
-	"github.com/containers/podman/v4/pkg/api/handlers/utils"
-	api "github.com/containers/podman/v4/pkg/api/types"
-	"github.com/containers/podman/v4/pkg/domain/entities"
-	"github.com/containers/podman/v4/pkg/domain/infra/abi"
-	"github.com/containers/podman/v4/pkg/util"
-	"github.com/docker/docker/api/types"
+	"github.com/containers/podman/v5/libpod"
+	"github.com/containers/podman/v5/libpod/define"
+	"github.com/containers/podman/v5/pkg/api/handlers/utils"
+	api "github.com/containers/podman/v5/pkg/api/types"
+	"github.com/containers/podman/v5/pkg/domain/entities"
+	"github.com/containers/podman/v5/pkg/domain/infra/abi"
+	"github.com/containers/podman/v5/pkg/util"
 
 	dockerNetwork "github.com/docker/docker/api/types/network"
-	"github.com/gorilla/schema"
 	"github.com/sirupsen/logrus"
 )
 
@@ -41,7 +42,7 @@ func InspectNetwork(w http.ResponseWriter, r *http.Request) {
 	}{
 		scope: "local",
 	}
-	decoder := r.Context().Value(api.DecoderKey).(*schema.Decoder)
+	decoder := utils.GetDecoder(r)
 	if err := decoder.Decode(&query, r.URL.Query()); err != nil {
 		utils.Error(w, http.StatusBadRequest, fmt.Errorf("failed to parse parameters for %s: %w", r.URL.String(), err))
 		return
@@ -57,45 +58,43 @@ func InspectNetwork(w http.ResponseWriter, r *http.Request) {
 		utils.NetworkNotFound(w, name, err)
 		return
 	}
-	report, err := convertLibpodNetworktoDockerNetwork(runtime, &net, changed)
+	ic := abi.ContainerEngine{Libpod: runtime}
+	statuses, err := ic.GetContainerNetStatuses()
 	if err != nil {
 		utils.InternalServerError(w, err)
 		return
 	}
+	report := convertLibpodNetworktoDockerNetwork(runtime, statuses, &net, changed)
 	utils.WriteResponse(w, http.StatusOK, report)
 }
 
-func convertLibpodNetworktoDockerNetwork(runtime *libpod.Runtime, network *nettypes.Network, changeDefaultName bool) (*types.NetworkResource, error) {
-	cons, err := runtime.GetAllContainers()
-	if err != nil {
-		return nil, err
-	}
-	containerEndpoints := make(map[string]types.EndpointResource, len(cons))
-	for _, con := range cons {
-		data, err := con.Inspect(false)
-		if err != nil {
-			if errors.Is(err, define.ErrNoSuchCtr) || errors.Is(err, define.ErrCtrRemoved) {
-				continue
-			}
-			return nil, err
-		}
-		if netData, ok := data.NetworkSettings.Networks[network.Name]; ok {
+func convertLibpodNetworktoDockerNetwork(runtime *libpod.Runtime, statuses []abi.ContainerNetStatus, network *nettypes.Network, changeDefaultName bool) *dockerNetwork.Inspect {
+	containerEndpoints := make(map[string]dockerNetwork.EndpointResource, len(statuses))
+	for _, st := range statuses {
+		if netData, ok := st.Status[network.Name]; ok {
 			ipv4Address := ""
-			if netData.IPAddress != "" {
-				ipv4Address = fmt.Sprintf("%s/%d", netData.IPAddress, netData.IPPrefixLen)
-			}
 			ipv6Address := ""
-			if netData.GlobalIPv6Address != "" {
-				ipv6Address = fmt.Sprintf("%s/%d", netData.GlobalIPv6Address, netData.GlobalIPv6PrefixLen)
+			macAddr := ""
+			for _, dev := range netData.Interfaces {
+				for _, subnet := range dev.Subnets {
+					// Note the docker API really wants the full CIDR subnet not just a single ip.
+					// https://github.com/containers/podman/pull/12328
+					if netutil.IsIPv4(subnet.IPNet.IP) {
+						ipv4Address = subnet.IPNet.String()
+					} else {
+						ipv6Address = subnet.IPNet.String()
+					}
+				}
+				macAddr = dev.MacAddress.String()
+				break
 			}
-			containerEndpoint := types.EndpointResource{
-				Name:        con.Name(),
-				EndpointID:  netData.EndpointID,
-				MacAddress:  netData.MacAddress,
+			containerEndpoint := dockerNetwork.EndpointResource{
+				Name:        st.Name,
+				MacAddress:  macAddr,
 				IPv4Address: ipv4Address,
 				IPv6Address: ipv6Address,
 			}
-			containerEndpoints[con.ID()] = containerEndpoint
+			containerEndpoints[st.ID] = containerEndpoint
 		}
 	}
 	ipamConfigs := make([]dockerNetwork.IPAMConfig, 0, len(network.Subnets))
@@ -121,12 +120,14 @@ func convertLibpodNetworktoDockerNetwork(runtime *libpod.Runtime, network *netty
 	if changeDefaultName && name == runtime.Network().DefaultNetworkName() {
 		name = nettypes.BridgeNetworkDriver
 	}
-	options := network.Options
+	// Make sure to clone the map as we have access to the map stored in
+	// the network backend and will overwrite it which is not good.
+	options := maps.Clone(network.Options)
 	// bridge always has isolate set in the compat API but we should not return it to not confuse callers
 	// https://github.com/containers/podman/issues/15580
 	delete(options, nettypes.IsolateOption)
 
-	report := types.NetworkResource{
+	report := dockerNetwork.Inspect{
 		Name:       name,
 		ID:         network.ID,
 		Driver:     network.Driver,
@@ -145,7 +146,7 @@ func convertLibpodNetworktoDockerNetwork(runtime *libpod.Runtime, network *netty
 		Peers:      nil,
 		Services:   nil,
 	}
-	return &report, nil
+	return &report
 }
 
 func ListNetworks(w http.ResponseWriter, r *http.Request) {
@@ -166,13 +167,14 @@ func ListNetworks(w http.ResponseWriter, r *http.Request) {
 		utils.InternalServerError(w, err)
 		return
 	}
-	reports := make([]*types.NetworkResource, 0, len(nets))
+	statuses, err := ic.GetContainerNetStatuses()
+	if err != nil {
+		utils.InternalServerError(w, err)
+		return
+	}
+	reports := make([]*dockerNetwork.Summary, 0, len(nets))
 	for _, net := range nets {
-		report, err := convertLibpodNetworktoDockerNetwork(runtime, &net, true)
-		if err != nil {
-			utils.InternalServerError(w, err)
-			return
-		}
+		report := convertLibpodNetworktoDockerNetwork(runtime, statuses, &net, true)
 		reports = append(reports, report)
 	}
 	utils.WriteResponse(w, http.StatusOK, reports)
@@ -180,7 +182,7 @@ func ListNetworks(w http.ResponseWriter, r *http.Request) {
 
 func CreateNetwork(w http.ResponseWriter, r *http.Request) {
 	var (
-		networkCreate   types.NetworkCreateRequest
+		networkCreate   dockerNetwork.CreateRequest
 		network         nettypes.Network
 		responseWarning string
 	)
@@ -197,7 +199,9 @@ func CreateNetwork(w http.ResponseWriter, r *http.Request) {
 	network.Driver = networkCreate.Driver
 	network.Labels = networkCreate.Labels
 	network.Internal = networkCreate.Internal
-	network.IPv6Enabled = networkCreate.EnableIPv6
+	if networkCreate.EnableIPv6 != nil {
+		network.IPv6Enabled = *networkCreate.EnableIPv6
+	}
 
 	network.Options = make(map[string]string)
 
@@ -281,7 +285,10 @@ func CreateNetwork(w http.ResponseWriter, r *http.Request) {
 	}
 
 	opts := nettypes.NetworkCreateOptions{
-		IgnoreIfExists: !networkCreate.CheckDuplicate,
+		// networkCreate.CheckDuplicate is deprecated since API v1.44,
+		// but it defaults to true when sent by the client package to
+		// older daemons.
+		IgnoreIfExists: false,
 	}
 	ic := abi.ContainerEngine{Libpod: runtime}
 	newNetwork, err := ic.NetworkCreate(r.Context(), network, &opts)
@@ -315,7 +322,7 @@ func RemoveNetwork(w http.ResponseWriter, r *http.Request) {
 		// This is where you can override the golang default value for one of fields
 	}
 
-	decoder := r.Context().Value(api.DecoderKey).(*schema.Decoder)
+	decoder := utils.GetDecoder(r)
 	if err := decoder.Decode(&query, r.URL.Query()); err != nil {
 		utils.Error(w, http.StatusBadRequest, fmt.Errorf("failed to parse parameters for %s: %w", r.URL.String(), err))
 		return
@@ -353,7 +360,7 @@ func RemoveNetwork(w http.ResponseWriter, r *http.Request) {
 func Connect(w http.ResponseWriter, r *http.Request) {
 	runtime := r.Context().Value(api.RuntimeKey).(*libpod.Runtime)
 
-	var netConnect types.NetworkConnect
+	var netConnect dockerNetwork.ConnectOptions
 	if err := json.NewDecoder(r.Body).Decode(&netConnect); err != nil {
 		utils.Error(w, http.StatusInternalServerError, fmt.Errorf("Decode(): %w", err))
 		return
@@ -421,6 +428,10 @@ func Connect(w http.ResponseWriter, r *http.Request) {
 			utils.Error(w, http.StatusNotFound, err)
 			return
 		}
+		if errors.Is(err, define.ErrNetworkConnected) {
+			utils.Error(w, http.StatusForbidden, err)
+			return
+		}
 		utils.Error(w, http.StatusInternalServerError, err)
 		return
 	}
@@ -431,7 +442,7 @@ func Connect(w http.ResponseWriter, r *http.Request) {
 func Disconnect(w http.ResponseWriter, r *http.Request) {
 	runtime := r.Context().Value(api.RuntimeKey).(*libpod.Runtime)
 
-	var netDisconnect types.NetworkDisconnect
+	var netDisconnect dockerNetwork.DisconnectOptions
 	if err := json.NewDecoder(r.Body).Decode(&netDisconnect); err != nil {
 		utils.Error(w, http.StatusInternalServerError, fmt.Errorf("Decode(): %w", err))
 		return

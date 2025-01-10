@@ -1,3 +1,5 @@
+//go:build !remote
+
 package libpod
 
 import (
@@ -7,9 +9,9 @@ import (
 	"github.com/containers/common/libnetwork/types"
 	"github.com/containers/common/pkg/secrets"
 	"github.com/containers/image/v5/manifest"
-	"github.com/containers/podman/v4/libpod/define"
-	"github.com/containers/podman/v4/pkg/namespaces"
-	"github.com/containers/podman/v4/pkg/specgen"
+	"github.com/containers/podman/v5/libpod/define"
+	"github.com/containers/podman/v5/pkg/namespaces"
+	"github.com/containers/podman/v5/pkg/specgen"
 	"github.com/containers/storage"
 	spec "github.com/opencontainers/runtime-spec/specs-go"
 )
@@ -158,7 +160,7 @@ type ContainerRootFSConfig struct {
 	// pre-1.8, which was used in very old Podman versions to determine how
 	// image volumes were handled in Libpod (support for these eventually
 	// moved out of Libpod into pkg/specgen).
-	// Please DO NOT re-use the `imageVolumes` name in container JSON again.
+	// Please DO NOT reuse the `imageVolumes` name in container JSON again.
 	ImageVolumes []*ContainerImageVolume `json:"ctrImageVolumes,omitempty"`
 	// CreateWorkingDir indicates that Libpod should create the container's
 	// working directory if it does not exist. Some OCI runtimes do this by
@@ -288,6 +290,11 @@ type ContainerNetworkConfig struct {
 	// bind-mounted inside the container.
 	// Conflicts with HostAdd.
 	UseImageHosts bool
+	// BaseHostsFile is the base file to create the `/etc/hosts` file inside the container.
+	// This must either be an absolute path to a file on the host system, or one of the
+	// special flags `image` or `none`.
+	// If it is empty it defaults to the base_hosts_file configuration in containers.conf.
+	BaseHostsFile string `json:"baseHostsFile,omitempty"`
 	// Hosts to add in container
 	// Will be appended to host's host file
 	HostAdd []string `json:"hostsAdd,omitempty"`
@@ -341,7 +348,7 @@ type ContainerMiscConfig struct {
 	Labels map[string]string `json:"labels,omitempty"`
 	// StopSignal is the signal that will be used to stop the container
 	StopSignal uint `json:"stopSignal,omitempty"`
-	// StopTimeout is the signal that will be used to stop the container
+	// StopTimeout is maximum time a container is allowed to run after getting the stop signal
 	StopTimeout uint `json:"stopTimeout,omitempty"`
 	// Timeout is maximum time a container will run before getting the kill signal
 	Timeout uint `json:"timeout,omitempty"`
@@ -405,6 +412,14 @@ type ContainerMiscConfig struct {
 	HealthCheckConfig *manifest.Schema2HealthConfig `json:"healthcheck"`
 	// HealthCheckOnFailureAction defines an action to take once the container turns unhealthy.
 	HealthCheckOnFailureAction define.HealthCheckOnFailureAction `json:"healthcheck_on_failure_action"`
+	// HealthLogDestination defines the destination where the log is stored
+	HealthLogDestination string `json:"healthLogDestination,omitempty"`
+	// HealthMaxLogCount is maximum number of attempts in the HealthCheck log file.
+	// ('0' value means an infinite number of attempts in the log file)
+	HealthMaxLogCount uint `json:"healthMaxLogCount,omitempty"`
+	// HealthMaxLogSize is the maximum length in characters of stored HealthCheck log
+	// ("0" value means an infinite log length)
+	HealthMaxLogSize uint `json:"healthMaxLogSize,omitempty"`
 	// StartupHealthCheckConfig is the configuration of the startup
 	// healthcheck for the container. This will run before the regular HC
 	// runs, and when it passes the regular HC will be activated.
@@ -413,6 +428,9 @@ type ContainerMiscConfig struct {
 	// to 0, 1, 2) that will be passed to the executed process. The total FDs
 	// passed will be 3 + PreserveFDs.
 	PreserveFDs uint `json:"preserveFds,omitempty"`
+	// PreserveFD is a list of additional file descriptors (in addition
+	// to 0, 1, 2) that will be passed to the executed process.
+	PreserveFD []uint `json:"preserveFd,omitempty"`
 	// Timezone is the timezone inside the container.
 	// Local means it has the same timezone as the host machine
 	Timezone string `json:"timezone,omitempty"`
@@ -434,6 +452,8 @@ type ContainerMiscConfig struct {
 	// MountAllDevices is an option to indicate whether a privileged container
 	// will mount all the host's devices
 	MountAllDevices bool `json:"mountAllDevices"`
+	// ReadWriteTmpfs indicates whether all tmpfs should be mounted readonly when in ReadOnly mode
+	ReadWriteTmpfs bool `json:"readWriteTmpfs"`
 }
 
 // InfraInherit contains the compatible options inheritable from the infra container

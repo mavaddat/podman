@@ -158,10 +158,32 @@ func TestParseNetworkFlag(t *testing.T) {
 			},
 		},
 		{
-			name:   "bridge mode with invalid option",
+			name:   "bridge mode with unknown option",
 			args:   []string{"bridge:abc=123"},
 			nsmode: Namespace{NSMode: Bridge},
-			err:    "unknown bridge network option: abc",
+			networks: map[string]types.PerNetworkOptions{
+				defaultNetName: {
+					InterfaceName: "",
+					Options: map[string]string{
+						"abc": "123",
+					},
+				},
+			},
+		},
+		{
+			name:   "bridge mode with multiple unknown options",
+			args:   []string{"bridge:abc=123,xyz=789,other=a-much-longer-value"},
+			nsmode: Namespace{NSMode: Bridge},
+			networks: map[string]types.PerNetworkOptions{
+				defaultNetName: {
+					InterfaceName: "",
+					Options: map[string]string{
+						"abc":   "123",
+						"xyz":   "789",
+						"other": "a-much-longer-value",
+					},
+				},
+			},
 		},
 		{
 			name:   "bridge mode with invalid ip",
@@ -174,6 +196,19 @@ func TestParseNetworkFlag(t *testing.T) {
 			args:   []string{"bridge:mac=123"},
 			nsmode: Namespace{NSMode: Bridge},
 			err:    "address 123: invalid MAC address",
+		},
+		{
+			name:   "bridge mode with host interface name",
+			args:   []string{"bridge:host_interface_name=my-veth"},
+			nsmode: Namespace{NSMode: Bridge},
+			networks: map[string]types.PerNetworkOptions{
+				defaultNetName: {
+					InterfaceName: "",
+					Options: map[string]string{
+						"host_interface_name": "my-veth",
+					},
+				},
+			},
 		},
 		{
 			name:   "network name",
@@ -239,9 +274,8 @@ func TestParseNetworkFlag(t *testing.T) {
 	}
 
 	for _, tt := range tests {
-		tt := tt
 		t.Run(tt.name, func(t *testing.T) {
-			got, got1, got2, err := ParseNetworkFlag(tt.args, false)
+			got, got1, got2, err := ParseNetworkFlag(tt.args)
 			if tt.err != "" {
 				assert.EqualError(t, err, tt.err, tt.name)
 			} else {

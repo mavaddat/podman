@@ -1,14 +1,16 @@
 //go:build amd64 || arm64
-// +build amd64 arm64
 
 package machine
 
 import (
 	"fmt"
 
-	"github.com/containers/podman/v4/cmd/podman/registry"
-	"github.com/containers/podman/v4/libpod/events"
-	"github.com/containers/podman/v4/pkg/machine"
+	"github.com/containers/podman/v5/cmd/podman/registry"
+	"github.com/containers/podman/v5/libpod/events"
+	"github.com/containers/podman/v5/pkg/machine"
+	"github.com/containers/podman/v5/pkg/machine/env"
+	"github.com/containers/podman/v5/pkg/machine/shim"
+	"github.com/containers/podman/v5/pkg/machine/vmconfigs"
 	"github.com/spf13/cobra"
 )
 
@@ -17,7 +19,7 @@ var (
 		Use:               "start [options] [MACHINE]",
 		Short:             "Start an existing machine",
 		Long:              "Start a managed virtual machine ",
-		PersistentPreRunE: rootlessOnly,
+		PersistentPreRunE: machinePreRunE,
 		RunE:              start,
 		Args:              cobra.MaximumNArgs(1),
 		Example:           `podman machine start podman-machine-default`,
@@ -43,7 +45,6 @@ func init() {
 func start(_ *cobra.Command, args []string) error {
 	var (
 		err error
-		vm  machine.VM
 	)
 
 	startOpts.NoInfo = startOpts.Quiet || startOpts.NoInfo
@@ -53,30 +54,20 @@ func start(_ *cobra.Command, args []string) error {
 		vmName = args[0]
 	}
 
-	provider, err := GetSystemProvider()
+	dirs, err := env.GetMachineDirs(provider.VMType())
+	if err != nil {
+		return err
+	}
+	mc, err := vmconfigs.LoadMachineByName(vmName, dirs)
 	if err != nil {
 		return err
 	}
 
-	vm, err = provider.LoadVMByName(vmName)
-	if err != nil {
-		return err
-	}
-
-	active, activeName, cerr := provider.CheckExclusiveActiveVM()
-	if cerr != nil {
-		return cerr
-	}
-	if active {
-		if vmName == activeName {
-			return fmt.Errorf("cannot start VM %s: %w", vmName, machine.ErrVMAlreadyRunning)
-		}
-		return fmt.Errorf("cannot start VM %s. VM %s is currently running or starting: %w", vmName, activeName, machine.ErrMultipleActiveVM)
-	}
 	if !startOpts.Quiet {
 		fmt.Printf("Starting machine %q\n", vmName)
 	}
-	if err := vm.Start(vmName, startOpts); err != nil {
+
+	if err := shim.Start(mc, provider, dirs, startOpts); err != nil {
 		return err
 	}
 	fmt.Printf("Machine %q started successfully\n", vmName)

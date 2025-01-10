@@ -9,16 +9,17 @@ import (
 	"strings"
 	"time"
 
-	"github.com/containers/common/libimage"
+	bdefine "github.com/containers/buildah/define"
+	"github.com/containers/common/libimage/filter"
 	"github.com/containers/common/pkg/config"
-	"github.com/containers/common/pkg/ssh"
 	"github.com/containers/image/v5/docker/reference"
 	"github.com/containers/image/v5/types"
-	"github.com/containers/podman/v4/pkg/bindings/images"
-	"github.com/containers/podman/v4/pkg/domain/entities"
-	"github.com/containers/podman/v4/pkg/domain/entities/reports"
-	"github.com/containers/podman/v4/pkg/domain/utils"
-	"github.com/containers/podman/v4/pkg/errorhandling"
+	"github.com/containers/podman/v5/libpod/define"
+	"github.com/containers/podman/v5/pkg/bindings/images"
+	"github.com/containers/podman/v5/pkg/domain/entities"
+	"github.com/containers/podman/v5/pkg/domain/entities/reports"
+	"github.com/containers/podman/v5/pkg/domain/utils"
+	"github.com/containers/podman/v5/pkg/errorhandling"
 	"github.com/containers/storage/pkg/archive"
 )
 
@@ -35,8 +36,12 @@ func (ir *ImageEngine) Remove(ctx context.Context, imagesArg []string, opts enti
 func (ir *ImageEngine) List(ctx context.Context, opts entities.ImageListOptions) ([]*entities.ImageSummary, error) {
 	filters := make(map[string][]string, len(opts.Filter))
 	for _, filter := range opts.Filter {
-		f := strings.Split(filter, "=")
-		filters[f[0]] = f[1:]
+		f := strings.SplitN(filter, "=", 2)
+		if len(f) > 1 {
+			filters[f[0]] = append(filters[f[0]], f[1])
+		} else {
+			filters[f[0]] = append(filters[f[0]], "")
+		}
 	}
 	options := new(images.ListOptions).WithAll(opts.All).WithFilters(filters)
 	psImages, err := images.List(ir.ClientCtx, options)
@@ -96,7 +101,7 @@ func (ir *ImageEngine) Prune(ctx context.Context, opts entities.ImagePruneOption
 		f := strings.Split(filter, "=")
 		filters[f[0]] = f[1:]
 	}
-	options := new(images.PruneOptions).WithAll(opts.All).WithFilters(filters).WithExternal(opts.External)
+	options := new(images.PruneOptions).WithAll(opts.All).WithFilters(filters).WithExternal(opts.External).WithBuildCache(opts.BuildCache)
 	reports, err := images.Prune(ir.ClientCtx, options)
 	if err != nil {
 		return nil, err
@@ -120,6 +125,12 @@ func (ir *ImageEngine) Pull(ctx context.Context, rawImage string, opts entities.
 		} else {
 			options.WithSkipTLSVerify(false)
 		}
+	}
+	if opts.Retry != nil {
+		options.WithRetry(*opts.Retry)
+	}
+	if opts.RetryDelay != "" {
+		options.WithRetryDelay(opts.RetryDelay)
 	}
 	pulledImages, err := images.Pull(ir.ClientCtx, rawImage, options)
 	if err != nil {
@@ -252,7 +263,11 @@ func (ir *ImageEngine) Push(ctx context.Context, source string, destination stri
 	}
 
 	options := new(images.PushOptions)
-	options.WithAll(opts.All).WithCompress(opts.Compress).WithUsername(opts.Username).WithPassword(opts.Password).WithAuthfile(opts.Authfile).WithFormat(opts.Format).WithRemoveSignatures(opts.RemoveSignatures).WithQuiet(opts.Quiet).WithCompressionFormat(opts.CompressionFormat).WithProgressWriter(opts.Writer)
+	options.WithAll(opts.All).WithCompress(opts.Compress).WithUsername(opts.Username).WithPassword(opts.Password).WithAuthfile(opts.Authfile).WithFormat(opts.Format).WithRemoveSignatures(opts.RemoveSignatures).WithQuiet(opts.Quiet).WithCompressionFormat(opts.CompressionFormat).WithProgressWriter(opts.Writer).WithForceCompressionFormat(opts.ForceCompressionFormat)
+
+	if opts.CompressionLevel != nil {
+		options.WithCompressionLevel(*opts.CompressionLevel)
+	}
 
 	if s := opts.SkipTLSVerify; s != types.OptionalBoolUndefined {
 		if s == types.OptionalBoolTrue {
@@ -260,6 +275,12 @@ func (ir *ImageEngine) Push(ctx context.Context, source string, destination stri
 		} else {
 			options.WithSkipTLSVerify(false)
 		}
+	}
+	if opts.Retry != nil {
+		options.WithRetry(*opts.Retry)
+	}
+	if opts.RetryDelay != "" {
+		options.WithRetryDelay(opts.RetryDelay)
 	}
 	if err := images.Push(ir.ClientCtx, source, destination, options); err != nil {
 		return nil, err
@@ -330,12 +351,12 @@ func (ir *ImageEngine) Save(ctx context.Context, nameOrID string, tags []string,
 		return err
 	}
 
-	return archive.Untar(f, opts.Output, nil)
+	return archive.Untar(f, opts.Output, &archive.TarOptions{NoLchown: true})
 }
 
 func (ir *ImageEngine) Search(ctx context.Context, term string, opts entities.ImageSearchOptions) ([]entities.ImageSearchReport, error) {
 	mappedFilters := make(map[string][]string)
-	filters, err := libimage.ParseSearchFilter(opts.Filters)
+	filters, err := filter.ParseSearchFilter(opts.Filters)
 	if err != nil {
 		return nil, err
 	}
@@ -373,6 +394,10 @@ func (ir *ImageEngine) Build(_ context.Context, containerFiles []string, opts en
 	if err != nil {
 		return nil, err
 	}
+	report.SaveFormat = define.OCIArchive
+	if opts.OutputFormat == bdefine.Dockerv2ImageManifest {
+		report.SaveFormat = define.V2s2Archive
+	}
 	return report, nil
 }
 
@@ -389,22 +414,22 @@ func (ir *ImageEngine) Sign(ctx context.Context, names []string, options entitie
 	return nil, errors.New("not implemented yet")
 }
 
-func (ir *ImageEngine) Scp(ctx context.Context, src, dst string, parentFlags []string, quiet bool, sshMode ssh.EngineMode) error {
+func (ir *ImageEngine) Scp(ctx context.Context, src, dst string, opts entities.ImageScpOptions) (*entities.ImageScpReport, error) {
 	options := new(images.ScpOptions)
 
 	var destination *string
 	if len(dst) > 1 {
 		destination = &dst
 	}
-	options.Quiet = &quiet
+	options.Quiet = &opts.Quiet
 	options.Destination = destination
 
 	rep, err := images.Scp(ir.ClientCtx, &src, destination, *options)
 	if err != nil {
-		return err
+		return nil, err
 	}
 
 	fmt.Println("Loaded Image(s):", rep.Id)
 
-	return nil
+	return &entities.ImageScpReport{}, nil
 }

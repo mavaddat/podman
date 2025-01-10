@@ -2,13 +2,13 @@ package images
 
 import (
 	"errors"
-	"os"
 
 	"github.com/containers/common/pkg/auth"
 	"github.com/containers/common/pkg/completion"
-	"github.com/containers/podman/v4/cmd/podman/common"
-	"github.com/containers/podman/v4/cmd/podman/registry"
-	"github.com/containers/podman/v4/pkg/domain/entities"
+	"github.com/containers/podman/v5/cmd/podman/common"
+	"github.com/containers/podman/v5/cmd/podman/registry"
+	"github.com/containers/podman/v5/pkg/domain/entities"
+	"github.com/containers/storage/pkg/fileutils"
 	"github.com/spf13/cobra"
 )
 
@@ -56,14 +56,19 @@ func init() {
 }
 
 func sign(cmd *cobra.Command, args []string) error {
+	if cmd.Flags().Changed("authfile") {
+		if err := auth.CheckAuthFile(signOptions.Authfile); err != nil {
+			return err
+		}
+	}
 	if signOptions.SignBy == "" {
-		return errors.New("please provide an identity")
+		return errors.New("no identity provided")
 	}
 
 	var sigStoreDir string
 	if len(signOptions.Directory) > 0 {
 		sigStoreDir = signOptions.Directory
-		if _, err := os.Stat(sigStoreDir); err != nil {
+		if err := fileutils.Exists(sigStoreDir); err != nil {
 			return err
 		}
 	}

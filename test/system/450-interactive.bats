@@ -5,16 +5,18 @@
 
 load helpers
 
+# bats file_tags=ci:parallel
+
 ###############################################################################
 # BEGIN setup/teardown
 
-# Each test runs with its own PTY, managed by socat.
-PODMAN_TEST_PTY=$(mktemp -u --tmpdir=${BATS_TMPDIR:-/tmp} podman_pty.XXXXXX)
-PODMAN_DUMMY=$(mktemp -u --tmpdir=${BATS_TMPDIR:-/tmp} podman_dummy.XXXXXX)
-PODMAN_SOCAT_PID=
-
 function setup() {
     basic_setup
+
+    # Each test runs with its own PTY, managed by socat.
+    PODMAN_TEST_PTY=$PODMAN_TMPDIR/podman_pty
+    PODMAN_DUMMY=$PODMAN_TMPDIR/podman_dummy
+    PODMAN_SOCAT_PID=
 
     # Create a pty. Run under 'timeout' because BATS reaps child processes
     # and if we exit before killing socat, bats will hang forever.
@@ -56,7 +58,14 @@ function teardown() {
     CR=$'\r'
 
     # ...and make sure stty under podman reads that.
+    # This flakes often ("stty: standard input"), so, retry.
     run_podman run -it --name mystty $IMAGE stty size <$PODMAN_TEST_PTY
+    if [[ "$output" =~ stty ]]; then
+        echo "# stty flaked, retrying: $output" >&3
+        run_podman rm -f mystty
+        sleep 1
+        run_podman run -it --name mystty $IMAGE stty size <$PODMAN_TEST_PTY
+    fi
     is "$output" "$rows $cols$CR" "stty under podman run reads the correct dimensions"
 
     run_podman rm -t 0 -f mystty
@@ -81,8 +90,8 @@ function teardown() {
 
 
 @test "podman run --tty -i failure with no tty" {
-    run_podman run --tty -i --rm $IMAGE echo hello < /dev/null
-    is "$output" ".*The input device is not a TTY.*" "-it _without_ a tty"
+    run_podman 0+w run --tty -i --rm $IMAGE echo hello < /dev/null
+    require_warning "The input device is not a TTY.*" "-it _without_ a tty"
 
     CR=$'\r'
     run_podman run --tty -i --rm $IMAGE echo hello <$PODMAN_TEST_PTY
@@ -93,6 +102,26 @@ function teardown() {
 
     run_podman run --tty -i=false --rm $IMAGE echo hello < /dev/null
     is "$output" "hello$CR" "-i=false: no warning"
+}
+
+
+@test "podman run -l passthrough-tty" {
+    skip_if_remote
+
+    # Requires conmon 2.1.10 or greater
+    want=2.1.10
+    run_podman info --format '{{.Host.Conmon.Path}}'
+    conmon_path="$output"
+    conmon_version=$($conmon_path --version | sed -ne 's/^.* version //p')
+    if ! printf "%s\n%s\n" "$want" "$conmon_version" | sort --check=quiet --version-sort; then
+        skip "need conmon >= $want; have $conmon_version"
+    fi
+
+    run tty <$PODMAN_TEST_PTY
+    expected_tty="$output"
+
+    run_podman run --rm -v/dev:/dev --log-driver=passthrough-tty $IMAGE tty <$PODMAN_TEST_PTY
+    is "$output" "$expected_tty" "passthrough-tty: tty matches"
 }
 
 # vim: filetype=sh

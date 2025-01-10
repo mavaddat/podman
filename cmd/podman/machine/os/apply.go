@@ -1,14 +1,14 @@
 //go:build amd64 || arm64
-// +build amd64 arm64
 
 package os
 
 import (
-	"github.com/containers/podman/v4/cmd/podman/common"
-	"github.com/containers/podman/v4/cmd/podman/machine"
-	"github.com/containers/podman/v4/cmd/podman/registry"
-	"github.com/containers/podman/v4/cmd/podman/validate"
-	"github.com/containers/podman/v4/pkg/machine/os"
+	"github.com/containers/podman/v5/cmd/podman/common"
+	"github.com/containers/podman/v5/cmd/podman/machine"
+	"github.com/containers/podman/v5/cmd/podman/registry"
+	"github.com/containers/podman/v5/cmd/podman/validate"
+	"github.com/containers/podman/v5/pkg/machine/os"
+	provider2 "github.com/containers/podman/v5/pkg/machine/provider"
 	"github.com/spf13/cobra"
 )
 
@@ -48,7 +48,12 @@ func apply(cmd *cobra.Command, args []string) error {
 		CLIArgs: args,
 		Restart: restart,
 	}
-	osManager, err := NewOSManager(managerOpts)
+
+	provider, err := provider2.Get()
+	if err != nil {
+		return err
+	}
+	osManager, err := NewOSManager(managerOpts, provider)
 	if err != nil {
 		return err
 	}

@@ -1,11 +1,13 @@
+//go:build !remote
+
 package abi
 
 import (
 	"bytes"
 	"testing"
 
-	v1 "github.com/containers/podman/v4/pkg/k8s.io/api/core/v1"
-	v12 "github.com/containers/podman/v4/pkg/k8s.io/apimachinery/pkg/apis/meta/v1"
+	v1 "github.com/containers/podman/v5/pkg/k8s.io/api/core/v1"
+	v12 "github.com/containers/podman/v5/pkg/k8s.io/apimachinery/pkg/apis/meta/v1"
 	"github.com/stretchr/testify/assert"
 )
 
@@ -148,7 +150,6 @@ data:
 	}
 
 	for _, test := range tests {
-		test := test
 		t.Run(test.name, func(t *testing.T) {
 			buf := bytes.NewReader([]byte(test.configMapContent))
 			cm, err := readConfigMapFromFile(buf)
@@ -194,7 +195,6 @@ kind: Pod
 	}
 
 	for _, test := range tests {
-		test := test
 		t.Run(test.name, func(t *testing.T) {
 			kind, err := getKubeKind([]byte(test.kubeYAML))
 			if test.expectError {
@@ -246,10 +246,26 @@ kind: Pod
 			"multi doc yaml could not be split",
 			0,
 		},
+		{
+			"DocWithList",
+			`
+apiVersion: v1
+kind: List
+items:
+- apiVersion: v1
+  kind: Pod
+- apiVersion: v1
+  kind: Pod
+- apiVersion: v1
+  kind: Pod
+`,
+			false,
+			"",
+			3,
+		},
 	}
 
 	for _, test := range tests {
-		test := test
 		t.Run(test.name, func(t *testing.T) {
 			docs, err := splitMultiDocYAML([]byte(test.kubeYAML))
 			if test.expectError {

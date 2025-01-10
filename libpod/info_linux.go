@@ -1,3 +1,5 @@
+//go:build !remote
+
 package libpod
 
 import (
@@ -8,11 +10,16 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/containers/common/libnetwork/pasta"
+	"github.com/containers/common/libnetwork/slirp4netns"
 	"github.com/containers/common/pkg/apparmor"
 	"github.com/containers/common/pkg/cgroups"
 	"github.com/containers/common/pkg/seccomp"
-	"github.com/containers/podman/v4/libpod/define"
-	"github.com/containers/podman/v4/pkg/rootless"
+	"github.com/containers/common/pkg/version"
+	"github.com/containers/podman/v5/libpod/define"
+	"github.com/containers/podman/v5/pkg/rootless"
+	"github.com/containers/podman/v5/pkg/util"
+	"github.com/containers/storage/pkg/unshare"
 	"github.com/opencontainers/selinux/go-selinux"
 	"github.com/sirupsen/logrus"
 )
@@ -30,7 +37,7 @@ func (r *Runtime) setPlatformHostInfo(info *define.HostInfo) error {
 	}
 
 	// Get Map of all available controllers
-	availableControllers, err := cgroups.GetAvailableControllers(nil, unified)
+	availableControllers, err := cgroups.AvailableControllers(nil, unified)
 	if err != nil {
 		return fmt.Errorf("getting available cgroup controllers: %w", err)
 	}
@@ -40,7 +47,7 @@ func (r *Runtime) setPlatformHostInfo(info *define.HostInfo) error {
 	info.IDMappings = define.IDMappings{}
 	info.Security = define.SecurityInfo{
 		AppArmorEnabled:     apparmor.IsEnabled(),
-		DefaultCapabilities: strings.Join(r.config.Containers.DefaultCapabilities, ","),
+		DefaultCapabilities: strings.Join(r.config.Containers.DefaultCapabilities.Get(), ","),
 		Rootless:            rootless.IsRootless(),
 		SECCOMPEnabled:      seccomp.IsEnabled(),
 		SECCOMPProfilePath:  seccompProfilePath,
@@ -56,47 +63,43 @@ func (r *Runtime) setPlatformHostInfo(info *define.HostInfo) error {
 
 	slirp4netnsPath := r.config.Engine.NetworkCmdPath
 	if slirp4netnsPath == "" {
-		slirp4netnsPath, _ = r.config.FindHelperBinary(slirp4netnsBinaryName, true)
+		slirp4netnsPath, _ = r.config.FindHelperBinary(slirp4netns.BinaryName, true)
 	}
 	if slirp4netnsPath != "" {
-		version, err := programVersion(slirp4netnsPath)
+		ver, err := version.Program(slirp4netnsPath)
 		if err != nil {
 			logrus.Warnf("Failed to retrieve program version for %s: %v", slirp4netnsPath, err)
 		}
 		program := define.SlirpInfo{
 			Executable: slirp4netnsPath,
-			Package:    packageVersion(slirp4netnsPath),
-			Version:    version,
+			Package:    version.Package(slirp4netnsPath),
+			Version:    ver,
 		}
 		info.Slirp4NetNS = program
 	}
 
-	pastaPath, _ := r.config.FindHelperBinary(pastaBinaryName, true)
+	pastaPath, _ := r.config.FindHelperBinary(pasta.BinaryName, true)
 	if pastaPath != "" {
-		version, err := programVersion(pastaPath)
+		ver, err := version.Program(pastaPath)
 		if err != nil {
 			logrus.Warnf("Failed to retrieve program version for %s: %v", pastaPath, err)
 		}
 		program := define.PastaInfo{
 			Executable: pastaPath,
-			Package:    packageVersion(pastaPath),
-			Version:    version,
+			Package:    version.Package(pastaPath),
+			Version:    ver,
 		}
 		info.Pasta = program
 	}
 
 	if rootless.IsRootless() {
-		uidmappings, err := rootless.ReadMappingsProc("/proc/self/uid_map")
+		uidmappings, gidmappings, err := unshare.GetHostIDMappings("")
 		if err != nil {
-			return fmt.Errorf("reading uid mappings: %w", err)
-		}
-		gidmappings, err := rootless.ReadMappingsProc("/proc/self/gid_map")
-		if err != nil {
-			return fmt.Errorf("reading gid mappings: %w", err)
+			return fmt.Errorf("reading id mappings: %w", err)
 		}
 		idmappings := define.IDMappings{
-			GIDMap: gidmappings,
-			UIDMap: uidmappings,
+			GIDMap: util.RuntimeSpecToIDtools(gidmappings),
+			UIDMap: util.RuntimeSpecToIDtools(uidmappings),
 		}
 		info.IDMappings = idmappings
 	}

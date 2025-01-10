@@ -1399,3 +1399,148 @@ first process can acquire it, this type of `image not known` error can arise.
 The maintainers of Podman have considered heavier-duty locks to close this
 timing window. However, the slowdown that all Podman commands would encounter
 was not considered worth the cost of completely closing this small timing window.
+
+### 41) A podman build step with `--mount=type=secret` fails with "operation not permitted"
+
+Executing a step in a `Dockerfile`/`Containerfile` which mounts secrets using `--mount=type=secret` fails with "operation not permitted" when running on a host filesystem mounted with `nosuid` and when using the `runc` runtime.
+
+#### Symptom
+
+A `RUN` line in the `Dockerfile`/`Containerfile` contains a [secret mount](https://github.com/containers/common/blob/main/docs/Containerfile.5.md) such as `--mount=type=secret,id=MY_USER,target=/etc/dnf/vars/MY_USER`.
+When running `podman build` the process fails with an error message like:
+
+```
+STEP 3/13: RUN --mount=type=secret,id=MY_USER,target=/etc/dnf/vars/MY_USER     --mount=type=secret,id=MY_USER,target=/etc/dnf/vars/MY_USER     ...: time="2023-06-13T18:04:59+02:00" level=error msg="runc create failed: unable to start container process: error during container init: error mounting \"/var/tmp/buildah2251989386/mnt/buildah-bind-target-11\" to rootfs at \"/etc/dnf/vars/MY_USER\": mount /var/tmp/buildah2251989386/mnt/buildah-bind-target-11:/etc/dnf/vars/MY_USER (via /proc/self/fd/7), flags: 0x1021: operation not permitted"
+: exit status 1
+ERRO[0002] did not get container create message from subprocess: EOF
+```
+
+#### Solution
+
+* Install `crun`, e.g. with `dnf install crun`.
+* Use the `crun` runtime by passing `--runtime /usr/bin/crun` to `podman build`.
+
+See also [Buildah issue 4228](https://github.com/containers/buildah/issues/4228) for a full discussion of the problem.
+
+### 42) podman-in-podman builds that are file I/0 intensive are very slow
+
+When using the `overlay` storage driver to do a nested `podman build` inside a running container, file I/O operations such as `COPY` of a large amount of data is very slow or can hang completely.
+
+#### Symptom
+
+Using the default `overlay` storage driver, a `COPY`, `ADD`, or an I/O intensive `RUN` line in a `Containerfile` that is run inside another container is very slow or hangs completely when running a `podman build` inside the running parent container.
+
+#### Solution
+
+This could be caused by the child container using `fuse-overlayfs` for writing to `/var/lib/containers/storage`. Writes can be slow with `fuse-overlayfs`. The solution is to use the native `overlay` filesystem by using a local directory on the host system as a volume to `/var/lib/containers/storage` like so: `podman run --privileged --rm -it -v ./nested_storage:/var/lib/containers/storage parent:latest`. Ensure that the base image of `parent:latest` in this example has no contents in `/var/lib/containers/storage` in the image itself for this to work. Once using the native volume, the nested container should not fall back to `fuse-overlayfs` to write files and the nested build will complete much faster.
+
+If you don't have access to the parent run process, such as in a CI environment, then the second option is to change the storage driver to `vfs` in the parent image by changing changing this line in your `storage.conf` file: `driver = "vfs"`. You may have to run `podman system reset` for this to take effect. You know it's changed when `podman info |grep graphDriverName` outputs `graphDriverName: vfs`. This method is slower performance than using the volume method above but is significantly faster than `fuse-overlayfs`
+
+### 43) `podman run --userns=auto` fails with "Error: creating container storage: not enough unused IDs in user namespace"
+
+Using `--userns=auto` when creating new containers does not work as long as any containers exist that were created with `--userns=keep-id` or `--userns=nomap`
+
+#### Symptom
+
+1. Run with `--userns=auto`
+   ```
+   $ podman run --rm -d --userns=auto alpine sleep 3600
+   ```
+   The command succeeds.
+2. Run with `--userns=auto`
+   ```
+   $ podman run --rm -d --userns=auto alpine sleep 3600
+   ```
+   The command succeeds.
+3. Run with `--userns=keep-id`
+   ```
+   $ podman run --rm -d --userns=keep-id alpine sleep 3600
+   ```
+   The command succeeds.
+4. Run with `--userns=auto`
+   ```
+   $ podman run --rm -d --userns=auto alpine sleep 3600
+   ```
+   The command fails with the error message
+   ```
+   Error: creating container storage: not enough unused IDs in user namespace
+   ```
+
+#### Solution
+
+Any existing containers that were created using `--userns=keep-id` or `--userns=nomap` must first be deleted before any new container can be created with `--userns=auto`
+
+### 44) `sudo podman run --userns=auto` fails with `Cannot find mappings for user "containers"`
+
+When rootful podman is invoked with `--userns=auto`, podman needs to
+pick subranges of subuids and subgids for the user namespace of the container.
+Rootful podman ensures that the subuid and subgid ranges for such containers
+do not overlap, but how can rootful podman prevent other tools
+from accidentally using these IDs?
+
+It's not possible to block other tools that are running as root from using these IDs,
+but such tools would normally not use subuids and subgids that have already
+been assigned to a user in _/etc/subuid_ and _/etc/subgid_.
+
+The username _containers_ on the host has a special function for rootful Podman.
+Rootful podman uses the subuids and subgids of the user _containers_ when
+running `--userns=auto` containers. The user _containers_ has no need for these
+subuids and subgids because no processes should be started as the user _containers_.
+In other words, the user _containers_ is a special user that only exists on the system
+to reserve _subuids_ and _subgids_ for rootful podman.
+
+_containers_ is the default username but it can be changed by setting the
+option `root-auto-userns-user` in the file _/etc/containers/storage.conf_
+
+#### Symptom
+
+Run rootful podman with `--userns=auto`
+```
+sudo podman run --rm --userns=auto alpine echo hello
+```
+The command fails with the error message:
+```
+ERRO[0000] Cannot find mappings for user "containers": no subuid ranges found for user "containers" in /etc/subuid
+Error: creating container storage: not enough unused IDs in user namespace
+```
+
+The files _/etc/subuid_ and _/etc/subgid_ do not have any lines that start with `containers:`
+
+#### Solution
+
+Add subuid and subgid ranges for the user _containers_ in _/etc/subuid_ and _/etc/subgid_
+or provide such ranges with _/etc/nsswitch.conf_.
+For details, see [subid(5)](https://man7.org/linux/man-pages/man5/subuid.5.html).
+
+The following steps create the user _containers_ and assigns big subuid and subgid ranges to it:
+
+1. Create the user _containers_
+   ```
+   sudo useradd --comment "Helper user to reserve subuids and subgids for Podman" \
+                --no-create-home \
+                --shell /usr/sbin/nologin \
+                containers
+   ```
+2. Check the subuid and subgid ranges of the user _containers_
+   ```
+   $ grep ^containers: /etc/subuid
+   containers:720896:65536
+   $ grep ^containers: /etc/subgid
+   containers:720896:65536
+   ```
+   By default __useradd__ assigns 65536 subuids and 65536 subgids to a new user.
+   Typically you would like the reserved pool to be bigger than that. The bigger
+   the size, the more containers could be started with `sudo podman run --userns=auto ...`
+3. Edit the line for the user _containers_ in the files  _/etc/subuid_ and _/etc/subgid_
+   to make the ranges bigger. Ensure that the subuid range of the user _containers_ do
+   not overlap with any other subuid ranges in the files _/etc/subuid_. Ensure that the
+   subgid range of the user _containers_ do not overlap with any other subgid ranges in
+   the files _/etc/subgid_.
+
+Test the echo command again
+
+```
+sudo podman run --rm --userns=auto alpine echo hello
+```
+
+The command succeeds and prints `hello`

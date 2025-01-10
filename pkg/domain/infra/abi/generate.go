@@ -1,3 +1,5 @@
+//go:build !remote
+
 package abi
 
 import (
@@ -7,13 +9,13 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/containers/podman/v4/libpod"
-	"github.com/containers/podman/v4/libpod/define"
-	"github.com/containers/podman/v4/pkg/domain/entities"
-	k8sAPI "github.com/containers/podman/v4/pkg/k8s.io/api/core/v1"
-	"github.com/containers/podman/v4/pkg/specgen"
-	generateUtils "github.com/containers/podman/v4/pkg/specgen/generate"
-	"github.com/containers/podman/v4/pkg/systemd/generate"
+	"github.com/containers/podman/v5/libpod"
+	"github.com/containers/podman/v5/libpod/define"
+	"github.com/containers/podman/v5/pkg/domain/entities"
+	k8sAPI "github.com/containers/podman/v5/pkg/k8s.io/api/core/v1"
+	"github.com/containers/podman/v5/pkg/specgen"
+	generateUtils "github.com/containers/podman/v5/pkg/specgen/generate"
+	"github.com/containers/podman/v5/pkg/systemd/generate"
 	"sigs.k8s.io/yaml"
 )
 
@@ -207,7 +209,7 @@ func (ic *ContainerEngine) GenerateKube(ctx context.Context, nameOrIDs []string,
 
 	// Generate the kube pods from containers.
 	if len(ctrs) >= 1 {
-		po, err := libpod.GenerateForKube(ctx, ctrs, options.Service)
+		po, err := libpod.GenerateForKube(ctx, ctrs, options.Service, options.PodmanOnly)
 		if err != nil {
 			return nil, err
 		}
@@ -232,6 +234,26 @@ func (ic *ContainerEngine) GenerateKube(ctx context.Context, nameOrIDs []string,
 				return nil, err
 			}
 			typeContent = append(typeContent, b)
+		case define.K8sKindDaemonSet:
+			dep, err := libpod.GenerateForKubeDaemonSet(ctx, libpod.ConvertV1PodToYAMLPod(po), options)
+			if err != nil {
+				return nil, err
+			}
+			b, err := generateKubeYAML(dep)
+			if err != nil {
+				return nil, err
+			}
+			typeContent = append(typeContent, b)
+		case define.K8sKindJob:
+			job, err := libpod.GenerateForKubeJob(ctx, libpod.ConvertV1PodToYAMLPod(po), options)
+			if err != nil {
+				return nil, err
+			}
+			b, err := generateKubeYAML(job)
+			if err != nil {
+				return nil, err
+			}
+			typeContent = append(typeContent, b)
 		case define.K8sKindPod:
 			b, err := generateKubeYAML(libpod.ConvertV1PodToYAMLPod(po))
 			if err != nil {
@@ -239,7 +261,7 @@ func (ic *ContainerEngine) GenerateKube(ctx context.Context, nameOrIDs []string,
 			}
 			typeContent = append(typeContent, b)
 		default:
-			return nil, fmt.Errorf("invalid generation type - only pods and deployments are currently supported")
+			return nil, fmt.Errorf("invalid generation type - only pods, deployments, jobs, and daemonsets are currently supported: %+v", options.Type)
 		}
 
 		if options.Service {
@@ -273,7 +295,7 @@ func getKubePods(ctx context.Context, pods []*libpod.Pod, options entities.Gener
 	svcs := [][]byte{}
 
 	for _, p := range pods {
-		po, sp, err := p.GenerateForKube(ctx, options.Service)
+		po, sp, err := p.GenerateForKube(ctx, options.Service, options.PodmanOnly)
 		if err != nil {
 			return nil, nil, err
 		}
@@ -289,6 +311,26 @@ func getKubePods(ctx context.Context, pods []*libpod.Pod, options entities.Gener
 				return nil, nil, err
 			}
 			out = append(out, b)
+		case define.K8sKindDaemonSet:
+			dep, err := libpod.GenerateForKubeDaemonSet(ctx, libpod.ConvertV1PodToYAMLPod(po), options)
+			if err != nil {
+				return nil, nil, err
+			}
+			b, err := generateKubeYAML(dep)
+			if err != nil {
+				return nil, nil, err
+			}
+			out = append(out, b)
+		case define.K8sKindJob:
+			job, err := libpod.GenerateForKubeJob(ctx, libpod.ConvertV1PodToYAMLPod(po), options)
+			if err != nil {
+				return nil, nil, err
+			}
+			b, err := generateKubeYAML(job)
+			if err != nil {
+				return nil, nil, err
+			}
+			out = append(out, b)
 		case define.K8sKindPod:
 			b, err := generateKubeYAML(libpod.ConvertV1PodToYAMLPod(po))
 			if err != nil {
@@ -296,7 +338,7 @@ func getKubePods(ctx context.Context, pods []*libpod.Pod, options entities.Gener
 			}
 			out = append(out, b)
 		default:
-			return nil, nil, fmt.Errorf("invalid generation type - only pods and deployments are currently supported")
+			return nil, nil, fmt.Errorf("invalid generation type - only pods, deployments, jobs, and daemonsets are currently supported")
 		}
 
 		if options.Service {

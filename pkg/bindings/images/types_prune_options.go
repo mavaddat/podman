@@ -4,7 +4,7 @@ package images
 import (
 	"net/url"
 
-	"github.com/containers/podman/v4/pkg/bindings/internal/util"
+	"github.com/containers/podman/v5/pkg/bindings/internal/util"
 )
 
 // Changed returns true if named field has been set
@@ -45,6 +45,21 @@ func (o *PruneOptions) GetExternal() bool {
 		return z
 	}
 	return *o.External
+}
+
+// WithBuildCache set field BuildCache to given value
+func (o *PruneOptions) WithBuildCache(value bool) *PruneOptions {
+	o.BuildCache = &value
+	return o
+}
+
+// GetBuildCache returns value of field BuildCache
+func (o *PruneOptions) GetBuildCache() bool {
+	if o.BuildCache == nil {
+		var z bool
+		return z
+	}
+	return *o.BuildCache
 }
 
 // WithFilters set field Filters to given value

@@ -10,8 +10,8 @@ import (
 	"strings"
 	"syscall"
 
-	"github.com/containers/podman/v4/libpod/define"
-	"github.com/containers/podman/v4/pkg/rootless"
+	"github.com/containers/podman/v5/libpod/define"
+	"github.com/containers/podman/v5/pkg/rootless"
 	"github.com/containers/psgo"
 	spec "github.com/opencontainers/runtime-spec/specs-go"
 	"github.com/opencontainers/runtime-tools/generate"
@@ -37,7 +37,9 @@ func FindDeviceNodes() (map[string]string, error) {
 	nodes := make(map[string]string)
 	err := filepath.WalkDir("/dev", func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
-			logrus.Warnf("Error descending into path %s: %v", path, err)
+			if !errors.Is(err, fs.ErrNotExist) {
+				logrus.Warnf("Error descending into path %s: %v", path, err)
+			}
 			return filepath.SkipDir
 		}
 
@@ -48,7 +50,16 @@ func FindDeviceNodes() (map[string]string, error) {
 
 		info, err := d.Info()
 		if err != nil {
-			return err
+			// Info() can return ErrNotExist if the file was deleted between the readdir and stat call.
+			// This race can happen and is no reason to log an ugly error. If this is a container device
+			// that is used the code later will print a proper error in such case.
+			// There also seem to be cases were ErrNotExist is always returned likely due a weird device
+			// state, e.g. removing a device forcefully. This can happen with iSCSI devices.
+			if !errors.Is(err, fs.ErrNotExist) {
+				logrus.Errorf("Failed to get device information for %s: %v", path, err)
+			}
+			// return nil here as we want to continue looking for more device and not stop the WalkDir()
+			return nil
 		}
 		// We are a device node. Get major/minor.
 		sysstat, ok := info.Sys().(*syscall.Stat_t)
@@ -95,7 +106,6 @@ func AddPrivilegedDevices(g *generate.Generator, systemdMode bool) error {
 	if err != nil {
 		return err
 	}
-	g.ClearLinuxDevices()
 
 	if rootless.IsRootless() {
 		mounts := make(map[string]interface{})
@@ -181,6 +191,9 @@ func getDevices(path string) ([]spec.LinuxDevice, error) {
 			default:
 				sub, err := getDevices(filepath.Join(path, f.Name()))
 				if err != nil {
+					if errors.Is(err, fs.ErrNotExist) {
+						continue
+					}
 					return nil, err
 				}
 				if sub != nil {
@@ -199,7 +212,7 @@ func getDevices(path string) ([]spec.LinuxDevice, error) {
 			if err == errNotADevice {
 				continue
 			}
-			if os.IsNotExist(err) {
+			if errors.Is(err, fs.ErrNotExist) {
 				continue
 			}
 			return nil, err

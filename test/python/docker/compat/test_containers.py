@@ -2,19 +2,25 @@
 Integration tests for exercising docker-py against Podman Service.
 """
 import io
+import json
 import tarfile
 import threading
 import time
 from typing import IO, List, Optional
 
+import yaml
 from docker import errors
 from docker.models.containers import Container
 from docker.models.images import Image
 from docker.models.volumes import Volume
 from docker.types import Mount
+from jsonschema.exceptions import best_match, ValidationError
 
 # pylint: disable=no-name-in-module,import-error,wrong-import-order
 from test.python.docker.compat import common, constant
+from openapi_schema_validator import OAS31Validator
+
+from test.python.docker.compat.constant import DOCKER_API_COMPATIBILITY_VERSION
 
 
 # pylint: disable=missing-function-docstring
@@ -239,6 +245,26 @@ class TestContainers(common.DockerTestCase):
         ret, _ = ctr.exec_run(["stat", "/workspace/scratch/test"])
         self.assertEqual(ret, 0, "Working directory created if it doesn't exist")
 
+    def test_build_pull(self):
+        dockerfile = (
+            b"FROM quay.io/libpod/alpine:latest\n"
+            b"USER 1000:1000\n"
+        )
+        img: Image
+        img, logs = self.docker.images.build(fileobj=io.BytesIO(dockerfile), quiet=False, pull=True)
+        has_tried_pull = False
+        for e in logs:
+            if "stream" in e and "trying to pull" in e["stream"].lower():
+                has_tried_pull = True
+        self.assertTrue(has_tried_pull, "the build process has not tried to pull the base image")
+
+        img, logs = self.docker.images.build(fileobj=io.BytesIO(dockerfile), quiet=False, pull=False)
+        has_tried_pull = False
+        for e in logs:
+            if "stream" in e and "trying to pull" in e["stream"].lower():
+                has_tried_pull = True
+        self.assertFalse(has_tried_pull, "the build process has tried tried to pull the base image")
+
     def test_mount_rw_by_default(self):
         ctr: Optional[Container] = None
         vol: Optional[Volume] = None
@@ -279,6 +305,41 @@ class TestContainers(common.DockerTestCase):
             t.start()
             ctr.wait(condition="next-exit", timeout=300)
             t.join()
+        finally:
+            ctr.stop()
+            ctr.remove(force=True)
+
+    def test_container_inspect_compatibility(self):
+        """Test container inspect result compatibility with DOCKER_API.
+        When upgrading module "github.com/docker/docker" this test might fail, if so please correct podman inspect
+        command result to stay compatible with docker.
+        """
+        ctr = self.docker.containers.create(image="alpine", detach=True)
+        try:
+            spec = yaml.load(open("vendor/github.com/docker/docker/api/swagger.yaml").read(), Loader=yaml.Loader)
+            ctr_inspect = json.loads(self.podman.run("inspect", ctr.id).stdout)[0]
+            schema = spec['paths']["/containers/{id}/json"]["get"]['responses'][200]['schema']
+            schema["definitions"] = spec["definitions"]
+
+            OAS31Validator.check_schema(schema)
+            validator = OAS31Validator(schema)
+            important_error = []
+            for error in validator.iter_errors(ctr_inspect):
+                if isinstance(error, ValidationError):
+                    # ignore None instead of object/array/string errors
+                    if error.message.startswith("None is not of type"):
+                        continue
+                    # ignore Windows specific option error
+                    if error.json_path == '$.HostConfig.Isolation':
+                        continue
+                important_error.append(error)
+            if important_error:
+                if newversion := spec["info"]["version"] != DOCKER_API_COMPATIBILITY_VERSION:
+                    ex = Exception(f"There may be a breaking change in Docker API between "
+                                   f"{DOCKER_API_COMPATIBILITY_VERSION} and {newversion}")
+                    raise best_match(important_error) from ex
+                else:
+                    raise best_match(important_error)
         finally:
             ctr.stop()
             ctr.remove(force=True)

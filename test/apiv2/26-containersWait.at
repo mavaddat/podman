@@ -12,7 +12,14 @@ CTR="WaitTestingCtr"
 
 t POST "containers/nonExistent/wait?condition=next-exit" 404
 
-podman create --name "${CTR}" --entrypoint '["true"]' "${IMAGE}"
+# Make sure to test a non-zero exit code (see #18889)
+podman create --name "${CTR}" "${IMAGE}" sh -c "exit 3"
+
+t GET libpod/containers/${CTR}/json 200 \
+  .Id~[0-9a-f]\\{64\\}
+
+# We need the cid for the wait test at the end
+cid=$(jq -r '.Id' <<<"$output")
 
 t POST "containers/${CTR}/wait?condition=non-existent-cond" 400
 
@@ -24,7 +31,7 @@ child_pid=$!
 
 # This will block until the background job completes
 t POST "containers/${CTR}/wait?condition=next-exit" 200 \
-  .StatusCode=0 \
+  .StatusCode=3 \
   .Error=null
 wait "${child_pid}"
 
@@ -32,7 +39,7 @@ wait "${child_pid}"
 APIV2_TEST_EXPECT_TIMEOUT=2 t POST "containers/${CTR}/wait?condition=next-exit" 999
 like "$(<$WORKDIR/curl.headers.out)" ".*HTTP.* 200 OK.*" \
      "Received headers from /wait"
-if [[ -e $WORKDIR/curl.result.out ]]; then
+if [[ -s $WORKDIR/curl.result.out ]]; then
     _show_ok 0 "UNEXPECTED: curl on /wait returned results"
 fi
 
@@ -41,6 +48,19 @@ fi
 child_pid=$!
 
 t POST "containers/${CTR}/wait?condition=removed" 200 \
-  .StatusCode=0 \
+  .StatusCode=3 \
   .Error=null
+# Make sure the container has really been removed after waiting for
+# "condition=removed". This check is racy but should flake in case it doesn't
+# work correctly.
+t POST "containers/${CTR}/wait?condition=next-exit" 404
 wait "${child_pid}"
+
+t POST "libpod/containers/${CTR}/wait?condition=running" 404
+t POST "libpod/containers/${cid}/wait?condition=running" 404
+# The container no longer exists but we want to ensure the remote client
+# can still fetch the exit code correctly until the exit code is pruned
+# (after 5 mins) but only by the container id and not the name.
+t POST "libpod/containers/${CTR}/wait" 404
+t POST "libpod/containers/${cid}/wait" 200 \
+ "3"

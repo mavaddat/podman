@@ -3,15 +3,12 @@ package specgen
 import (
 	"errors"
 	"fmt"
-
-	"github.com/containers/podman/v4/pkg/util"
 )
 
 var (
 	// ErrInvalidPodSpecConfig describes an error given when the podspecgenerator is invalid
 	ErrInvalidPodSpecConfig = errors.New("invalid pod spec")
 	// containerConfig has the default configurations defined in containers.conf
-	containerConfig = util.DefaultContainerConfig()
 )
 
 func exclusivePodOptions(opt1, opt2 string) error {
@@ -61,6 +58,9 @@ func (p *PodSpecGenerator) Validate() error {
 		if len(p.HostAdd) > 0 {
 			return exclusivePodOptions("NoInfra", "HostAdd")
 		}
+		if len(p.HostsFile) > 0 {
+			return exclusivePodOptions("NoInfra", "HostsFile")
+		}
 		if p.NoManageResolvConf {
 			return exclusivePodOptions("NoInfra", "NoManageResolvConf")
 		}
@@ -82,8 +82,13 @@ func (p *PodSpecGenerator) Validate() error {
 			return exclusivePodOptions("NoManageResolvConf", "DNSOption")
 		}
 	}
-	if p.NoManageHosts && len(p.HostAdd) > 0 {
-		return exclusivePodOptions("NoManageHosts", "HostAdd")
+	if p.NoManageHosts {
+		if len(p.HostAdd) > 0 {
+			return exclusivePodOptions("NoManageHosts", "HostAdd")
+		}
+		if len(p.HostsFile) > 0 {
+			return exclusivePodOptions("NoManageHosts", "HostsFile")
+		}
 	}
 
 	return nil

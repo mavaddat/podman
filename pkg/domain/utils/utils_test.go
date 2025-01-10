@@ -5,7 +5,7 @@ import (
 	"sort"
 	"testing"
 
-	"github.com/containers/podman/v4/pkg/domain/entities"
+	"github.com/containers/podman/v5/pkg/domain/entities"
 	"github.com/stretchr/testify/assert"
 )
 
@@ -78,8 +78,8 @@ func TestToURLValues(t *testing.T) {
 
 func TestParseSCPArgs(t *testing.T) {
 	args := []string{"alpine", "root@localhost::"}
-	var source *entities.ImageScpOptions
-	var dest *entities.ImageScpOptions
+	var source *entities.ScpTransferImageOptions
+	var dest *entities.ScpTransferImageOptions
 	var err error
 	source, _, err = ParseImageSCPArg(args[0])
 	assert.Nil(t, err)

@@ -1,10 +1,12 @@
+//go:build !remote
+
 package libpod
 
 import (
 	"net/http"
 
 	"github.com/containers/common/pkg/resize"
-	"github.com/containers/podman/v4/libpod/define"
+	"github.com/containers/podman/v5/libpod/define"
 	"github.com/opencontainers/runtime-spec/specs-go"
 )
 
@@ -27,8 +29,6 @@ type OCIRuntime interface { //nolint:interfacebloat
 	// the given container if it is a restore and if restoreOptions.PrintStats
 	// is true. In all other cases the returned int64 is 0.
 	CreateContainer(ctr *Container, restoreOptions *ContainerCheckpointOptions) (int64, error)
-	// UpdateContainerStatus updates the status of the given container.
-	UpdateContainerStatus(ctr *Container) error
 	// StartContainer starts the given container.
 	StartContainer(ctr *Container) error
 	// KillContainer sends the given signal to the given container.
@@ -147,6 +147,12 @@ type OCIRuntime interface { //nolint:interfacebloat
 	// This is the path to that file for a given container.
 	ExitFilePath(ctr *Container) (string, error)
 
+	// OOMFilePath is the path to a container's oom file if it was oom killed.
+	// An oom file is only created when the container is oom killed. The existence
+	// of this file means that the container was oom killed.
+	// This is the path to that file for a given container.
+	OOMFilePath(ctr *Container) (string, error)
+
 	// RuntimeInfo returns verbose information about the runtime.
 	RuntimeInfo() (*define.ConmonInfo, *define.OCIRuntimeInfo, error)
 
@@ -199,6 +205,9 @@ type ExecOptions struct {
 	// to 0, 1, 2) that will be passed to the executed process. The total FDs
 	// passed will be 3 + PreserveFDs.
 	PreserveFDs uint
+	// PreserveFD is a list of additional file descriptors (in addition
+	// to 0, 1, 2) that will be passed to the executed process.
+	PreserveFD []uint
 	// DetachKeys is a set of keys that, when pressed in sequence, will
 	// detach from the container.
 	// If not provided, the default keys will be used.

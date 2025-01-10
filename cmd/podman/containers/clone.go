@@ -3,10 +3,10 @@ package containers
 import (
 	"fmt"
 
-	"github.com/containers/podman/v4/cmd/podman/common"
-	"github.com/containers/podman/v4/cmd/podman/registry"
-	"github.com/containers/podman/v4/libpod/define"
-	"github.com/containers/podman/v4/pkg/domain/entities"
+	"github.com/containers/podman/v5/cmd/podman/common"
+	"github.com/containers/podman/v5/cmd/podman/registry"
+	"github.com/containers/podman/v5/libpod/define"
+	"github.com/containers/podman/v5/pkg/domain/entities"
 	"github.com/spf13/cobra"
 )
 
@@ -63,7 +63,7 @@ func clone(cmd *cobra.Command, args []string) error {
 		ctrClone.Image = args[2]
 		if !cliVals.RootFS {
 			rawImageName := args[0]
-			name, err := PullImage(ctrClone.Image, &ctrClone.CreateOpts)
+			name, err := pullImage(cmd, ctrClone.Image, &ctrClone.CreateOpts)
 			if err != nil {
 				return err
 			}

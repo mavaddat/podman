@@ -1,14 +1,15 @@
+//go:build !remote
+
 package generate
 
 import (
-	"fmt"
 	"strings"
 
 	"github.com/containers/common/libimage"
-	"github.com/containers/common/pkg/config"
-	"github.com/containers/podman/v4/libpod/define"
-	"github.com/containers/podman/v4/pkg/specgen"
+	"github.com/containers/podman/v5/libpod/define"
+	"github.com/containers/podman/v5/pkg/specgen"
 	"github.com/opencontainers/runtime-tools/generate"
+	"github.com/sirupsen/logrus"
 )
 
 func addRlimits(s *specgen.SpecGenerator, g *generate.Generator) {
@@ -16,12 +17,13 @@ func addRlimits(s *specgen.SpecGenerator, g *generate.Generator) {
 
 	for _, u := range s.Rlimits {
 		name := "RLIMIT_" + strings.ToUpper(u.Type)
+		u = subNegativeOne(u)
 		g.AddProcessRlimits(name, u.Hard, u.Soft)
 	}
 }
 
 // Produce the final command for the container.
-func makeCommand(s *specgen.SpecGenerator, imageData *libimage.ImageData, rtc *config.Config) ([]string, error) {
+func makeCommand(s *specgen.SpecGenerator, imageData *libimage.ImageData) []string {
 	finalCommand := []string{}
 
 	entrypoint := s.Entrypoint
@@ -44,19 +46,14 @@ func makeCommand(s *specgen.SpecGenerator, imageData *libimage.ImageData, rtc *c
 	finalCommand = append(finalCommand, command...)
 
 	if len(finalCommand) == 0 {
-		return nil, fmt.Errorf("no command or entrypoint provided, and no CMD or ENTRYPOINT from image")
+		logrus.Debug("no command or entrypoint provided, and no CMD or ENTRYPOINT from image: defaulting to empty string")
+		finalCommand = []string{""}
 	}
 
-	if s.Init {
-		initPath := s.InitPath
-		if initPath == "" && rtc != nil {
-			initPath = rtc.Engine.InitPath
-		}
-		if initPath == "" {
-			return nil, fmt.Errorf("no path to init binary found but container requested an init")
-		}
+	if s.Init != nil && *s.Init {
+		// bind mount for this binary is added in addContainerInitBinary()
 		finalCommand = append([]string{define.ContainerInitPath, "--"}, finalCommand...)
 	}
 
-	return finalCommand, nil
+	return finalCommand
 }

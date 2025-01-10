@@ -1,11 +1,11 @@
-//go:build remote_testing
-// +build remote_testing
+//go:build remote_testing && (linux || freebsd)
 
 package integration
 
 import (
 	"errors"
 	"fmt"
+	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -49,8 +49,12 @@ func (p *PodmanTestIntegration) PodmanExtraFiles(args []string, extraFiles []*os
 }
 
 func (p *PodmanTestIntegration) setDefaultRegistriesConfigEnv() {
-	defaultFile := filepath.Join(INTEGRATION_ROOT, "test/registries.conf")
-	os.Setenv("CONTAINERS_REGISTRIES_CONF", defaultFile)
+	defaultFile := "registries.conf"
+	if UsingCacheRegistry() {
+		defaultFile = "registries-cached.conf"
+	}
+	defaultPath := filepath.Join(INTEGRATION_ROOT, "test", defaultFile)
+	os.Setenv("CONTAINERS_REGISTRIES_CONF", defaultPath)
 }
 
 func (p *PodmanTestIntegration) setRegistriesConfigEnv(b []byte) {
@@ -94,11 +98,12 @@ func (p *PodmanTestIntegration) StartRemoteService() {
 	command.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	p.RemoteCommand = command
 	p.RemoteSession = command.Process
-	p.RemoteStartErr = p.DelayForService()
+	err = p.DelayForService()
+	Expect(err).ToNot(HaveOccurred())
 }
 
 func (p *PodmanTestIntegration) StopRemoteService() {
-	if err := p.RemoteSession.Kill(); err != nil {
+	if err := p.RemoteSession.Signal(syscall.SIGTERM); err != nil {
 		GinkgoWriter.Printf("unable to clean up service %d, %v\n", p.RemoteSession.Pid, err)
 	}
 	if _, err := p.RemoteSession.Wait(); err != nil {
@@ -115,7 +120,7 @@ func (p *PodmanTestIntegration) StopRemoteService() {
 	}
 }
 
-// MakeOptions assembles all the podman main options
+// getRemoteOptions assembles all the podman main options
 func getRemoteOptions(p *PodmanTestIntegration, args []string) []string {
 	networkDir := p.NetworkConfigDir
 	podmanOptions := strings.Split(fmt.Sprintf("--root %s --runroot %s --runtime %s --conmon %s --network-config-dir %s --network-backend %s --cgroup-manager %s --tmpdir %s --events-backend %s --db-backend %s",
@@ -145,16 +150,15 @@ func (p *PodmanTestIntegration) RestoreArtifact(image string) error {
 }
 
 func (p *PodmanTestIntegration) DelayForService() error {
-	var session *PodmanSessionIntegration
-	for i := 0; i < 5; i++ {
-		session = p.Podman([]string{"info"})
-		session.WaitWithDefaultTimeout()
-		if session.ExitCode() == 0 {
+	var err error
+	var conn net.Conn
+	for i := 0; i < 100; i++ {
+		conn, err = net.Dial("unix", strings.TrimPrefix(p.RemoteSocket, "unix:"))
+		if err == nil {
+			conn.Close()
 			return nil
-		} else if i == 4 {
-			break
 		}
-		time.Sleep(2 * time.Second)
+		time.Sleep(100 * time.Millisecond)
 	}
-	return fmt.Errorf("service not detected, exit code(%d)", session.ExitCode())
+	return fmt.Errorf("service socket not detected, timeout after 10 seconds: %w", err)
 }

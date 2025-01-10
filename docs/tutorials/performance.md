@@ -22,7 +22,7 @@ Interactively
 
 ```
 sudo useradd testuser
-sudo machinectl testuser@
+sudo machinectl shell testuser@
 podman pull docker.io/library/alpine
 /usr/bin/time -v podman --storage-driver=vfs run --rm docker.io/library/alpine /bin/true
 exit
@@ -65,7 +65,27 @@ The following storage drivers are listed from fastest to slowest:
 2. fuse-overlayfs
 3. vfs
 
-Using native overlayfs as an unprivileged user is only available for Podman version >= 3.1 on a Linux kernel version >= 5.12.
+There is one notable exception to this speed ranking.
+Creating a container takes significantly longer with _native overlayfs_ than _fuse-overlayfs_
+when these conditions are all met:
+
+* rootless Podman is used
+* a modified UID/GID mapping is used
+* _native overlayfs_ is used
+* no container has yet been created with the specified container image and UID/GID mapping
+
+Runtime speed is not affected. Only __podman create__ and the container creation phases of
+__podman run__ and __podman build__ are affected.
+For more details, see [GitHub comment](https://github.com/containers/podman/issues/16541#issuecomment-1352790422).
+Command-line options that modify the UID/GID mapping are for example __--userns__, __--uidmap__ and __--gidmap__.
+The command-line option `--userns auto` is particularly affected by this performance penalty,
+because different UID/GID mappings could potentially be used on each invocation. For other uses of
+__--userns__, __--uidmap__ and __--gidmap__ the performance penalty is a one-time cost
+that only occurs the first time the command is run.
+
+Using native overlayfs as an unprivileged user is available for Podman version >= 3.1 on a Linux kernel version >= 5.13.
+If SELinux is not used, then Linux kernel version 5.11 or later is sufficient.
+Native overlayfs support is included in RHEL >= 8.5, see [release notes](https://access.redhat.com/documentation/en-us/red_hat_enterprise_linux/8/html-single/8.5_release_notes/index).
 
 To show the current storage driver
 
@@ -124,14 +144,13 @@ See storage.conf(5) for all available configuration settings.
 
 ### Network performance for rootless Podman
 
-When using rootless Podman, network traffic is normally passed through
-[slirp4netns](https://github.com/containers/podman/blob/main/docs/tutorials/basic_networking.md#slirp4netns).
-This comes with a performance penalty.
+When using rootless Podman, network traffic is normally passed through the network driver
+[pasta](https://passt.top/passt/about/#pasta). This comes with a performance penalty.
 
-You can avoid using slirp4netns in the following ways:
+You can avoid using _pasta_ in the following ways:
 
 * Use socket activation for listening network sockets. Communication over the activated socket does not pass through
-  slirp4netns, so it has the same performance characteristics as the normal network on the host.
+  pasta, so it has the same performance characteristics as the normal network on the host.
   Socket-activated services can be started and stopped in different ways:
   + Let systemd start the service when the first client connects. Let the service terminate by itself after some time of inactivity.
     Using a service on demand, can free up compute resources.
@@ -140,12 +159,27 @@ You can avoid using slirp4netns in the following ways:
   The [socket activation tutorial](https://github.com/containers/podman/blob/main/docs/tutorials/socket_activation.md)
   provides more information about socket activation support in Podman.
 
-* Use the network driver [_pasta_](https://passt.top/passt/about/#pasta). Pasta is under development and currently needs a patched Podman to run.
-
-* Set up the network manually as root. Create a bridge and virtual ethernet pair (VETH). See the [example](https://lists.podman.io/archives/list/podman@lists.podman.io/thread/W6MCYO6RY5YFRTSUDAOEZA7SC2EFXRZE/) posted on the Podman mailing list. See also the section _DIY networking_ in [Podman-Rootless-Networking.pdf](https://podman.io/community/meeting/notes/2021-10-05/Podman-Rootless-Networking.pdf).
+* Set up the network manually as root. Create a bridge and virtual ethernet pair (VETH). Note: compared to other methods,
+  this setup doesn't provide any network isolation. In containers granted CAP_NET_ADMIN or CAP_NET_RAW, processes can
+  open packet or raw sockets directly facing the host, which allows them to send arbitrary frames, including
+  crafted Ethernet and IP packets, as well as receiving packets that were not originally intended for the container,
+  by means of ARP spoofing.
+  For more information, see
+  + An [example](https://lists.podman.io/archives/list/podman@lists.podman.io/thread/W6MCYO6RY5YFRTSUDAOEZA7SC2EFXRZE/) posted on the Podman mailing list
+  + The section _DIY networking_ in [Podman-Rootless-Networking.pdf](https://containers.github.io/podman.io_old/old/community/meeting/notes/2021-10-05/Podman-Rootless-Networking.pdf)
 
 * Use `--network=host`. No network namespace is created. The container will use the host’s network.
   Note: By using `--network=host`, the container is given full access to local system services such as D-bus and is therefore considered insecure.
+
+Side note: Pasta is faster than the network driver [slirp4netns](https://github.com/containers/podman/blob/main/docs/tutorials/basic_networking.md#slirp4netns).
+Pasta is the default network driver since Podman 5.0.0.
+
+Since Podman 5.1.0 the default network driver can be shown with
+
+```
+$ podman info -f '{{.Host.RootlessNetworkCmd}}'
+pasta
+```
 
 ### Lazy pulling of container images
 

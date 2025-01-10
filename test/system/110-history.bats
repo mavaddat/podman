@@ -2,6 +2,7 @@
 
 load helpers
 
+# bats test_tags=ci:parallel
 @test "podman history - basic tests" {
     tests="
                                  | .*[0-9a-f]\\\{12\\\} .* CMD .* LABEL
@@ -11,27 +12,38 @@ load helpers
 --no-trunc                       | .*[0-9a-f]\\\{64\\\}
 "
 
-    parse_table "$tests" | while read options expect; do
+    defer-assertion-failures
+
+    while read options expect; do
         if [ "$options" = "''" ]; then options=; fi
 
         eval set -- "$options"
 
         run_podman history "$@" $IMAGE
         is "$output" "$expect" "podman history $options"
-    done
+    done < <(parse_table "$tests")
 }
 
+# bats test_tags=ci:parallel
 @test "podman history - custom format" {
-    run_podman history --format "{{.ID}}\t{{.ID}}" $IMAGE
-    od -c <<<$output
-    while IFS= read -r row; do
-        is "$row" ".*	.*$"
-    done <<<$output
+    run_podman history --format "--{{.ID}}--{{.Created}}--{{.CreatedBy}}--" $IMAGE
 
+    defer-assertion-failures
+
+    for i in $(seq 1 "${#lines[*]}"); do
+        # most layer IDs are "<missing>" but at least one should be a SHA
+        assert "${lines[$((i-1))]}" =~ "^--([0-9a-f]+|<missing>)--.* ago--/bin/sh -c.*" \
+               "history line $i"
+    done
+
+    # Normally this should be "[$IMAGE]" (bracket IMAGE bracket).
+    # When run in parallel with other tests, the image may have
+    # other tags.
     run_podman history --format "{{.Tags}}" $IMAGE
-    is "$output" "\[$IMAGE\].*" "podman history sets tags"
+    assert "${lines[0]}" =~ "( |\[)$IMAGE(\]| )" "podman history tags"
 }
 
+# bats test_tags=ci:parallel
 @test "podman history - json" {
     # Sigh. Timestamp in .created can be '...Z' or '...-06:00'
     tests="
@@ -42,7 +54,9 @@ size      | -\\\?[0-9]\\\+
 
     run_podman history --format json $IMAGE
 
-    parse_table "$tests" | while read field expect; do
+    defer-assertion-failures
+
+    while read field expect; do
         # HACK: we can't include '|' in the table
         if [ "$field" = "id" ]; then expect="$expect\|<missing>";fi
 
@@ -54,10 +68,10 @@ size      | -\\\?[0-9]\\\+
             is "$actual" "$expect\$" "jq .[$i].$field"
             i=$(expr $i + 1)
         done
-    done
-
+    done < <(parse_table "$tests")
 }
 
+# bats test_tags=ci:parallel
 @test "podman image history Created" {
     # Values from image LIST
     run_podman image list --format '{{.CreatedSince}}\n{{.CreatedAt}}' $IMAGE

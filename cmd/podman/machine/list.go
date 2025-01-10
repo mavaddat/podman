@@ -1,5 +1,4 @@
 //go:build amd64 || arm64
-// +build amd64 arm64
 
 package machine
 
@@ -8,26 +7,31 @@ import (
 	"os"
 	"sort"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/containers/common/pkg/completion"
 	"github.com/containers/common/pkg/config"
 	"github.com/containers/common/pkg/report"
-	"github.com/containers/podman/v4/cmd/podman/common"
-	"github.com/containers/podman/v4/cmd/podman/registry"
-	"github.com/containers/podman/v4/cmd/podman/validate"
-	"github.com/containers/podman/v4/pkg/domain/entities"
-	"github.com/containers/podman/v4/pkg/machine"
+	"github.com/containers/podman/v5/cmd/podman/common"
+	"github.com/containers/podman/v5/cmd/podman/registry"
+	"github.com/containers/podman/v5/cmd/podman/validate"
+	"github.com/containers/podman/v5/pkg/domain/entities"
+	"github.com/containers/podman/v5/pkg/machine"
+	provider2 "github.com/containers/podman/v5/pkg/machine/provider"
+	"github.com/containers/podman/v5/pkg/machine/shim"
+	"github.com/containers/podman/v5/pkg/machine/vmconfigs"
 	"github.com/docker/go-units"
 	"github.com/spf13/cobra"
 )
 
 var (
 	lsCmd = &cobra.Command{
-		Use:               "list [options]",
-		Aliases:           []string{"ls"},
-		Short:             "List machines",
-		Long:              "List managed virtual machines.",
+		Use:     "list [options]",
+		Aliases: []string{"ls"},
+		Short:   "List machines",
+		Long:    "List managed virtual machines.",
+		// do not use machinePreRunE, as that pre-sets the provider
 		PersistentPreRunE: rootlessOnly,
 		RunE:              list,
 		Args:              validate.NoArgs,
@@ -40,9 +44,10 @@ var (
 )
 
 type listFlagType struct {
-	format    string
-	noHeading bool
-	quiet     bool
+	format       string
+	noHeading    bool
+	quiet        bool
+	allProviders bool
 }
 
 func init() {
@@ -57,22 +62,28 @@ func init() {
 	_ = lsCmd.RegisterFlagCompletionFunc(formatFlagName, common.AutocompleteFormat(&entities.ListReporter{}))
 	flags.BoolVarP(&listFlag.noHeading, "noheading", "n", false, "Do not print headers")
 	flags.BoolVarP(&listFlag.quiet, "quiet", "q", false, "Show only machine names")
+	flags.BoolVar(&listFlag.allProviders, "all-providers", false, "Show machines from all providers")
 }
 
 func list(cmd *cobra.Command, args []string) error {
 	var (
-		opts         machine.ListOptions
-		listResponse []*machine.ListResponse
-		err          error
+		opts machine.ListOptions
+		err  error
 	)
+	var providers []vmconfigs.VMProvider
+	if listFlag.allProviders {
+		providers = provider2.GetAll()
+	} else {
+		provider, err = provider2.Get()
+		if err != nil {
+			return err
+		}
+		providers = []vmconfigs.VMProvider{provider}
+	}
 
-	provider, err := GetSystemProvider()
+	listResponse, err := shim.List(providers, opts)
 	if err != nil {
 		return err
-	}
-	listResponse, err = provider.List(opts)
-	if err != nil {
-		return fmt.Errorf("listing vms: %w", err)
 	}
 
 	// Sort by last run
@@ -84,12 +95,11 @@ func list(cmd *cobra.Command, args []string) error {
 		return listResponse[i].Running
 	})
 
-	if report.IsJSON(listFlag.format) {
-		machineReporter, err := toMachineFormat(listResponse)
-		if err != nil {
-			return err
-		}
+	// ignore the error here we only want to know if we have a default connection to show it in list
+	defaultCon, _ := registry.PodmanConfig().ContainersConfDefaultsRO.GetConnection("", true)
 
+	if report.IsJSON(listFlag.format) {
+		machineReporter := toMachineFormat(listResponse, defaultCon)
 		b, err := json.MarshalIndent(machineReporter, "", "    ")
 		if err != nil {
 			return err
@@ -98,11 +108,7 @@ func list(cmd *cobra.Command, args []string) error {
 		return nil
 	}
 
-	machineReporter, err := toHumanFormat(listResponse)
-	if err != nil {
-		return err
-	}
-
+	machineReporter := toHumanFormat(listResponse, defaultCon)
 	return outputTemplate(cmd, machineReporter)
 }
 
@@ -158,16 +164,16 @@ func streamName(imageStream string) string {
 	return imageStream
 }
 
-func toMachineFormat(vms []*machine.ListResponse) ([]*entities.ListReporter, error) {
-	cfg, err := config.ReadCustomConfig()
-	if err != nil {
-		return nil, err
-	}
-
+func toMachineFormat(vms []*machine.ListResponse, defaultCon *config.Connection) []*entities.ListReporter {
 	machineResponses := make([]*entities.ListReporter, 0, len(vms))
 	for _, vm := range vms {
+		isDefault := false
+		// check port, in case we somehow have machines with the same name in different providers
+		if defaultCon != nil {
+			isDefault = vm.Name == defaultCon.Name && strings.Contains(defaultCon.URI, strconv.Itoa((vm.Port)))
+		}
 		response := new(entities.ListReporter)
-		response.Default = vm.Name == cfg.Engine.ActiveService
+		response.Default = isDefault
 		response.Name = vm.Name
 		response.Running = vm.Running
 		response.LastUp = strTime(vm.LastUp)
@@ -175,8 +181,8 @@ func toMachineFormat(vms []*machine.ListResponse) ([]*entities.ListReporter, err
 		response.Stream = streamName(vm.Stream)
 		response.VMType = vm.VMType
 		response.CPUs = vm.CPUs
-		response.Memory = strUint(vm.Memory)
-		response.DiskSize = strUint(vm.DiskSize)
+		response.Memory = strUint(uint64(vm.Memory.ToBytes()))
+		response.DiskSize = strUint(uint64(vm.DiskSize.ToBytes()))
 		response.Port = vm.Port
 		response.RemoteUsername = vm.RemoteUsername
 		response.IdentityPath = vm.IdentityPath
@@ -185,41 +191,43 @@ func toMachineFormat(vms []*machine.ListResponse) ([]*entities.ListReporter, err
 
 		machineResponses = append(machineResponses, response)
 	}
-	return machineResponses, nil
+	return machineResponses
 }
 
-func toHumanFormat(vms []*machine.ListResponse) ([]*entities.ListReporter, error) {
-	cfg, err := config.ReadCustomConfig()
-	if err != nil {
-		return nil, err
-	}
-
+func toHumanFormat(vms []*machine.ListResponse, defaultCon *config.Connection) []*entities.ListReporter {
 	humanResponses := make([]*entities.ListReporter, 0, len(vms))
 	for _, vm := range vms {
 		response := new(entities.ListReporter)
-		if vm.Name == cfg.Engine.ActiveService {
+		isDefault := false
+		// check port, in case we somehow have machines with the same name in different providers
+		if defaultCon != nil {
+			isDefault = vm.Name == defaultCon.Name && strings.Contains(defaultCon.URI, strconv.Itoa((vm.Port)))
+		}
+		if isDefault {
 			response.Name = vm.Name + "*"
 			response.Default = true
 		} else {
 			response.Name = vm.Name
 		}
 		switch {
-		case vm.Running:
-			response.LastUp = "Currently running"
-			response.Running = true
 		case vm.Starting:
 			response.LastUp = "Currently starting"
 			response.Starting = true
+		case vm.Running:
+			response.LastUp = "Currently running"
+			response.Running = true
+		case vm.LastUp.IsZero():
+			response.LastUp = "Never"
 		default:
 			response.LastUp = units.HumanDuration(time.Since(vm.LastUp)) + " ago"
 		}
 		response.Created = units.HumanDuration(time.Since(vm.CreatedAt)) + " ago"
 		response.VMType = vm.VMType
 		response.CPUs = vm.CPUs
-		response.Memory = units.HumanSize(float64(vm.Memory))
-		response.DiskSize = units.HumanSize(float64(vm.DiskSize))
+		response.Memory = units.BytesSize(float64(vm.Memory.ToBytes()))
+		response.DiskSize = units.BytesSize(float64(vm.DiskSize.ToBytes()))
 
 		humanResponses = append(humanResponses, response)
 	}
-	return humanResponses, nil
+	return humanResponses
 }

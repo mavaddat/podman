@@ -1,3 +1,5 @@
+//go:build !remote
+
 package compat
 
 import (
@@ -7,26 +9,25 @@ import (
 	"strings"
 	"time"
 
-	"github.com/containers/podman/v4/libpod"
-	"github.com/containers/podman/v4/pkg/api/handlers"
-	"github.com/containers/podman/v4/pkg/api/handlers/utils"
-	api "github.com/containers/podman/v4/pkg/api/types"
-	"github.com/gorilla/schema"
+	"github.com/containers/podman/v5/libpod"
+	"github.com/containers/podman/v5/pkg/api/handlers"
+	"github.com/containers/podman/v5/pkg/api/handlers/utils"
+	api "github.com/containers/podman/v5/pkg/api/types"
 	"github.com/sirupsen/logrus"
 )
 
 func TopContainer(w http.ResponseWriter, r *http.Request) {
 	runtime := r.Context().Value(api.RuntimeKey).(*libpod.Runtime)
-	decoder := r.Context().Value(api.DecoderKey).(*schema.Decoder)
+	decoder := utils.GetDecoder(r)
 
-	psArgs := "-ef"
-	if utils.IsLibpodRequest(r) {
-		psArgs = ""
+	var psArgs []string
+	if !utils.IsLibpodRequest(r) {
+		psArgs = []string{"-ef"}
 	}
 	query := struct {
-		Delay  int    `schema:"delay"`
-		PsArgs string `schema:"ps_args"`
-		Stream bool   `schema:"stream"`
+		Delay  int      `schema:"delay"`
+		PsArgs []string `schema:"ps_args"`
+		Stream bool     `schema:"stream"`
 	}{
 		Delay:  5,
 		PsArgs: psArgs,
@@ -48,14 +49,19 @@ func TopContainer(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// We are committed now - all errors logged but not reported to client, ship has sailed
-	w.WriteHeader(http.StatusOK)
+	statusWritten := false
 	w.Header().Set("Content-Type", "application/json")
-	if f, ok := w.(http.Flusher); ok {
-		f.Flush()
-	}
 
 	encoder := json.NewEncoder(w)
+
+	args := query.PsArgs
+	if len(args) == 1 &&
+		utils.IsLibpodRequest(r) {
+		if _, err := utils.SupportedVersion(r, "< 4.8.0"); err == nil {
+			// Ugly workaround for older clients which used to send arguments comma separated.
+			args = strings.Split(args[0], ",")
+		}
+	}
 
 loop: // break out of for/select infinite` loop
 	for {
@@ -63,9 +69,13 @@ loop: // break out of for/select infinite` loop
 		case <-r.Context().Done():
 			break loop
 		default:
-			output, err := c.Top(strings.Split(query.PsArgs, ","))
+			output, err := c.Top(args)
 			if err != nil {
-				logrus.Infof("Error from %s %q : %v", r.Method, r.URL, err)
+				if !statusWritten {
+					utils.InternalServerError(w, err)
+				} else {
+					logrus.Errorf("From %s %q : %v", r.Method, r.URL, err)
+				}
 				break loop
 			}
 
@@ -78,17 +88,34 @@ loop: // break out of for/select infinite` loop
 				}
 
 				for _, line := range output[1:] {
-					process := strings.Split(line, "\t")
-					for i := range process {
-						process[i] = strings.TrimSpace(process[i])
+					process := strings.FieldsFunc(line, func(r rune) bool {
+						return r == ' ' || r == '\t'
+					})
+					if len(process) > len(body.Titles) {
+						// Docker assumes the last entry is *always* command
+						// Which can include spaces.
+						// All other descriptors are assumed to NOT include extra spaces.
+						// So combine any extras.
+						cmd := strings.Join(process[len(body.Titles)-1:], " ")
+						var finalProc []string
+						finalProc = append(finalProc, process[:len(body.Titles)-1]...)
+						finalProc = append(finalProc, cmd)
+						body.Processes = append(body.Processes, finalProc)
+					} else {
+						body.Processes = append(body.Processes, process)
 					}
-					body.Processes = append(body.Processes, process)
 				}
 
 				if err := encoder.Encode(body); err != nil {
-					logrus.Infof("Error from %s %q : %v", r.Method, r.URL, err)
+					if !statusWritten {
+						utils.InternalServerError(w, err)
+					} else {
+						logrus.Errorf("From %s %q : %v", r.Method, r.URL, err)
+					}
 					break loop
 				}
+				// after the first write we can no longer send a different status code
+				statusWritten = true
 				if f, ok := w.(http.Flusher); ok {
 					f.Flush()
 				}

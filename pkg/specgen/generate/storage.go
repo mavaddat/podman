@@ -1,10 +1,12 @@
+//go:build !remote
+
 package generate
 
 import (
 	"context"
 	"errors"
 	"fmt"
-	"os"
+	"io/fs"
 	"path"
 	"path/filepath"
 	"strings"
@@ -12,10 +14,11 @@ import (
 	"github.com/containers/common/libimage"
 	"github.com/containers/common/pkg/config"
 	"github.com/containers/common/pkg/parse"
-	"github.com/containers/podman/v4/libpod"
-	"github.com/containers/podman/v4/libpod/define"
-	"github.com/containers/podman/v4/pkg/specgen"
-	"github.com/containers/podman/v4/pkg/util"
+	"github.com/containers/podman/v5/libpod"
+	"github.com/containers/podman/v5/libpod/define"
+	"github.com/containers/podman/v5/pkg/specgen"
+	"github.com/containers/podman/v5/pkg/util"
+	"github.com/containers/storage/pkg/fileutils"
 	spec "github.com/opencontainers/runtime-spec/specs-go"
 	"github.com/sirupsen/logrus"
 )
@@ -37,9 +40,16 @@ func finalizeMounts(ctx context.Context, s *specgen.SpecGenerator, rt *libpod.Ru
 	// Supersede from --volumes-from.
 	for dest, mount := range volFromMounts {
 		baseMounts[dest] = mount
+
+		// Necessary to ensure that mounts override image volumes
+		// Ref: https://github.com/containers/podman/issues/19529
+		delete(baseVolumes, dest)
 	}
 	for dest, volume := range volFromVolumes {
 		baseVolumes[dest] = volume
+
+		// I don't think this can happen, but best to be safe.
+		delete(baseMounts, dest)
 	}
 
 	// Need to make map forms of specgen mounts/volumes.
@@ -119,10 +129,13 @@ func finalizeMounts(ctx context.Context, s *specgen.SpecGenerator, rt *libpod.Ru
 	}
 
 	// If requested, add container init binary
-	if s.Init {
+	if s.Init != nil && *s.Init {
 		initPath := s.InitPath
-		if initPath == "" && rtc != nil {
-			initPath = rtc.Engine.InitPath
+		if initPath == "" {
+			initPath, err = rtc.FindInitBinary()
+			if err != nil {
+				return nil, nil, nil, fmt.Errorf("lookup init binary: %w", err)
+			}
 		}
 		initMount, err := addContainerInitBinary(s, initPath)
 		if err != nil {
@@ -144,6 +157,12 @@ func finalizeMounts(ctx context.Context, s *specgen.SpecGenerator, rt *libpod.Ru
 		delete(baseMounts, dest)
 	}
 
+	// Overlays are neither mounts nor volumes but should supersede both.
+	for dest := range unifiedOverlays {
+		delete(baseVolumes, dest)
+		delete(baseMounts, dest)
+	}
+
 	// Supersede volumes-from/image volumes with unified volumes from above.
 	// This is an unconditional replacement.
 	for dest, mount := range unifiedMounts {
@@ -156,20 +175,30 @@ func finalizeMounts(ctx context.Context, s *specgen.SpecGenerator, rt *libpod.Ru
 	// TODO: Investigate moving readonlyTmpfs into here. Would be more
 	// correct.
 
-	// Check for conflicts between named volumes and mounts
+	// Check for conflicts between named volumes, mounts, and overlays
 	for dest := range baseMounts {
 		if _, ok := baseVolumes[dest]; ok {
 			return nil, nil, nil, fmt.Errorf("baseMounts conflict at mount destination %v: %w", dest, specgen.ErrDuplicateDest)
+		}
+		if _, ok := unifiedOverlays[dest]; ok {
+			return nil, nil, nil, fmt.Errorf("baseMounts conflict with overlay mount at mount destination %v: %w", dest, specgen.ErrDuplicateDest)
 		}
 	}
 	for dest := range baseVolumes {
 		if _, ok := baseMounts[dest]; ok {
 			return nil, nil, nil, fmt.Errorf("baseVolumes conflict at mount destination %v: %w", dest, specgen.ErrDuplicateDest)
 		}
+		if _, ok := unifiedOverlays[dest]; ok {
+			return nil, nil, nil, fmt.Errorf("baseVolumes conflict with overlay mount at mount destination %v: %w", dest, specgen.ErrDuplicateDest)
+		}
 	}
 
-	if s.ReadWriteTmpfs {
-		baseMounts = addReadWriteTmpfsMounts(baseMounts, s.Volumes)
+	if s.ReadWriteTmpfs != nil && *s.ReadWriteTmpfs {
+		runPath, err := imageRunPath(ctx, img)
+		if err != nil {
+			return nil, nil, nil, err
+		}
+		baseMounts = addReadWriteTmpfsMounts(baseMounts, s.Volumes, runPath)
 	}
 
 	// Final step: maps to arrays
@@ -224,7 +253,7 @@ func getImageVolumes(ctx context.Context, img *libimage.Image, s *specgen.SpecGe
 			newVol.Options = []string{"rprivate", "rw", "nodev", "exec"}
 			volumes[cleanDest] = newVol
 			logrus.Debugf("Adding anonymous image volume at %q", cleanDest)
-		case "tmpfs":
+		case define.TypeTmpfs:
 			mount := spec.Mount{
 				Destination: cleanDest,
 				Source:      define.TypeTmpfs,
@@ -246,9 +275,9 @@ func getVolumesFrom(volumesFrom []string, runtime *libpod.Runtime) (map[string]s
 	for _, volume := range volumesFrom {
 		var options []string
 
-		splitVol := strings.SplitN(volume, ":", 2)
-		if len(splitVol) == 2 {
-			splitOpts := strings.Split(splitVol[1], ",")
+		idOrName, volOpts, hasVolOpts := strings.Cut(volume, ":")
+		if hasVolOpts {
+			splitOpts := strings.Split(volOpts, ",")
 			setRORW := false
 			setZ := false
 			for _, opt := range splitOpts {
@@ -270,9 +299,9 @@ func getVolumesFrom(volumesFrom []string, runtime *libpod.Runtime) (map[string]s
 			options = splitOpts
 		}
 
-		ctr, err := runtime.LookupContainer(splitVol[0])
+		ctr, err := runtime.LookupContainer(idOrName)
 		if err != nil {
-			return nil, nil, fmt.Errorf("looking up container %q for volumes-from: %w", splitVol[0], err)
+			return nil, nil, fmt.Errorf("looking up container %q for volumes-from: %w", idOrName, err)
 		}
 
 		logrus.Debugf("Adding volumes from container %s", ctr.ID())
@@ -363,7 +392,7 @@ func addContainerInitBinary(s *specgen.SpecGenerator, path string) (spec.Mount, 
 		Destination: define.ContainerInitPath,
 		Type:        define.TypeBind,
 		Source:      path,
-		Options:     []string{define.TypeBind, "ro"},
+		Options:     append(define.BindOptions, "ro"),
 	}
 
 	if path == "" {
@@ -375,7 +404,7 @@ func addContainerInitBinary(s *specgen.SpecGenerator, path string) (spec.Mount, 
 	if s.Systemd == "always" {
 		return mount, errors.New("cannot use container-init binary with systemd=always")
 	}
-	if _, err := os.Stat(path); os.IsNotExist(err) {
+	if err := fileutils.Exists(path); errors.Is(err, fs.ErrNotExist) {
 		return mount, fmt.Errorf("container-init binary not found on the host: %w", err)
 	}
 	return mount, nil
@@ -433,8 +462,8 @@ func InitFSMounts(mounts []spec.Mount) error {
 	return nil
 }
 
-func addReadWriteTmpfsMounts(mounts map[string]spec.Mount, volumes []*specgen.NamedVolume) map[string]spec.Mount {
-	readonlyTmpfs := []string{"/tmp", "/var/tmp", "/run"}
+func addReadWriteTmpfsMounts(mounts map[string]spec.Mount, volumes []*specgen.NamedVolume, runPath string) map[string]spec.Mount {
+	readonlyTmpfs := []string{"/tmp", "/var/tmp", runPath}
 	options := []string{"rw", "rprivate", "nosuid", "nodev", "tmpcopyup"}
 	for _, dest := range readonlyTmpfs {
 		if _, ok := mounts[dest]; ok {
@@ -450,9 +479,6 @@ func addReadWriteTmpfsMounts(mounts map[string]spec.Mount, volumes []*specgen.Na
 			Type:        define.TypeTmpfs,
 			Source:      define.TypeTmpfs,
 			Options:     options,
-		}
-		if dest != "/run" {
-			mnt.Options = append(mnt.Options, "noexec")
 		}
 		mounts[dest] = mnt
 	}

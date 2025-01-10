@@ -9,6 +9,7 @@ import (
 	"os/exec"
 	"runtime"
 	"strings"
+	"syscall"
 	"time"
 
 	crypto_rand "crypto/rand"
@@ -18,7 +19,6 @@ import (
 
 	"github.com/sirupsen/logrus"
 
-	"github.com/containers/storage/pkg/parsers/kernel"
 	. "github.com/onsi/ginkgo/v2"    //nolint:revive,stylecheck
 	. "github.com/onsi/gomega"       //nolint:revive,stylecheck
 	. "github.com/onsi/gomega/gexec" //nolint:revive,stylecheck
@@ -225,13 +225,13 @@ func (p *PodmanTest) WaitContainerReady(id string, expStr string, timeout int, s
 	s.WaitWithDefaultTimeout()
 
 	for {
+		if strings.Contains(s.OutputToString(), expStr) || strings.Contains(s.ErrorToString(), expStr) {
+			return true
+		}
+
 		if time.Since(startTime) >= time.Duration(timeout)*time.Second {
 			GinkgoWriter.Printf("Container %s is not ready in %ds", id, timeout)
 			return false
-		}
-
-		if strings.Contains(s.OutputToString(), expStr) || strings.Contains(s.ErrorToString(), expStr) {
-			return true
 		}
 		time.Sleep(time.Duration(step) * time.Second)
 		s = p.PodmanBase([]string{"logs", id}, false, true)
@@ -244,7 +244,7 @@ func WaitForContainer(p PodmanTestCommon) bool {
 	return p.WaitForContainer()
 }
 
-// WaitForContainerReady is a wrapper function for accept inheritance PodmanTest struct.
+// WaitContainerReady is a wrapper function for accept inheritance PodmanTest struct.
 func WaitContainerReady(p PodmanTestCommon, id string, expStr string, timeout int, step int) bool {
 	return p.WaitContainerReady(id, expStr, timeout, step)
 }
@@ -368,17 +368,18 @@ func (s *PodmanSession) WaitWithDefaultTimeout() {
 // WaitWithTimeout waits for process finished with DefaultWaitTimeout
 func (s *PodmanSession) WaitWithTimeout(timeout int) {
 	Eventually(s, timeout).Should(Exit(), func() string {
-		// in case of timeouts show output
-		return fmt.Sprintf("command timed out after %ds: %v\nSTDOUT: %s\nSTDERR: %s",
-			timeout, s.Command.Args, string(s.Out.Contents()), string(s.Err.Contents()))
+		// Note eventually does not kill the command as such the command is leaked forever without killing it
+		// Also let's use SIGABRT to create a go stack trace so in case there is a deadlock we see it.
+		s.Signal(syscall.SIGABRT)
+		// Give some time to let the command print the output so it is not printed much later
+		// in the log at the wrong place.
+		time.Sleep(1 * time.Second)
+		// As the output is logged by default there no need to dump it here.
+		return fmt.Sprintf("command timed out after %ds: %v",
+			timeout, s.Command.Args)
 	})
 	os.Stdout.Sync()
 	os.Stderr.Sync()
-}
-
-// CreateTempDirInTempDir create a temp dir with prefix podman_test
-func CreateTempDirInTempDir() (string, error) {
-	return os.MkdirTemp("", "podman_test")
 }
 
 // SystemExec is used to exec a system command to check its exit code or output
@@ -402,16 +403,6 @@ func StartSystemExec(command string, args []string) *PodmanSession {
 		Fail(fmt.Sprintf("unable to run command: %s %s", command, strings.Join(args, " ")))
 	}
 	return &PodmanSession{session}
-}
-
-// StringInSlice determines if a string is in a string slice, returns bool
-func StringInSlice(s string, sl []string) bool {
-	for _, i := range sl {
-		if i == s {
-			return true
-		}
-	}
-	return false
 }
 
 // tagOutPutToMap parses each string in imagesOutput and returns
@@ -461,27 +452,6 @@ func GetHostDistributionInfo() HostOS {
 		}
 	}
 	return host
-}
-
-// IsKernelNewerThan compares the current kernel version to one provided.  If
-// the kernel is equal to or greater, returns true
-func IsKernelNewerThan(version string) (bool, error) {
-	inputVersion, err := kernel.ParseRelease(version)
-	if err != nil {
-		return false, err
-	}
-	kv, err := kernel.GetKernelVersion()
-	if err != nil {
-		return false, err
-	}
-
-	// CompareKernelVersion compares two kernel.VersionInfo structs.
-	// Returns -1 if a < b, 0 if a == b, 1 it a > b
-	result := kernel.CompareKernelVersion(*kv, *inputVersion)
-	if result >= 0 {
-		return true, nil
-	}
-	return false, nil
 }
 
 // IsCommandAvailable check if command exist

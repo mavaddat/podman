@@ -1,3 +1,5 @@
+//go:build !remote
+
 package libpod
 
 import (
@@ -8,13 +10,13 @@ import (
 	"strings"
 
 	"github.com/containers/image/v5/types"
-	"github.com/containers/podman/v4/libpod"
-	"github.com/containers/podman/v4/pkg/api/handlers/utils"
-	api "github.com/containers/podman/v4/pkg/api/types"
-	"github.com/containers/podman/v4/pkg/auth"
-	"github.com/containers/podman/v4/pkg/channel"
-	"github.com/containers/podman/v4/pkg/domain/entities"
-	"github.com/containers/podman/v4/pkg/domain/infra/abi"
+	"github.com/containers/podman/v5/libpod"
+	"github.com/containers/podman/v5/pkg/api/handlers/utils"
+	api "github.com/containers/podman/v5/pkg/api/types"
+	"github.com/containers/podman/v5/pkg/auth"
+	"github.com/containers/podman/v5/pkg/channel"
+	"github.com/containers/podman/v5/pkg/domain/entities"
+	"github.com/containers/podman/v5/pkg/domain/infra/abi"
 	"github.com/gorilla/schema"
 	"github.com/sirupsen/logrus"
 )
@@ -25,13 +27,17 @@ func PushImage(w http.ResponseWriter, r *http.Request) {
 	runtime := r.Context().Value(api.RuntimeKey).(*libpod.Runtime)
 
 	query := struct {
-		All               bool   `schema:"all"`
-		CompressionFormat string `schema:"compressionFormat"`
-		Destination       string `schema:"destination"`
-		Format            string `schema:"format"`
-		RemoveSignatures  bool   `schema:"removeSignatures"`
-		TLSVerify         bool   `schema:"tlsVerify"`
-		Quiet             bool   `schema:"quiet"`
+		All                    bool   `schema:"all"`
+		CompressionFormat      string `schema:"compressionFormat"`
+		CompressionLevel       *int   `schema:"compressionLevel"`
+		ForceCompressionFormat bool   `schema:"forceCompressionFormat"`
+		Destination            string `schema:"destination"`
+		Format                 string `schema:"format"`
+		RemoveSignatures       bool   `schema:"removeSignatures"`
+		Retry                  uint   `schema:"retry"`
+		RetryDelay             string `schema:"retryDelay"`
+		TLSVerify              bool   `schema:"tlsVerify"`
+		Quiet                  bool   `schema:"quiet"`
 	}{
 		TLSVerify: true,
 		// #14971: older versions did not sent *any* data, so we need
@@ -72,14 +78,29 @@ func PushImage(w http.ResponseWriter, r *http.Request) {
 		password = authconf.Password
 	}
 	options := entities.ImagePushOptions{
-		All:               query.All,
-		Authfile:          authfile,
-		CompressionFormat: query.CompressionFormat,
-		Format:            query.Format,
-		Password:          password,
-		Quiet:             true,
-		RemoveSignatures:  query.RemoveSignatures,
-		Username:          username,
+		All:                    query.All,
+		Authfile:               authfile,
+		CompressionFormat:      query.CompressionFormat,
+		CompressionLevel:       query.CompressionLevel,
+		ForceCompressionFormat: query.ForceCompressionFormat,
+		Format:                 query.Format,
+		Password:               password,
+		Quiet:                  query.Quiet,
+		RemoveSignatures:       query.RemoveSignatures,
+		RetryDelay:             query.RetryDelay,
+		Username:               username,
+	}
+
+	if _, found := r.URL.Query()["retry"]; found {
+		options.Retry = &query.Retry
+	}
+
+	if _, found := r.URL.Query()["compressionFormat"]; found {
+		if _, foundForceCompression := r.URL.Query()["forceCompressionFormat"]; !foundForceCompression {
+			// If `compressionFormat` is set and no value for `forceCompressionFormat`
+			// is selected then default has to be `true`.
+			options.ForceCompressionFormat = true
+		}
 	}
 
 	if _, found := r.URL.Query()["tlsVerify"]; found {
@@ -138,9 +159,9 @@ func PushImage(w http.ResponseWriter, r *http.Request) {
 			}
 			if pushError != nil {
 				stream.Error = pushError.Error()
-				if err := enc.Encode(stream); err != nil {
-					logrus.Warnf("Failed to encode json: %v", err)
-				}
+			}
+			if err := enc.Encode(stream); err != nil {
+				logrus.Warnf("Failed to encode json: %v", err)
 			}
 			flush()
 			return

@@ -3,11 +3,10 @@ package specgen
 import (
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 
-	"github.com/containers/common/pkg/util"
-	"github.com/containers/podman/v4/libpod/define"
-	"github.com/containers/podman/v4/pkg/rootless"
+	"github.com/containers/podman/v5/libpod/define"
 )
 
 var (
@@ -15,10 +14,8 @@ var (
 	ErrInvalidSpecConfig = errors.New("invalid configuration")
 	// SystemDValues describes the only values that SystemD can be
 	SystemDValues = []string{"true", "false", "always"}
-	// SdNotifyModeValues describes the only values that SdNotifyMode can be
-	SdNotifyModeValues = []string{define.SdNotifyModeContainer, define.SdNotifyModeConmon, define.SdNotifyModeIgnore}
 	// ImageVolumeModeValues describes the only values that ImageVolumeMode can be
-	ImageVolumeModeValues = []string{"ignore", "tmpfs", "anonymous"}
+	ImageVolumeModeValues = []string{"ignore", define.TypeTmpfs, "anonymous"}
 )
 
 func exclusiveOptions(opt1, opt2 string) error {
@@ -34,7 +31,7 @@ func (s *SpecGenerator) Validate() error {
 		if len(s.Networks) > 0 {
 			return fmt.Errorf("networks must be defined when the pod is created: %w", define.ErrNetworkOnPodContainer)
 		}
-		if len(s.PortMappings) > 0 || s.PublishExposedPorts {
+		if len(s.PortMappings) > 0 || (s.PublishExposedPorts != nil && *s.PublishExposedPorts) {
 			return fmt.Errorf("published or exposed ports must be defined when the pod is created: %w", define.ErrNetworkOnPodContainer)
 		}
 		if len(s.HostAdd) > 0 {
@@ -62,7 +59,7 @@ func (s *SpecGenerator) Validate() error {
 		return fmt.Errorf("cannot set hostname when running in the host UTS namespace: %w", ErrInvalidSpecConfig)
 	}
 	// systemd values must be true, false, or always
-	if len(s.ContainerBasicConfig.Systemd) > 0 && !util.StringInSlice(strings.ToLower(s.ContainerBasicConfig.Systemd), SystemDValues) {
+	if len(s.ContainerBasicConfig.Systemd) > 0 && !slices.Contains(SystemDValues, strings.ToLower(s.ContainerBasicConfig.Systemd)) {
 		return fmt.Errorf("--systemd values must be one of %q: %w", strings.Join(SystemDValues, ", "), ErrInvalidSpecConfig)
 	}
 
@@ -78,7 +75,7 @@ func (s *SpecGenerator) Validate() error {
 		return exclusiveOptions("rootfs", "image")
 	}
 	// imagevolumemode must be one of ignore, tmpfs, or anonymous if given
-	if len(s.ContainerStorageConfig.ImageVolumeMode) > 0 && !util.StringInSlice(strings.ToLower(s.ContainerStorageConfig.ImageVolumeMode), ImageVolumeModeValues) {
+	if len(s.ContainerStorageConfig.ImageVolumeMode) > 0 && !slices.Contains(ImageVolumeModeValues, strings.ToLower(s.ContainerStorageConfig.ImageVolumeMode)) {
 		return fmt.Errorf("invalid ImageVolumeMode %q, value must be one of %s",
 			s.ContainerStorageConfig.ImageVolumeMode, strings.Join(ImageVolumeModeValues, ","))
 	}
@@ -105,7 +102,7 @@ func (s *SpecGenerator) Validate() error {
 	// ContainerNetworkConfig
 	//
 	// useimageresolveconf conflicts with dnsserver, dnssearch, dnsoption
-	if s.UseImageResolvConf {
+	if s.UseImageResolvConf != nil && *s.UseImageResolvConf {
 		if len(s.DNSServers) > 0 {
 			return exclusiveOptions("UseImageResolvConf", "DNSServer")
 		}
@@ -117,7 +114,7 @@ func (s *SpecGenerator) Validate() error {
 		}
 	}
 	// UseImageHosts and HostAdd are exclusive
-	if s.UseImageHosts && len(s.HostAdd) > 0 {
+	if (s.UseImageHosts != nil && *s.UseImageHosts) && len(s.HostAdd) > 0 {
 		return exclusiveOptions("UseImageHosts", "HostAdd")
 	}
 
@@ -150,15 +147,6 @@ func (s *SpecGenerator) Validate() error {
 		return err
 	}
 
-	// Set defaults if network info is not provided
-	// when we are rootless we default to slirp4netns
-	if s.NetNS.IsPrivate() || s.NetNS.IsDefault() {
-		if rootless.IsRootless() {
-			s.NetNS.NSMode = Slirp
-		} else {
-			s.NetNS.NSMode = Bridge
-		}
-	}
 	if err := validateNetNS(&s.NetNS); err != nil {
 		return err
 	}

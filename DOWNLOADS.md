@@ -40,25 +40,15 @@ matches corresponding changes in the artifacts task.
   , and
   [rootlessport](https://api.cirrus-ci.com/v1/artifact/github/containers/podman/Artifacts/binary/rootlessport) -
   Built on the latest supported Fedora release.
-* MacOS,
-  [both x86_64](https://api.cirrus-ci.com/v1/artifact/github/containers/podman/Artifacts/binary/podman-installer-macos-amd64.pkg)
-  and
-  [aarch64 (ARM)](https://api.cirrus-ci.com/v1/artifact/github/containers/podman/Artifacts/binary/podman-installer-macos-aarch64.pkg)
-  installation packages.  Again, these are **not** signed, so expect warnings. There's
-  also binary release *ZIP-files* for
+* MacOS
+  [universal](https://api.cirrus-ci.com/v1/artifact/github/containers/podman/Artifacts/binary/podman-installer-macos-universal.pkg)
+  ,
+  [x86_64](https://api.cirrus-ci.com/v1/artifact/github/containers/podman/Artifacts/binary/podman-installer-macos-amd64.pkg)
+  , and
+  [arm64](https://api.cirrus-ci.com/v1/artifact/github/containers/podman/Artifacts/binary/podman-installer-macos-arm64.pkg)
+  installation packages.  Again, these are **not** signed, so expect warnings if you try to install them.
+  There's also binary release *ZIP-files* for
   [darwin_amd64](https://api.cirrus-ci.com/v1/artifact/github/containers/podman/Artifacts/binary/podman-remote-release-darwin_amd64.zip)
   and
   [darwin_arm64](https://api.cirrus-ci.com/v1/artifact/github/containers/podman/Artifacts/binary/podman-remote-release-darwin_arm64.zip).
-  if you try to install them.
-* Windows [podman-remote](https://api.cirrus-ci.com/v1/artifact/github/containers/podman/Artifacts/binary/podman.msi)
-  for x86_64 only.
-* Other podman-remote release builds (includes configuration files & documentation):
-  * [podman-release-386.tar.gz](https://api.cirrus-ci.com/v1/artifact/github/containers/podman/Artifacts/binary/podman-release-386.tar.gz)
-  * [podman-release-arm.tar.gz](https://api.cirrus-ci.com/v1/artifact/github/containers/podman/Artifacts/binary/podman-release-arm.tar.gz)
-  * [podman-release-arm64.tar.gz](https://api.cirrus-ci.com/v1/artifact/github/containers/podman/Artifacts/binary/podman-release-arm64.tar.gz)
-  * [podman-release-mips.tar.gz](https://api.cirrus-ci.com/v1/artifact/github/containers/podman/Artifacts/binary/podman-release-mips.tar.gz)
-  * [podman-release-mips64.tar.gz](https://api.cirrus-ci.com/v1/artifact/github/containers/podman/Artifacts/binary/podman-release-mips64.tar.gz)
-  * [podman-release-mips64le.tar.gz](https://api.cirrus-ci.com/v1/artifact/github/containers/podman/Artifacts/binary/podman-release-mips64le.tar.gz)
-  * [podman-release-mipsle.tar.gz](https://api.cirrus-ci.com/v1/artifact/github/containers/podman/Artifacts/binary/podman-release-mipsle.tar.gz)
-  * [podman-release-ppc64le.tar.gz](https://api.cirrus-ci.com/v1/artifact/github/containers/podman/Artifacts/binary/podman-release-ppc64le.tar.gz)
-  * [podman-release-s390x.tar.gz](https://api.cirrus-ci.com/v1/artifact/github/containers/podman/Artifacts/binary/podman-release-s390x.tar.gz)
+* Windows [podman-remote](https://api.cirrus-ci.com/v1/artifact/github/containers/podman/Artifacts/binary/podman-remote-release-windows_amd64.zip) for x86_64 only.

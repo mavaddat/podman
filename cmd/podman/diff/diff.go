@@ -7,8 +7,8 @@ import (
 	"os"
 
 	"github.com/containers/common/pkg/report"
-	"github.com/containers/podman/v4/cmd/podman/registry"
-	"github.com/containers/podman/v4/pkg/domain/entities"
+	"github.com/containers/podman/v5/cmd/podman/registry"
+	"github.com/containers/podman/v5/pkg/domain/entities"
 	"github.com/containers/storage/pkg/archive"
 	"github.com/spf13/cobra"
 )
@@ -73,6 +73,9 @@ func ValidateContainerDiffArgs(cmd *cobra.Command, args []string) error {
 		return errors.New("--latest and containers cannot be used together")
 	}
 	if len(args) == 0 && !given {
+		if registry.IsRemote() {
+			return fmt.Errorf("%q requires a name or id", cmd.CommandPath())
+		}
 		return fmt.Errorf("%q requires a name, id, or the \"--latest\" flag", cmd.CommandPath())
 	}
 	return nil

@@ -1,3 +1,5 @@
+//go:build !remote
+
 package abi
 
 import (
@@ -7,13 +9,13 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/containers/podman/v4/libpod"
-	"github.com/containers/podman/v4/libpod/define"
-	"github.com/containers/podman/v4/pkg/domain/entities"
-	dfilters "github.com/containers/podman/v4/pkg/domain/filters"
-	"github.com/containers/podman/v4/pkg/signal"
-	"github.com/containers/podman/v4/pkg/specgen"
-	"github.com/containers/podman/v4/pkg/specgen/generate"
+	"github.com/containers/podman/v5/libpod"
+	"github.com/containers/podman/v5/libpod/define"
+	"github.com/containers/podman/v5/pkg/domain/entities"
+	dfilters "github.com/containers/podman/v5/pkg/domain/filters"
+	"github.com/containers/podman/v5/pkg/signal"
+	"github.com/containers/podman/v5/pkg/specgen"
+	"github.com/containers/podman/v5/pkg/specgen/generate"
 	"github.com/sirupsen/logrus"
 )
 
@@ -121,7 +123,7 @@ func (ic *ContainerEngine) PodLogs(ctx context.Context, nameOrID string, options
 	}
 
 	// PodLogsOptions are similar but contains few extra fields like ctrName
-	// So cast other values as is so we can re-use the code
+	// So cast other values as is so we can reuse the code
 	containerLogsOpts := entities.PodLogsOptionsToContainerLogsOptions(options)
 
 	return ic.ContainerLogs(ctx, ctrNames, containerLogsOpts)
@@ -194,7 +196,10 @@ func (ic *ContainerEngine) PodStop(ctx context.Context, namesOrIds []string, opt
 		return nil, err
 	}
 	for _, p := range pods {
-		report := entities.PodStopReport{Id: p.ID()}
+		report := entities.PodStopReport{
+			Id:       p.ID(),
+			RawInput: p.Name(),
+		}
 		errs, err := p.StopWithTimeout(ctx, true, options.Timeout)
 		if err != nil && !errors.Is(err, define.ErrPodPartialFail) {
 			report.Errs = []error{err}
@@ -247,7 +252,10 @@ func (ic *ContainerEngine) PodStart(ctx context.Context, namesOrIds []string, op
 	}
 
 	for _, p := range pods {
-		report := entities.PodStartReport{Id: p.ID()}
+		report := entities.PodStartReport{
+			Id:       p.ID(),
+			RawInput: p.Name(),
+		}
 		errs, err := p.Start(ctx)
 		if err != nil && !errors.Is(err, define.ErrPodPartialFail) {
 			report.Errs = []error{err}
@@ -274,10 +282,11 @@ func (ic *ContainerEngine) PodRm(ctx context.Context, namesOrIds []string, optio
 	reports := make([]*entities.PodRmReport, 0, len(pods))
 	for _, p := range pods {
 		report := entities.PodRmReport{Id: p.ID()}
-		err := ic.Libpod.RemovePod(ctx, p, true, options.Force, options.Timeout)
+		ctrs, err := ic.Libpod.RemovePod(ctx, p, true, options.Force, options.Timeout)
 		if err != nil {
 			report.Err = err
 		}
+		report.RemovedCtrs = ctrs
 		reports = append(reports, &report)
 	}
 	return reports, nil
@@ -376,8 +385,11 @@ func (ic *ContainerEngine) PodClone(ctx context.Context, podClone entities.PodCl
 
 	if podClone.Destroy {
 		var timeout *uint
-		err = ic.Libpod.RemovePod(ctx, p, true, true, timeout)
+		_, err = ic.Libpod.RemovePod(ctx, p, true, true, timeout)
 		if err != nil {
+			// TODO: Possibly should handle case where containers
+			// failed to remove - maybe compact the errors into a
+			// multierror and return that?
 			return &entities.PodCloneReport{Id: pod.ID()}, err
 		}
 	}

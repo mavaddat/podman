@@ -1,9 +1,11 @@
+//go:build linux || freebsd
+
 package integration
 
 import (
+	. "github.com/containers/podman/v5/test/utils"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
-	. "github.com/onsi/gomega/gexec"
 )
 
 var _ = Describe("Podman run entrypoint", func() {
@@ -16,7 +18,7 @@ CMD []
 		podmanTest.BuildImage(dockerfile, "foobar.com/entrypoint:latest", "false")
 		session := podmanTest.Podman([]string{"run", "foobar.com/entrypoint:latest"})
 		session.WaitWithDefaultTimeout()
-		Expect(session).Should(Exit(125))
+		Expect(session).Should(ExitWithError(126, "open executable: Operation not permitted: OCI permission denied"))
 	})
 
 	It("podman run entrypoint == [\"\"]", func() {
@@ -27,7 +29,7 @@ CMD []
 		podmanTest.BuildImage(dockerfile, "foobar.com/entrypoint:latest", "false")
 		session := podmanTest.Podman([]string{"run", "foobar.com/entrypoint:latest", "echo", "hello"})
 		session.WaitWithDefaultTimeout()
-		Expect(session).Should(Exit(0))
+		Expect(session).Should(ExitCleanly())
 		Expect(session.OutputToString()).To(Equal("hello"))
 	})
 
@@ -38,7 +40,7 @@ ENTRYPOINT ["grep", "Alpine", "/etc/os-release"]
 		podmanTest.BuildImage(dockerfile, "foobar.com/entrypoint:latest", "false")
 		session := podmanTest.Podman([]string{"run", "foobar.com/entrypoint:latest"})
 		session.WaitWithDefaultTimeout()
-		Expect(session).Should(Exit(0))
+		Expect(session).Should(ExitCleanly())
 		Expect(session.OutputToStringArray()).To(HaveLen(2))
 	})
 
@@ -50,7 +52,7 @@ ENTRYPOINT ["grep", "Alpine", "/etc/os-release"]
 		podmanTest.BuildImage(dockerfile, "foobar.com/entrypoint:latest", "false")
 		session := podmanTest.Podman([]string{"run", "foobar.com/entrypoint:latest"})
 		session.WaitWithDefaultTimeout()
-		Expect(session).Should(Exit(0))
+		Expect(session).Should(ExitCleanly())
 		Expect(session.OutputToStringArray()).To(HaveLen(4))
 	})
 
@@ -62,7 +64,7 @@ ENTRYPOINT ["grep", "Alpine", "/etc/os-release"]
 		podmanTest.BuildImage(dockerfile, "foobar.com/entrypoint:latest", "false")
 		session := podmanTest.Podman([]string{"run", "foobar.com/entrypoint:latest", "-i"})
 		session.WaitWithDefaultTimeout()
-		Expect(session).Should(Exit(0))
+		Expect(session).Should(ExitCleanly())
 		Expect(session.OutputToStringArray()).To(HaveLen(5))
 	})
 
@@ -73,7 +75,7 @@ ENTRYPOINT ["grep", "Alpine", "/etc/os-release"]
 		podmanTest.BuildImage(dockerfile, "foobar.com/entrypoint:latest", "false")
 		session := podmanTest.Podman([]string{"run", "foobar.com/entrypoint:latest", "-i"})
 		session.WaitWithDefaultTimeout()
-		Expect(session).Should(Exit(0))
+		Expect(session).Should(ExitCleanly())
 		Expect(session.OutputToStringArray()).To(HaveLen(5))
 	})
 
@@ -85,12 +87,12 @@ ENTRYPOINT ["grep", "Alpine", "/etc/os-release"]
 		podmanTest.BuildImage(dockerfile, "foobar.com/entrypoint:latest", "false")
 		session := podmanTest.Podman([]string{"run", "--entrypoint=uname", "foobar.com/entrypoint:latest"})
 		session.WaitWithDefaultTimeout()
-		Expect(session).Should(Exit(0))
+		Expect(session).Should(ExitCleanly())
 		Expect(session.OutputToStringArray()).To(ContainElement(HavePrefix("Linux")))
 
 		session = podmanTest.Podman([]string{"run", "--entrypoint", "", "foobar.com/entrypoint:latest", "uname"})
 		session.WaitWithDefaultTimeout()
-		Expect(session).Should(Exit(0))
+		Expect(session).Should(ExitCleanly())
 		Expect(session.OutputToStringArray()).To(ContainElement(HavePrefix("Linux")))
 	})
 
@@ -102,7 +104,7 @@ ENTRYPOINT ["grep", "Alpine", "/etc/os-release"]
 		podmanTest.BuildImage(dockerfile, "foobar.com/entrypoint:latest", "false")
 		session := podmanTest.Podman([]string{"run", "--entrypoint=uname", "foobar.com/entrypoint:latest", "-r"})
 		session.WaitWithDefaultTimeout()
-		Expect(session).Should(Exit(0))
+		Expect(session).Should(ExitCleanly())
 		Expect(session.OutputToStringArray()).To(Not(ContainElement(HavePrefix("Linux"))))
 	})
 })

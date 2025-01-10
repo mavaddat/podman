@@ -1,11 +1,10 @@
 //go:build amd64 || arm64
-// +build amd64 arm64
 
 package machine
 
 import (
-	"github.com/containers/podman/v4/cmd/podman/registry"
-	"github.com/containers/podman/v4/cmd/podman/validate"
+	"github.com/containers/podman/v5/cmd/podman/registry"
+	"github.com/containers/podman/v5/cmd/podman/validate"
 	"github.com/spf13/cobra"
 )
 

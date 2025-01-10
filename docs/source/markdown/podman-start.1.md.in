@@ -18,7 +18,7 @@ attaches to the container.
 
 #### **--all**
 
-Start all the containers created by Podman, default is only running containers.
+Start all the containers, default is only running containers.
 
 #### **--attach**, **-a**
 
@@ -50,6 +50,7 @@ Valid filters are listed below:
 | health     | [Status] healthy or unhealthy                                                    |
 | pod        | [Pod] name or full or partial ID of pod                                          |
 | network    | [Network] name or full ID of network                                             |
+| until      | [DateTime] Containers created before the given duration or time.                 |
 
 @@option interactive
 
@@ -61,13 +62,25 @@ The default is **true** when attaching, **false** otherwise.
 
 ## EXAMPLE
 
+Start specified container:
+```
 podman start mywebserver
+```
 
+Start multiple containers:
+```
 podman start 860a4b231279 5421ab43b45
+```
 
+Start specified container in interactive mode with terminal attached:
+```
 podman start --interactive --attach 860a4b231279
+```
 
+Start last created container in interactive mode (This option is not available with the remote Podman client, including Mac and Windows (excluding WSL2) machines):
+```
 podman start -i -l
+```
 
 ## SEE ALSO
 **[podman(1)](podman.1.md)**

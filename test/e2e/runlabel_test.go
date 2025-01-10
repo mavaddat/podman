@@ -1,12 +1,13 @@
+//go:build linux || freebsd
+
 package integration
 
 import (
 	"fmt"
 
-	. "github.com/containers/podman/v4/test/utils"
+	. "github.com/containers/podman/v5/test/utils"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
-	. "github.com/onsi/gomega/gexec"
 )
 
 var PodmanDockerfile = fmt.Sprintf(`
@@ -33,11 +34,11 @@ var _ = Describe("podman container runlabel", func() {
 
 		result := podmanTest.Podman([]string{"container", "runlabel", "RUN", image})
 		result.WaitWithDefaultTimeout()
-		Expect(result).Should(Exit(0))
+		Expect(result).Should(ExitCleanly())
 
 		result = podmanTest.Podman([]string{"rmi", image})
 		result.WaitWithDefaultTimeout()
-		Expect(result).Should(Exit(0))
+		Expect(result).Should(ExitCleanly())
 	})
 
 	It("podman container runlabel (ls -la)", func() {
@@ -46,11 +47,11 @@ var _ = Describe("podman container runlabel", func() {
 
 		result := podmanTest.Podman([]string{"container", "runlabel", "RUN", image})
 		result.WaitWithDefaultTimeout()
-		Expect(result).Should(Exit(0))
+		Expect(result).Should(ExitCleanly())
 
 		result = podmanTest.Podman([]string{"rmi", image})
 		result.WaitWithDefaultTimeout()
-		Expect(result).Should(Exit(0))
+		Expect(result).Should(ExitCleanly())
 	})
 	It("podman container runlabel --display", func() {
 		image := "podman-runlabel-test:ls"
@@ -58,24 +59,27 @@ var _ = Describe("podman container runlabel", func() {
 
 		result := podmanTest.Podman([]string{"container", "runlabel", "--display", "RUN", image})
 		result.WaitWithDefaultTimeout()
-		Expect(result).Should(Exit(0))
+		Expect(result).Should(ExitCleanly())
 		Expect(result.OutputToString()).To(ContainSubstring(podmanTest.PodmanBinary + " -la"))
 
 		result = podmanTest.Podman([]string{"rmi", image})
 		result.WaitWithDefaultTimeout()
-		Expect(result).Should(Exit(0))
+		Expect(result).Should(ExitCleanly())
 	})
+
 	It("podman container runlabel bogus label should result in non-zero exit code", func() {
 		result := podmanTest.Podman([]string{"container", "runlabel", "RUN", ALPINE})
 		result.WaitWithDefaultTimeout()
-		Expect(result).To(ExitWithError())
+		Expect(result).To(ExitWithError(125, fmt.Sprintf("cannot find the value of label: RUN in image: %s", ALPINE)))
 		// should not panic when label missing the value or don't have the label
 		Expect(result.OutputToString()).To(Not(ContainSubstring("panic")))
 	})
+
 	It("podman container runlabel bogus label in remote image should result in non-zero exit", func() {
-		result := podmanTest.Podman([]string{"container", "runlabel", "RUN", "docker.io/library/ubuntu:latest"})
+		remoteImage := "quay.io/libpod/testimage:00000000"
+		result := podmanTest.Podman([]string{"container", "runlabel", "RUN", remoteImage})
 		result.WaitWithDefaultTimeout()
-		Expect(result).To(ExitWithError())
+		Expect(result).To(ExitWithError(125, fmt.Sprintf("cannot find the value of label: RUN in image: %s", remoteImage)))
 		// should not panic when label missing the value or don't have the label
 		Expect(result.OutputToString()).To(Not(ContainSubstring("panic")))
 	})
@@ -87,11 +91,11 @@ var _ = Describe("podman container runlabel", func() {
 		// runlabel should fail with nonexistent authfile
 		result := podmanTest.Podman([]string{"container", "runlabel", "--authfile", "/tmp/nonexistent", "RUN", image})
 		result.WaitWithDefaultTimeout()
-		Expect(result).To(ExitWithError())
+		Expect(result).To(ExitWithError(125, "credential file is not accessible: faccessat /tmp/nonexistent: no such file or directory"))
 
 		result = podmanTest.Podman([]string{"rmi", image})
 		result.WaitWithDefaultTimeout()
-		Expect(result).Should(Exit(0))
+		Expect(result).Should(ExitCleanly())
 	})
 
 	It("podman container runlabel name removes tag from image", func() {
@@ -100,11 +104,11 @@ var _ = Describe("podman container runlabel", func() {
 
 		result := podmanTest.Podman([]string{"container", "runlabel", "--display", "RUN", image})
 		result.WaitWithDefaultTimeout()
-		Expect(result).Should(Exit(0))
+		Expect(result).Should(ExitCleanly())
 		Expect(result.OutputToString()).To(Equal("command: " + podmanTest.PodmanBinary + " run --name podman-runlabel-name localhost/" + image))
 
 		result = podmanTest.Podman([]string{"rmi", image})
 		result.WaitWithDefaultTimeout()
-		Expect(result).Should(Exit(0))
+		Expect(result).Should(ExitCleanly())
 	})
 })

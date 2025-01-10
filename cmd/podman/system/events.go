@@ -7,11 +7,12 @@ import (
 
 	"github.com/containers/common/pkg/completion"
 	"github.com/containers/common/pkg/report"
-	"github.com/containers/podman/v4/cmd/podman/common"
-	"github.com/containers/podman/v4/cmd/podman/registry"
-	"github.com/containers/podman/v4/cmd/podman/validate"
-	"github.com/containers/podman/v4/libpod/events"
-	"github.com/containers/podman/v4/pkg/domain/entities"
+	"github.com/containers/podman/v5/cmd/podman/common"
+	"github.com/containers/podman/v5/cmd/podman/registry"
+	"github.com/containers/podman/v5/cmd/podman/validate"
+	"github.com/containers/podman/v5/libpod/events"
+	"github.com/containers/podman/v5/pkg/domain/entities"
+	"github.com/sirupsen/logrus"
 	"github.com/spf13/cobra"
 )
 
@@ -49,6 +50,56 @@ var (
 	noTrunc      bool
 )
 
+type Event struct {
+	// containerExitCode is for storing the exit code of a container which can
+	// be used for "internal" event notification
+	ContainerExitCode *int `json:",omitempty"`
+	// ID can be for the container, image, volume, etc
+	ID string `json:",omitempty"`
+	// Image used where applicable
+	Image string `json:",omitempty"`
+	// Name where applicable
+	Name string `json:",omitempty"`
+	// Network is the network name in a network event
+	Network string `json:"network,omitempty"`
+	// Status describes the event that occurred
+	Status events.Status
+	// Time the event occurred
+	Time int64 `json:"time,omitempty"`
+	// timeNano the event occurred in nanoseconds
+	TimeNano int64 `json:"timeNano,omitempty"`
+	// Type of event that occurred
+	Type events.Type
+	// Health status of the current container
+	HealthStatus string `json:"health_status,omitempty"`
+	// Error code for certain events involving errors.
+	Error string `json:",omitempty"`
+
+	events.Details
+}
+
+func newEventFromLibpodEvent(e *events.Event) Event {
+	return Event{
+		ContainerExitCode: e.ContainerExitCode,
+		ID:                e.ID,
+		Image:             e.Image,
+		Name:              e.Name,
+		Network:           e.Network,
+		Status:            e.Status,
+		Time:              e.Time.Unix(),
+		Type:              e.Type,
+		HealthStatus:      e.HealthStatus,
+		Details:           e.Details,
+		TimeNano:          e.Time.UnixNano(),
+		Error:             e.Error,
+	}
+}
+
+func (e *Event) ToJSONString() (string, error) {
+	b, err := json.Marshal(e)
+	return string(b), err
+}
+
 func init() {
 	registry.Commands = append(registry.Commands, registry.CliCommand{
 		Command: systemEventsCommand,
@@ -70,7 +121,7 @@ func eventsFlags(cmd *cobra.Command) {
 
 	formatFlagName := "format"
 	flags.StringVar(&eventFormat, formatFlagName, "", "format the output using a Go template")
-	_ = cmd.RegisterFlagCompletionFunc(formatFlagName, common.AutocompleteFormat(&events.Event{}))
+	_ = cmd.RegisterFlagCompletionFunc(formatFlagName, common.AutocompleteFormat(&Event{}))
 
 	flags.BoolVar(&eventOptions.Stream, "stream", true, "stream events and do not exit when returning the last known event")
 
@@ -89,9 +140,8 @@ func eventsCmd(cmd *cobra.Command, _ []string) error {
 	if len(eventOptions.Since) > 0 || len(eventOptions.Until) > 0 {
 		eventOptions.FromStart = true
 	}
-	eventChannel := make(chan *events.Event, 1)
+	eventChannel := make(chan events.ReadResult, 1)
 	eventOptions.EventChan = eventChannel
-	errChannel := make(chan error)
 
 	var (
 		rpt    *report.Formatter
@@ -111,38 +161,31 @@ func eventsCmd(cmd *cobra.Command, _ []string) error {
 		}
 	}
 
-	go func() {
-		err := registry.ContainerEngine().Events(context.Background(), eventOptions)
-		errChannel <- err
-	}()
+	err := registry.ContainerEngine().Events(context.Background(), eventOptions)
+	if err != nil {
+		return err
+	}
 
-	for {
-		select {
-		case event, ok := <-eventChannel:
-			if !ok {
-				// channel was closed we can exit
-				return nil
-			}
-			switch {
-			case doJSON:
-				jsonStr, err := event.ToJSONString()
-				if err != nil {
-					return err
-				}
-				fmt.Println(jsonStr)
-			case cmd.Flags().Changed("format"):
-				if err := rpt.Execute(event); err != nil {
-					return err
-				}
-			default:
-				fmt.Println(event.ToHumanReadable(!noTrunc))
-			}
-		case err := <-errChannel:
-			// only exit in case of an error,
-			// otherwise keep reading events until the event channel is closed
+	for evt := range eventChannel {
+		if evt.Error != nil {
+			logrus.Errorf("Failed to read event: %v", evt.Error)
+			continue
+		}
+		switch {
+		case doJSON:
+			e := newEventFromLibpodEvent(evt.Event)
+			jsonStr, err := e.ToJSONString()
 			if err != nil {
 				return err
 			}
+			fmt.Println(jsonStr)
+		case cmd.Flags().Changed("format"):
+			if err := rpt.Execute(newEventFromLibpodEvent(evt.Event)); err != nil {
+				return err
+			}
+		default:
+			fmt.Println(evt.Event.ToHumanReadable(!noTrunc))
 		}
 	}
+	return nil
 }

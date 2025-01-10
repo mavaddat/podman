@@ -1,9 +1,11 @@
 package containers
 
 import (
+	"cmp"
 	"errors"
 	"fmt"
 	"os"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -12,11 +14,11 @@ import (
 	"github.com/containers/common/libnetwork/types"
 	"github.com/containers/common/pkg/completion"
 	"github.com/containers/common/pkg/report"
-	"github.com/containers/podman/v4/cmd/podman/common"
-	"github.com/containers/podman/v4/cmd/podman/registry"
-	"github.com/containers/podman/v4/cmd/podman/utils"
-	"github.com/containers/podman/v4/cmd/podman/validate"
-	"github.com/containers/podman/v4/pkg/domain/entities"
+	"github.com/containers/podman/v5/cmd/podman/common"
+	"github.com/containers/podman/v5/cmd/podman/registry"
+	"github.com/containers/podman/v5/cmd/podman/utils"
+	"github.com/containers/podman/v5/cmd/podman/validate"
+	"github.com/containers/podman/v5/pkg/domain/entities"
 	"github.com/docker/go-units"
 	"github.com/sirupsen/logrus"
 	"github.com/spf13/cobra"
@@ -160,7 +162,7 @@ func jsonOut(responses []entities.ListContainer) error {
 	return nil
 }
 
-func quietOut(responses []entities.ListContainer) error {
+func quietOut(responses []entities.ListContainer) {
 	for _, r := range responses {
 		id := r.ID
 		if !noTrunc {
@@ -168,7 +170,6 @@ func quietOut(responses []entities.ListContainer) error {
 		}
 		fmt.Println(id)
 	}
-	return nil
 }
 
 func getResponses() ([]entities.ListContainer, error) {
@@ -189,12 +190,17 @@ func ps(cmd *cobra.Command, _ []string) error {
 	if err := checkFlags(cmd); err != nil {
 		return err
 	}
+
+	if !listOpts.Pod {
+		listOpts.Pod = strings.Contains(listOpts.Format, ".PodName")
+	}
+
 	for _, f := range filters {
-		split := strings.SplitN(f, "=", 2)
-		if len(split) == 1 {
+		fname, filter, hasFilter := strings.Cut(f, "=")
+		if !hasFilter {
 			return fmt.Errorf("invalid filter %q", f)
 		}
-		listOpts.Filters[split[0]] = append(listOpts.Filters[split[0]], split[1])
+		listOpts.Filters[fname] = append(listOpts.Filters[fname], filter)
 	}
 	listContainers, err := getResponses()
 	if err != nil {
@@ -211,7 +217,8 @@ func ps(cmd *cobra.Command, _ []string) error {
 	case report.IsJSON(listOpts.Format):
 		return jsonOut(listContainers)
 	case listOpts.Quiet && !cmd.Flags().Changed("format"):
-		return quietOut(listContainers)
+		quietOut(listContainers)
+		return nil
 	}
 
 	responses := make([]psReporter, 0, len(listContainers))
@@ -336,6 +343,11 @@ func (l psReporter) ImageID() string {
 	return l.ListContainer.ImageID
 }
 
+// Labels returns a map of the pod's labels
+func (l psReporter) Label(name string) string {
+	return l.ListContainer.Labels[name]
+}
+
 // ID returns the ID of the container
 func (l psReporter) ID() string {
 	if !noTrunc {
@@ -424,10 +436,7 @@ func (l psReporter) Networks() string {
 // Ports converts from Portmappings to the string form
 // required by ps
 func (l psReporter) Ports() string {
-	if len(l.ListContainer.Ports) < 1 {
-		return ""
-	}
-	return portsToString(l.ListContainer.Ports)
+	return portsToString(l.ListContainer.Ports, l.ListContainer.ExposedPorts)
 }
 
 // CreatedAt returns the container creation time in string format.  podman
@@ -436,7 +445,7 @@ func (l psReporter) CreatedAt() string {
 	return l.Created.String()
 }
 
-// CreateHuman allows us to output the created time in human readable format
+// CreatedHuman allows us to output the created time in human readable format
 func (l psReporter) CreatedHuman() string {
 	return units.HumanDuration(time.Since(l.Created)) + " ago"
 }
@@ -479,30 +488,88 @@ func (l psReporter) UTS() string {
 // portsToString converts the ports used to a string of the from "port1, port2"
 // and also groups a continuous list of ports into a readable format.
 // The format is IP:HostPort(-Range)->ContainerPort(-Range)/Proto
-func portsToString(ports []types.PortMapping) string {
-	if len(ports) == 0 {
+func portsToString(ports []types.PortMapping, exposedPorts map[uint16][]string) string {
+	if len(ports) == 0 && len(exposedPorts) == 0 {
 		return ""
 	}
+	portMap := make(map[string]struct{})
+
 	sb := &strings.Builder{}
 	for _, port := range ports {
 		hostIP := port.HostIP
 		if hostIP == "" {
 			hostIP = "0.0.0.0"
 		}
-		protocols := strings.Split(port.Protocol, ",")
-		for _, protocol := range protocols {
-			if port.Range > 1 {
-				fmt.Fprintf(sb, "%s:%d-%d->%d-%d/%s, ",
-					hostIP, port.HostPort, port.HostPort+port.Range-1,
-					port.ContainerPort, port.ContainerPort+port.Range-1, protocol)
-			} else {
-				fmt.Fprintf(sb, "%s:%d->%d/%s, ",
-					hostIP, port.HostPort,
-					port.ContainerPort, protocol)
+		if port.Range > 1 {
+			fmt.Fprintf(sb, "%s:%d-%d->%d-%d/%s, ",
+				hostIP, port.HostPort, port.HostPort+port.Range-1,
+				port.ContainerPort, port.ContainerPort+port.Range-1, port.Protocol)
+			for i := range port.Range {
+				portMap[fmt.Sprintf("%d/%s", port.ContainerPort+i, port.Protocol)] = struct{}{}
 			}
+		} else {
+			fmt.Fprintf(sb, "%s:%d->%d/%s, ",
+				hostIP, port.HostPort,
+				port.ContainerPort, port.Protocol)
+			portMap[fmt.Sprintf("%d/%s", port.ContainerPort, port.Protocol)] = struct{}{}
 		}
 	}
+
+	// iterating a map is not deterministic so let's convert slice first and sort by protocol and port to make it deterministic
+	sortedPorts := make([]exposedPort, 0, len(exposedPorts))
+	for port, protocols := range exposedPorts {
+		for _, proto := range protocols {
+			sortedPorts = append(sortedPorts, exposedPort{num: port, protocol: proto})
+		}
+	}
+	slices.SortFunc(sortedPorts, func(a, b exposedPort) int {
+		protoCmp := cmp.Compare(a.protocol, b.protocol)
+		if protoCmp != 0 {
+			return protoCmp
+		}
+		return cmp.Compare(a.num, b.num)
+	})
+
+	var prevPort *exposedPort
+	for _, port := range sortedPorts {
+		// only if it was not published already so we do not have duplicates
+		if _, ok := portMap[fmt.Sprintf("%d/%s", port.num, port.protocol)]; ok {
+			continue
+		}
+
+		if prevPort != nil {
+			// if the prevPort is one below us we know it is a range, do not print it and just increase the range by one
+			if prevPort.protocol == port.protocol && prevPort.num == port.num-prevPort.portRange-1 {
+				prevPort.portRange++
+				continue
+			}
+			// the new port is not a range with the previous one so print it
+			printExposedPort(prevPort, sb)
+		}
+		prevPort = &port
+	}
+	// do not forget to print the last port
+	if prevPort != nil {
+		printExposedPort(prevPort, sb)
+	}
+
 	display := sb.String()
 	// make sure to trim the last ", " of the string
 	return display[:len(display)-2]
+}
+
+type exposedPort struct {
+	num      uint16
+	protocol string
+	// portRange is 0 indexed
+	portRange uint16
+}
+
+func printExposedPort(port *exposedPort, sb *strings.Builder) {
+	// exposed ports do not have a host part and are just written as "NUM[-RANGE]/PROTO"
+	if port.portRange > 0 {
+		fmt.Fprintf(sb, "%d-%d/%s, ", port.num, port.num+port.portRange, port.protocol)
+	} else {
+		fmt.Fprintf(sb, "%d/%s, ", port.num, port.protocol)
+	}
 }

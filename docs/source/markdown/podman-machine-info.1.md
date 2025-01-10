@@ -11,6 +11,12 @@ podman\-machine\-info - Display machine host info
 Display information pertaining to the machine host.
 Rootless only, as all `podman machine` commands can be only be used with rootless Podman.
 
+*Note*: The `DefaultMachine` field in the `Host` output does not suggest that
+one can set a default podman machine via system connections. This value represents
+the current active system connection associated with a podman machine. Regardless
+of the default system connection, the default podman machine will always be
+`podman-machine-default`.
+
 ## OPTIONS
 
 #### **--format**, **-f**=*format*
@@ -28,6 +34,7 @@ Print usage statement.
 
 ## EXAMPLES
 
+Display default Podman machine info.
 ```
 $ podman machine info
 Host:
@@ -52,6 +59,7 @@ Version:
   Version: 4.4.0
 ```
 
+Display default Podman machine info formatted as json.
 ```
 $ podman machine info --format json
 {
@@ -80,6 +88,7 @@ $ podman machine info --format json
 }
 ```
 
+Display default Podman machine Host.Arch field.
 ```
 $ podman machine info --format "{{ .Host.Arch }}"
 amd64

@@ -44,55 +44,29 @@ class PodmanAPI:
         os.environ["CONTAINERS_REGISTRIES_CONF"] = os.path.join(
             self.anchor_directory, "registry.conf"
         )
-        conf = """unqualified-search-registries = ["docker.io", "quay.io"]
 
-[[registry]]
-location="localhost:5000"
-insecure=true
+        # Entry verified by compat/test_system.py
+        reg_conf_sfx = """
 
 [[registry.mirror]]
 location = "mirror.localhost:5000"
 
 """
 
+        # Assume developer-mode testing by default
+        reg_conf_source_path="./test/registries.conf"
+
+        # When operating in a CI environment, use the local registry server.
+        # Ref: https://github.com/containers/automation_images/pull/357
+        #      https://github.com/containers/podman/pull/22726
+        if os.getenv("CI_USE_REGISTRY_CACHE"):
+            reg_conf_source_path = "./test/registries-cached.conf"
+
+        with open(os.path.join(reg_conf_source_path)) as file:
+            conf = file.read() + reg_conf_sfx
+
         with open(os.environ["CONTAINERS_REGISTRIES_CONF"], "w") as file:
             file.write(conf)
-
-        os.environ["CNI_CONFIG_PATH"] = os.path.join(self.anchor_directory, "cni", "net.d")
-        os.makedirs(os.environ["CNI_CONFIG_PATH"], exist_ok=True)
-        self.cmd.append("--network-config-dir=" + os.environ["CNI_CONFIG_PATH"])
-        cni_cfg = os.path.join(os.environ["CNI_CONFIG_PATH"], "87-podman-bridge.conflist")
-        # json decoded and encoded to ensure legal json
-        buf = json.loads(
-            """
-            {
-              "cniVersion": "0.3.0",
-              "name": "default",
-              "plugins": [{
-                  "type": "bridge",
-                  "bridge": "cni0",
-                  "isGateway": true,
-                  "ipMasq": true,
-                  "ipam": {
-                    "type": "host-local",
-                    "subnet": "10.88.0.0/16",
-                    "routes": [{
-                      "dst": "0.0.0.0/0"
-                    }]
-                  }
-                },
-                {
-                  "type": "portmap",
-                  "capabilities": {
-                    "portMappings": true
-                  }
-                }
-              ]
-            }
-            """
-        )
-        with open(cni_cfg, "w") as file:
-            json.dump(buf, file)
 
     def open(self, command, *args, **kwargs):
         """Podman initialized instance to run a given command

@@ -6,6 +6,7 @@
 load helpers
 
 
+# bats test_tags=ci:parallel
 @test "options that cannot be set together" {
     skip_if_remote "not much point testing remote, and container-cleanup fails anyway"
 
@@ -17,6 +18,9 @@ create,run        | --userns=bar   | --pod=foo              | $IMAGE
 container cleanup | --all          | --exec=foo
 container cleanup | --exec=foo     | --rmi                  | foo
 "
+
+    # Run all tests, continue even if any fail
+    defer-assertion-failures
 
     # FIXME: parse_table is what does all the work, giving us test cases.
     while read subcommands opt1 opt2 args; do

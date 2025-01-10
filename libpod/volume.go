@@ -1,11 +1,13 @@
+//go:build !remote
+
 package libpod
 
 import (
 	"time"
 
-	"github.com/containers/podman/v4/libpod/define"
-	"github.com/containers/podman/v4/libpod/lock"
-	"github.com/containers/podman/v4/libpod/plugin"
+	"github.com/containers/podman/v5/libpod/define"
+	"github.com/containers/podman/v5/libpod/lock"
+	"github.com/containers/podman/v5/libpod/plugin"
 	"github.com/containers/storage/pkg/directory"
 )
 
@@ -96,6 +98,10 @@ type VolumeState struct {
 	// a container, the container will chown the volume to the container process
 	// UID/GID.
 	NeedsChown bool `json:"notYetChowned,omitempty"`
+	// Indicates that a copy-up event occurred during the current mount of
+	// the volume into a container.
+	// We use this to determine if a chown is appropriate.
+	CopiedUp bool `json:"copiedUp,omitempty"`
 	// UIDChowned is the UID the volume was chowned to.
 	UIDChowned int `json:"uidChowned,omitempty"`
 	// GIDChowned is the GID the volume was chowned to.

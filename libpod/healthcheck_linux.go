@@ -1,19 +1,19 @@
-//go:build systemd
-// +build systemd
+//go:build !remote && systemd
 
 package libpod
 
 import (
 	"context"
 	"fmt"
+	"math/rand"
 	"os"
 	"os/exec"
 	"strings"
 
-	"github.com/containers/podman/v4/pkg/errorhandling"
-	"github.com/containers/podman/v4/pkg/rootless"
-	"github.com/containers/podman/v4/pkg/systemd"
-	"github.com/containers/podman/v4/utils"
+	systemdCommon "github.com/containers/common/pkg/systemd"
+	"github.com/containers/podman/v5/pkg/errorhandling"
+	"github.com/containers/podman/v5/pkg/rootless"
+	"github.com/containers/podman/v5/pkg/systemd"
 	"github.com/sirupsen/logrus"
 )
 
@@ -22,12 +22,15 @@ func (c *Container) createTimer(interval string, isStartup bool) error {
 	if c.disableHealthCheckSystemd(isStartup) {
 		return nil
 	}
+
+	hcUnitName := c.hcUnitName(isStartup, false)
+
 	podman, err := os.Executable()
 	if err != nil {
 		return fmt.Errorf("failed to get path for podman for a health check timer: %w", err)
 	}
 
-	var cmd = []string{}
+	var cmd = []string{"--property", "LogLevelMax=notice"}
 	if rootless.IsRootless() {
 		cmd = append(cmd, "--user")
 	}
@@ -36,7 +39,7 @@ func (c *Container) createTimer(interval string, isStartup bool) error {
 		cmd = append(cmd, "--setenv=PATH="+path)
 	}
 
-	cmd = append(cmd, "--unit", c.hcUnitName(isStartup), fmt.Sprintf("--on-unit-inactive=%s", interval), "--timer-property=AccuracySec=1s", podman)
+	cmd = append(cmd, "--unit", hcUnitName, fmt.Sprintf("--on-unit-inactive=%s", interval), "--timer-property=AccuracySec=1s", podman)
 
 	if logrus.IsLevelEnabled(logrus.DebugLevel) {
 		cmd = append(cmd, "--log-level=debug", "--syslog")
@@ -54,6 +57,12 @@ func (c *Container) createTimer(interval string, isStartup bool) error {
 	if output, err := systemdRun.CombinedOutput(); err != nil {
 		return fmt.Errorf("%s", output)
 	}
+
+	c.state.HCUnitName = hcUnitName
+	if err := c.save(); err != nil {
+		return fmt.Errorf("saving container %s healthcheck unit name: %w", c.ID(), err)
+	}
+
 	return nil
 }
 
@@ -73,13 +82,19 @@ func (c *Container) startTimer(isStartup bool) error {
 	if c.disableHealthCheckSystemd(isStartup) {
 		return nil
 	}
+
+	hcUnitName := c.state.HCUnitName
+	if hcUnitName == "" {
+		hcUnitName = c.hcUnitName(isStartup, true)
+	}
+
 	conn, err := systemd.ConnectToDBUS()
 	if err != nil {
 		return fmt.Errorf("unable to get systemd connection to start healthchecks: %w", err)
 	}
 	defer conn.Close()
 
-	startFile := fmt.Sprintf("%s.service", c.hcUnitName(isStartup))
+	startFile := fmt.Sprintf("%s.service", hcUnitName)
 	startChan := make(chan string)
 	if _, err := conn.RestartUnitContext(context.Background(), startFile, "fail", startChan); err != nil {
 		return err
@@ -93,7 +108,7 @@ func (c *Container) startTimer(isStartup bool) error {
 
 // removeTransientFiles removes the systemd timer and unit files
 // for the container
-func (c *Container) removeTransientFiles(ctx context.Context, isStartup bool) error {
+func (c *Container) removeTransientFiles(ctx context.Context, isStartup bool, unitName string) error {
 	if c.disableHealthCheckSystemd(isStartup) {
 		return nil
 	}
@@ -107,10 +122,13 @@ func (c *Container) removeTransientFiles(ctx context.Context, isStartup bool) er
 	// clean up as much as possible.
 	stopErrors := []error{}
 
+	if unitName == "" {
+		unitName = c.hcUnitName(isStartup, true)
+	}
 	// Stop the timer before the service to make sure the timer does not
 	// fire after the service is stopped.
 	timerChan := make(chan string)
-	timerFile := fmt.Sprintf("%s.timer", c.hcUnitName(isStartup))
+	timerFile := fmt.Sprintf("%s.timer", unitName)
 	if _, err := conn.StopUnitContext(ctx, timerFile, "ignore-dependencies", timerChan); err != nil {
 		if !strings.HasSuffix(err.Error(), ".timer not loaded.") {
 			stopErrors = append(stopErrors, fmt.Errorf("removing health-check timer %q: %w", timerFile, err))
@@ -119,13 +137,8 @@ func (c *Container) removeTransientFiles(ctx context.Context, isStartup bool) er
 		stopErrors = append(stopErrors, fmt.Errorf("stopping systemd health-check timer %q: %w", timerFile, err))
 	}
 
-	// Reset the service before stopping it to make sure it's being removed
-	// on stop.
 	serviceChan := make(chan string)
-	serviceFile := fmt.Sprintf("%s.service", c.hcUnitName(isStartup))
-	if err := conn.ResetFailedUnitContext(ctx, serviceFile); err != nil {
-		logrus.Debugf("Failed to reset unit file: %q", err)
-	}
+	serviceFile := fmt.Sprintf("%s.service", unitName)
 	if _, err := conn.StopUnitContext(ctx, serviceFile, "ignore-dependencies", serviceChan); err != nil {
 		if !strings.HasSuffix(err.Error(), ".service not loaded.") {
 			stopErrors = append(stopErrors, fmt.Errorf("removing health-check service %q: %w", serviceFile, err))
@@ -133,12 +146,18 @@ func (c *Container) removeTransientFiles(ctx context.Context, isStartup bool) er
 	} else if err := systemdOpSuccessful(serviceChan); err != nil {
 		stopErrors = append(stopErrors, fmt.Errorf("stopping systemd health-check service %q: %w", serviceFile, err))
 	}
+	// Reset the service after stopping it to make sure it's being removed, systemd keep failed transient services
+	// around in its state. We do not care about the error and we need to ensure to reset the state so we do not
+	// leak resources forever.
+	if err := conn.ResetFailedUnitContext(ctx, serviceFile); err != nil {
+		logrus.Debugf("Failed to reset unit file: %q", err)
+	}
 
 	return errorhandling.JoinErrors(stopErrors)
 }
 
 func (c *Container) disableHealthCheckSystemd(isStartup bool) bool {
-	if !utils.RunsOnSystemd() || os.Getenv("DISABLE_HC_SYSTEMD") == "true" {
+	if !systemdCommon.RunsOnSystemd() || os.Getenv("DISABLE_HC_SYSTEMD") == "true" {
 		return true
 	}
 	if isStartup {
@@ -152,11 +171,19 @@ func (c *Container) disableHealthCheckSystemd(isStartup bool) bool {
 	return false
 }
 
-// Systemd unit name for the healthcheck systemd unit
-func (c *Container) hcUnitName(isStartup bool) string {
+// Systemd unit name for the healthcheck systemd unit.
+// Bare indicates that a random suffix should not be applied to the name. This
+// was default behavior previously, and is used for backwards compatibility.
+func (c *Container) hcUnitName(isStartup, bare bool) string {
 	unitName := c.ID()
 	if isStartup {
 		unitName += "-startup"
+	}
+	if !bare {
+		// Ensure that unit names are unique from run to run by appending
+		// a random suffix.
+		// Ref: RH Jira RHEL-26105
+		unitName += fmt.Sprintf("-%x", rand.Int())
 	}
 	return unitName
 }

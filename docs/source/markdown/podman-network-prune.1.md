@@ -21,10 +21,10 @@ The *filters* argument format is of `key=value`. If there is more than one *filt
 
 Supported filters:
 
-| Filter             | Description                                                                 |
-| :----------------: | --------------------------------------------------------------------------- |
-| *label*            | Only remove networks, with (or without, in the case of label!=[...] is used) the specified labels. |
-| *until*            | Only remove networks created before given timestamp.           |
+| Filter | Description                                                                                        |
+|:------:|----------------------------------------------------------------------------------------------------|
+| label  | Only remove networks, with (or without, in the case of label!=[...] is used) the specified labels. |
+| until  | Only remove networks created before given timestamp.                                               |
 
 The `label` *filter* accepts two formats. One is the `label`=*key* or `label`=*key*=*value*, which removes networks with the specified labels. The other format is the `label!`=*key* or `label!`=*key*=*value*, which removes networks without the specified labels.
 
@@ -35,12 +35,13 @@ The `until` *filter* can be Unix timestamps, date formatted timestamps, or Go du
 Do not prompt for confirmation
 
 ## EXAMPLE
-Prune networks
+
+Prune networks:
 ```
 podman network prune
 ```
 
-Prune all networks created before 2h
+Prune all networks created not created in the last two hours:
 ```
 podman network prune --filter until=2h
 ```

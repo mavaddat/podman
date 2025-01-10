@@ -4,7 +4,7 @@ package generate
 import (
 	"net/url"
 
-	"github.com/containers/podman/v4/pkg/bindings/internal/util"
+	"github.com/containers/podman/v5/pkg/bindings/internal/util"
 )
 
 // Changed returns true if named field has been set
@@ -15,6 +15,21 @@ func (o *KubeOptions) Changed(fieldName string) bool {
 // ToParams formats struct fields to be passed to API service
 func (o *KubeOptions) ToParams() (url.Values, error) {
 	return util.ToParams(o)
+}
+
+// WithPodmanOnly set field PodmanOnly to given value
+func (o *KubeOptions) WithPodmanOnly(value bool) *KubeOptions {
+	o.PodmanOnly = &value
+	return o
+}
+
+// GetPodmanOnly returns value of field PodmanOnly
+func (o *KubeOptions) GetPodmanOnly() bool {
+	if o.PodmanOnly == nil {
+		var z bool
+		return z
+	}
+	return *o.PodmanOnly
 }
 
 // WithService set field Service to given value
@@ -60,4 +75,19 @@ func (o *KubeOptions) GetReplicas() int32 {
 		return z
 	}
 	return *o.Replicas
+}
+
+// WithNoTrunc set field NoTrunc to given value
+func (o *KubeOptions) WithNoTrunc(value bool) *KubeOptions {
+	o.NoTrunc = &value
+	return o
+}
+
+// GetNoTrunc returns value of field NoTrunc
+func (o *KubeOptions) GetNoTrunc() bool {
+	if o.NoTrunc == nil {
+		var z bool
+		return z
+	}
+	return *o.NoTrunc
 }

@@ -1,3 +1,5 @@
+//go:build !remote
+
 package abi
 
 import (
@@ -5,12 +7,12 @@ import (
 	"errors"
 	"fmt"
 
-	"github.com/containers/podman/v4/libpod"
-	"github.com/containers/podman/v4/libpod/define"
-	"github.com/containers/podman/v4/pkg/domain/entities"
-	"github.com/containers/podman/v4/pkg/domain/entities/reports"
-	"github.com/containers/podman/v4/pkg/domain/filters"
-	"github.com/containers/podman/v4/pkg/domain/infra/abi/parse"
+	"github.com/containers/podman/v5/libpod"
+	"github.com/containers/podman/v5/libpod/define"
+	"github.com/containers/podman/v5/pkg/domain/entities"
+	"github.com/containers/podman/v5/pkg/domain/entities/reports"
+	"github.com/containers/podman/v5/pkg/domain/filters"
+	"github.com/containers/podman/v5/pkg/domain/infra/abi/parse"
 )
 
 func (ic *ContainerEngine) VolumeCreate(ctx context.Context, opts entities.VolumeCreateOptions) (*entities.IDOrNameResponse, error) {
@@ -61,6 +63,9 @@ func (ic *ContainerEngine) VolumeRm(ctx context.Context, namesOrIds []string, op
 		for _, id := range namesOrIds {
 			vol, err := ic.Libpod.LookupVolume(id)
 			if err != nil {
+				if opts.Ignore && errors.Is(err, define.ErrNoSuchVolume) {
+					continue
+				}
 				reports = append(reports, &entities.VolumeRmReport{
 					Err: err,
 					Id:  id,
@@ -122,11 +127,15 @@ func (ic *ContainerEngine) VolumeInspect(ctx context.Context, namesOrIds []strin
 }
 
 func (ic *ContainerEngine) VolumePrune(ctx context.Context, options entities.VolumePruneOptions) ([]*reports.PruneReport, error) {
-	filterFuncs, err := filters.GenerateVolumeFilters(options.Filters)
-	if err != nil {
-		return nil, err
+	funcs := []libpod.VolumeFilter{}
+	for filter, filterValues := range options.Filters {
+		filterFunc, err := filters.GenerateVolumeFilters(filter, filterValues, ic.Libpod)
+		if err != nil {
+			return nil, err
+		}
+		funcs = append(funcs, filterFunc)
 	}
-	return ic.pruneVolumesHelper(ctx, filterFuncs)
+	return ic.pruneVolumesHelper(ctx, funcs)
 }
 
 func (ic *ContainerEngine) pruneVolumesHelper(ctx context.Context, filterFuncs []libpod.VolumeFilter) ([]*reports.PruneReport, error) {
@@ -138,10 +147,15 @@ func (ic *ContainerEngine) pruneVolumesHelper(ctx context.Context, filterFuncs [
 }
 
 func (ic *ContainerEngine) VolumeList(ctx context.Context, opts entities.VolumeListOptions) ([]*entities.VolumeListReport, error) {
-	volumeFilters, err := filters.GenerateVolumeFilters(opts.Filter)
-	if err != nil {
-		return nil, err
+	volumeFilters := []libpod.VolumeFilter{}
+	for filter, value := range opts.Filter {
+		filterFunc, err := filters.GenerateVolumeFilters(filter, value, ic.Libpod)
+		if err != nil {
+			return nil, err
+		}
+		volumeFilters = append(volumeFilters, filterFunc)
 	}
+
 	vols, err := ic.Libpod.Volumes(volumeFilters...)
 	if err != nil {
 		return nil, err
@@ -150,6 +164,9 @@ func (ic *ContainerEngine) VolumeList(ctx context.Context, opts entities.VolumeL
 	for _, v := range vols {
 		inspectOut, err := v.Inspect()
 		if err != nil {
+			if errors.Is(err, define.ErrNoSuchVolume) {
+				continue
+			}
 			return nil, err
 		}
 		config := entities.VolumeConfigResponse{

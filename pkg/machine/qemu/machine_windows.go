@@ -1,3 +1,5 @@
+//go:build windows
+
 package qemu
 
 import (
@@ -6,7 +8,7 @@ import (
 	"regexp"
 	"strings"
 
-	"github.com/containers/podman/v4/pkg/machine"
+	"github.com/containers/podman/v5/pkg/machine"
 )
 
 func isProcessAlive(pid int) bool {
@@ -49,4 +51,12 @@ func extractTargetPath(paths []string) string {
 	}
 	dedup := regexp.MustCompile(`//+`)
 	return dedup.ReplaceAllLiteralString("/"+target, "/")
+}
+
+func sigKill(pid int) error {
+	return nil
+}
+
+func findProcess(pid int) (int, error) {
+	return -1, nil
 }

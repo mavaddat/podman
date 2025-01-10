@@ -1,5 +1,4 @@
-//go:build !remote_testing
-// +build !remote_testing
+//go:build !remote_testing && (linux || freebsd)
 
 package integration
 
@@ -38,8 +37,12 @@ func (p *PodmanTestIntegration) PodmanExtraFiles(args []string, extraFiles []*os
 }
 
 func (p *PodmanTestIntegration) setDefaultRegistriesConfigEnv() {
-	defaultFile := filepath.Join(INTEGRATION_ROOT, "test/registries.conf")
-	err := os.Setenv("CONTAINERS_REGISTRIES_CONF", defaultFile)
+	defaultFile := "registries.conf"
+	if UsingCacheRegistry() {
+		defaultFile = "registries-cached.conf"
+	}
+	defaultPath := filepath.Join(INTEGRATION_ROOT, "test", defaultFile)
+	err := os.Setenv("CONTAINERS_REGISTRIES_CONF", defaultPath)
 	Expect(err).ToNot(HaveOccurred())
 }
 

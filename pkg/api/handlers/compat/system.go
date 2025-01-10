@@ -1,16 +1,19 @@
+//go:build !remote
+
 package compat
 
 import (
 	"net/http"
 	"strings"
 
-	"github.com/containers/podman/v4/libpod"
-	"github.com/containers/podman/v4/pkg/api/handlers"
-	"github.com/containers/podman/v4/pkg/api/handlers/utils"
-	api "github.com/containers/podman/v4/pkg/api/types"
-	"github.com/containers/podman/v4/pkg/domain/entities"
-	"github.com/containers/podman/v4/pkg/domain/infra/abi"
+	"github.com/containers/podman/v5/libpod"
+	"github.com/containers/podman/v5/pkg/api/handlers"
+	"github.com/containers/podman/v5/pkg/api/handlers/utils"
+	api "github.com/containers/podman/v5/pkg/api/types"
+	"github.com/containers/podman/v5/pkg/domain/entities"
+	"github.com/containers/podman/v5/pkg/domain/infra/abi"
 	docker "github.com/docker/docker/api/types"
+	dockerImage "github.com/docker/docker/api/types/image"
 	"github.com/docker/docker/api/types/volume"
 )
 
@@ -24,9 +27,9 @@ func GetDiskUsage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	imgs := make([]*docker.ImageSummary, len(df.Images))
+	imgs := make([]*dockerImage.Summary, len(df.Images))
 	for i, o := range df.Images {
-		t := docker.ImageSummary{
+		t := dockerImage.Summary{
 			Containers:  int64(o.Containers),
 			Created:     o.Created.Unix(),
 			ID:          o.ImageID,
@@ -57,7 +60,8 @@ func GetDiskUsage(w http.ResponseWriter, r *http.Request) {
 			State:      o.Status,
 			Status:     o.Status,
 			HostConfig: struct {
-				NetworkMode string `json:",omitempty"`
+				NetworkMode string            `json:",omitempty"`
+				Annotations map[string]string `json:",omitempty"`
 			}{},
 			NetworkSettings: nil,
 			Mounts:          nil,

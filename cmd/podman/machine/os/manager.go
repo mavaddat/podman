@@ -1,5 +1,4 @@
 //go:build amd64 || arm64
-// +build amd64 arm64
 
 package os
 
@@ -10,9 +9,11 @@ import (
 	"strings"
 
 	machineconfig "github.com/containers/common/pkg/machine"
-	"github.com/containers/podman/v4/cmd/podman/machine"
-	pkgMachine "github.com/containers/podman/v4/pkg/machine"
-	pkgOS "github.com/containers/podman/v4/pkg/machine/os"
+	"github.com/containers/podman/v5/pkg/machine/define"
+	"github.com/containers/podman/v5/pkg/machine/env"
+	pkgOS "github.com/containers/podman/v5/pkg/machine/os"
+	"github.com/containers/podman/v5/pkg/machine/provider"
+	"github.com/containers/podman/v5/pkg/machine/vmconfigs"
 )
 
 type ManagerOpts struct {
@@ -22,13 +23,13 @@ type ManagerOpts struct {
 }
 
 // NewOSManager creates a new OSManager depending on the mode of the call
-func NewOSManager(opts ManagerOpts) (pkgOS.Manager, error) {
+func NewOSManager(opts ManagerOpts, p vmconfigs.VMProvider) (pkgOS.Manager, error) {
 	// If a VM name is specified, then we know that we are not inside a
 	// Podman VM, but rather outside of it.
 	if machineconfig.IsPodmanMachine() && opts.VMName == "" {
 		return guestOSManager()
 	}
-	return machineOSManager(opts)
+	return machineOSManager(opts, p)
 }
 
 // guestOSManager returns an OSmanager for inside-VM operations
@@ -43,24 +44,29 @@ func guestOSManager() (pkgOS.Manager, error) {
 }
 
 // machineOSManager returns an os manager that manages outside the VM.
-func machineOSManager(opts ManagerOpts) (pkgOS.Manager, error) {
+func machineOSManager(opts ManagerOpts, _ vmconfigs.VMProvider) (pkgOS.Manager, error) {
 	vmName := opts.VMName
 	if opts.VMName == "" {
-		vmName = pkgMachine.DefaultMachineName
+		vmName = define.DefaultMachineName
 	}
-	provider, err := machine.GetSystemProvider()
+	p, err := provider.Get()
 	if err != nil {
 		return nil, err
 	}
-	vm, err := provider.LoadVMByName(vmName)
+	dirs, err := env.GetMachineDirs(p.VMType())
+	if err != nil {
+		return nil, err
+	}
+	mc, err := vmconfigs.LoadMachineByName(vmName, dirs)
 	if err != nil {
 		return nil, err
 	}
 	return &pkgOS.MachineOS{
-		VM:      vm,
-		Args:    opts.CLIArgs,
-		VMName:  vmName,
-		Restart: opts.Restart,
+		VM:       mc,
+		Provider: p,
+		Args:     opts.CLIArgs,
+		VMName:   vmName,
+		Restart:  opts.Restart,
 	}, nil
 }
 

@@ -1,16 +1,20 @@
+//go:build !remote
+
 //nolint:unused // these types are used to wire generated swagger to API code
 package swagger
 
 import (
 	"github.com/containers/common/libnetwork/types"
 	"github.com/containers/image/v5/manifest"
-	"github.com/containers/podman/v4/libpod/define"
-	"github.com/containers/podman/v4/pkg/api/handlers"
-	"github.com/containers/podman/v4/pkg/domain/entities"
-	"github.com/containers/podman/v4/pkg/domain/entities/reports"
-	"github.com/containers/podman/v4/pkg/inspect"
+	"github.com/containers/podman/v5/libpod/define"
+	"github.com/containers/podman/v5/pkg/api/handlers"
+	"github.com/containers/podman/v5/pkg/domain/entities"
+	"github.com/containers/podman/v5/pkg/domain/entities/reports"
+	"github.com/containers/podman/v5/pkg/inspect"
 	dockerAPI "github.com/docker/docker/api/types"
-	dockerVolume "github.com/docker/docker/api/types/volume"
+	dockerImage "github.com/docker/docker/api/types/image"
+	"github.com/docker/docker/api/types/network"
+	"github.com/docker/docker/api/types/volume"
 )
 
 // Image Tree
@@ -187,6 +191,13 @@ type versionResponse struct {
 	Body entities.ComponentVersion
 }
 
+// Check
+// swagger:response
+type systemCheckResponse struct {
+	// in:body
+	Body entities.SystemCheckReport
+}
+
 // Disk usage
 // swagger:response
 type systemDiskUsage struct {
@@ -219,7 +230,7 @@ type execSessionInspect struct {
 // swagger:response
 type imageList struct {
 	// in:body
-	Body []dockerAPI.ImageSummary
+	Body []dockerImage.Summary
 }
 
 // Image summary for libpod API
@@ -240,21 +251,21 @@ type containersList struct {
 // swagger:response
 type volumeInspect struct {
 	// in:body
-	Body dockerVolume.Volume
+	Body volume.Volume
 }
 
 // Volume prune
 // swagger:response
 type volumePruneResponse struct {
 	// in:body
-	Body dockerAPI.VolumesPruneReport
+	Body volume.PruneReport
 }
 
 // Volume List
 // swagger:response
 type volumeList struct {
 	// in:body
-	Body dockerVolume.ListResponse
+	Body volume.ListResponse
 }
 
 // Volume list
@@ -313,9 +324,13 @@ type containerCreateResponse struct {
 	Body entities.ContainerCreateResponse
 }
 
+// Update container
+// swagger:response
 type containerUpdateResponse struct {
 	// in:body
-	ID string
+	Body struct {
+		ID string
+	}
 }
 
 // Wait container
@@ -335,14 +350,14 @@ type containerWaitResponse struct {
 // swagger:response
 type networkInspectCompat struct {
 	// in:body
-	Body dockerAPI.NetworkResource
+	Body network.Inspect
 }
 
 // Network list
 // swagger:response
 type networkListCompat struct {
 	// in:body
-	Body []dockerAPI.NetworkResource
+	Body []network.Summary
 }
 
 // List Containers
@@ -433,7 +448,7 @@ type networkRmResponse struct {
 // swagger:response
 type networkInspectResponse struct {
 	// in:body
-	Body types.Network
+	Body entities.NetworkInspectReport
 }
 
 // Network list

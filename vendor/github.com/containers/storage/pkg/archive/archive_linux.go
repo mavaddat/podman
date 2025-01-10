@@ -48,8 +48,8 @@ func (o overlayWhiteoutConverter) ConvertWrite(hdr *tar.Header, path string, fi 
 			return nil, err
 		}
 		if len(opaque) == 1 && opaque[0] == 'y' {
-			if hdr.Xattrs != nil {
-				delete(hdr.Xattrs, getOverlayOpaqueXattrName())
+			if hdr.PAXRecords != nil {
+				delete(hdr.PAXRecords, PaxSchilyXattr+getOverlayOpaqueXattrName())
 			}
 			// If there are no lower layers, then it can't have been deleted in this layer.
 			if len(o.rolayers) == 0 {
@@ -124,8 +124,7 @@ func (overlayWhiteoutConverter) ConvertReadWithHandler(hdr *tar.Header, path str
 	}
 
 	// if a file was deleted and we are using overlay, we need to create a character device
-	if strings.HasPrefix(base, WhiteoutPrefix) {
-		originalBase := base[len(WhiteoutPrefix):]
+	if originalBase, ok := strings.CutPrefix(base, WhiteoutPrefix); ok {
 		originalPath := filepath.Join(dir, originalBase)
 
 		if err := handler.Mknod(originalPath, unix.S_IFCHR, 0); err != nil {
@@ -153,8 +152,7 @@ func (overlayWhiteoutConverter) ConvertReadWithHandler(hdr *tar.Header, path str
 	return true, nil
 }
 
-type directHandler struct {
-}
+type directHandler struct{}
 
 func (d directHandler) Setxattr(path, name string, value []byte) error {
 	return unix.Setxattr(path, name, value, 0)
@@ -185,7 +183,7 @@ func GetFileOwner(path string) (uint32, uint32, uint32, error) {
 	}
 	s, ok := f.Sys().(*syscall.Stat_t)
 	if ok {
-		return s.Uid, s.Gid, s.Mode & 07777, nil
+		return s.Uid, s.Gid, s.Mode & 0o7777, nil
 	}
 	return 0, 0, uint32(f.Mode()), nil
 }

@@ -15,30 +15,13 @@ var ErrNoJournaldLogging = errors.New("no support for journald logging")
 
 // String returns a string representation of EventerType
 func (et EventerType) String() string {
-	switch et {
-	case LogFile:
-		return "file"
-	case Journald:
-		return "journald"
-	case Memory:
-		return "memory"
-	case Null:
-		return "none"
-	default:
-		return "invalid"
-	}
+	return string(et)
 }
 
 // IsValidEventer checks if the given string is a valid eventer type.
 func IsValidEventer(eventer string) bool {
-	switch eventer {
-	case LogFile.String():
-		return true
-	case Journald.String():
-		return true
-	case Memory.String():
-		return true
-	case Null.String():
+	switch EventerType(eventer) {
+	case LogFile, Journald, Null:
 		return true
 	default:
 		return false
@@ -54,13 +37,6 @@ func NewEvent(status Status) Event {
 	}
 }
 
-// Recycle checks if the event log has reach a limit and if so
-// renames the current log and starts a new one.  The remove bool
-// indicates the old log file should be deleted.
-func (e *Event) Recycle(path string, remove bool) error {
-	return errors.New("not implemented")
-}
-
 // ToJSONString returns the event as a json'ified string
 func (e *Event) ToJSONString() (string, error) {
 	b, err := json.Marshal(e)
@@ -69,6 +45,9 @@ func (e *Event) ToJSONString() (string, error) {
 
 // ToHumanReadable returns human-readable event as a formatted string
 func (e *Event) ToHumanReadable(truncate bool) string {
+	if e == nil {
+		return ""
+	}
 	var humanFormat string
 	id := e.ID
 	if truncate {
@@ -80,8 +59,10 @@ func (e *Event) ToHumanReadable(truncate bool) string {
 		if e.PodID != "" {
 			humanFormat += fmt.Sprintf(", pod_id=%s", e.PodID)
 		}
-		if e.HealthStatus != "" {
+		if e.Status == HealthStatus {
 			humanFormat += fmt.Sprintf(", health_status=%s", e.HealthStatus)
+			humanFormat += fmt.Sprintf(", health_failing_streak=%d", e.HealthFailingStreak)
+			humanFormat += fmt.Sprintf(", health_log=%s", e.HealthLog)
 		}
 		// check if the container has labels and add it to the output
 		if len(e.Attributes) > 0 {
@@ -91,9 +72,18 @@ func (e *Event) ToHumanReadable(truncate bool) string {
 		}
 		humanFormat += ")"
 	case Network:
-		humanFormat = fmt.Sprintf("%s %s %s %s (container=%s, name=%s)", e.Time, e.Type, e.Status, id, id, e.Network)
+		if e.Status == Create || e.Status == Remove {
+			if netdriver, exists := e.Attributes["driver"]; exists {
+				humanFormat = fmt.Sprintf("%s %s %s %s (name=%s, type=%s)", e.Time, e.Type, e.Status, e.ID, e.Network, netdriver)
+			}
+		} else {
+			humanFormat = fmt.Sprintf("%s %s %s %s (container=%s, name=%s)", e.Time, e.Type, e.Status, id, id, e.Network)
+		}
 	case Image:
 		humanFormat = fmt.Sprintf("%s %s %s %s %s", e.Time, e.Type, e.Status, id, e.Name)
+		if e.Error != "" {
+			humanFormat += " " + e.Error
+		}
 	case System:
 		if e.Name != "" {
 			humanFormat = fmt.Sprintf("%s %s %s %s", e.Time, e.Type, e.Status, e.Name)
@@ -106,7 +96,7 @@ func (e *Event) ToHumanReadable(truncate bool) string {
 	return humanFormat
 }
 
-// NewEventFromString takes stringified json and converts
+// newEventFromJSONString takes stringified json and converts
 // it to an event
 func newEventFromJSONString(event string) (*Event, error) {
 	e := new(Event)
@@ -198,6 +188,8 @@ func StringToStatus(name string) (Status, error) {
 		return Prune, nil
 	case Pull.String():
 		return Pull, nil
+	case PullError.String():
+		return PullError, nil
 	case Push.String():
 		return Push, nil
 	case Refresh.String():
@@ -230,6 +222,8 @@ func StringToStatus(name string) (Status, error) {
 		return Unpause, nil
 	case Untag.String():
 		return Untag, nil
+	case Update.String():
+		return Update, nil
 	}
 	return "", fmt.Errorf("unknown event status %q", name)
 }

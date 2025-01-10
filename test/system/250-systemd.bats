@@ -3,27 +3,35 @@
 # Tests generated configurations for systemd.
 #
 
+# bats file_tags=ci:parallel
+
 load helpers
 load helpers.systemd
+load helpers.network
 
-SERVICE_NAME="podman_test_$(random_string)"
+SERVICE_NAME=
 
-UNIT_FILE="$UNIT_DIR/$SERVICE_NAME.service"
-TEMPLATE_FILE_PREFIX="$UNIT_DIR/$SERVICE_NAME"
+UNIT_FILE=
+TEMPLATE_FILE=
 
 function setup() {
     skip_if_remote "systemd tests are meaningless over remote"
+
+    SERVICE_NAME="podman-test-$(safename)"
+    UNIT_FILE="$UNIT_DIR/$SERVICE_NAME.service"
+    TEMPLATE_FILE="$UNIT_DIR/$SERVICE_NAME@.service"
 
     basic_setup
 }
 
 function teardown() {
-    if [[ -e "$UNIT_FILE" ]]; then
+    if [[ -n "$UNIT_FILE" ]] && [[ -e "$UNIT_FILE" ]]; then
         run systemctl stop "$SERVICE_NAME"
         if [ $status -ne 0 ]; then
             echo "# WARNING: systemctl stop failed in teardown: $output" >&3
         fi
 
+        run systemctl reset-failed "$SERVICE_NAME"
         rm -f "$UNIT_FILE"
         systemctl daemon-reload
     fi
@@ -31,13 +39,35 @@ function teardown() {
     basic_teardown
 }
 
+# Helper to atomically create a systemd unit file from a tmpfile
+#
+# Context:
+#     $1  - file created by podman generate systemd; presumed to be in a tmpdir
+#     $2  - desired service file path, presumed to be in /run
+#
+# We can't just mv one to the other, because mv is not atomic across
+# filesystems. (We need atomic, to guarantee that there will never
+# be an incomplete .service file). Hence the tmp extension.
+# -Z is because /run and $TMPDIR have different SELinux contexts.
+function mv-safely() {
+    mv -Z "$1" "$2.tmp.$$" && mv -Z "$2.tmp.$$" "$2"
+}
+
 # Helper to start a systemd service running a container
 function service_setup() {
-    run_podman generate systemd \
+    # January 2024: we can no longer do "run_podman generate systemd" followed
+    # by "echo $output >file", because generate-systemd is deprecated and now
+    # says so loudly, to stderr, with no way to silence it. Since BATS gloms
+    # stdout + stderr, that warning goes to the unit file. (Today's systemd
+    # is forgiving about that, but RHEL8 systemd chokes with EINVAL)
+    (
+        cd $PODMAN_TMPDIR
+        run_podman generate systemd --files --name \
                -e http_proxy -e https_proxy -e no_proxy \
                -e HTTP_PROXY -e HTTPS_PROXY -e NO_PROXY \
                --new $cname
-    echo "$output" > "$UNIT_FILE"
+        mv-safely "container-$cname.service" $UNIT_FILE
+    )
     run_podman rm $cname
 
     systemctl daemon-reload
@@ -46,8 +76,7 @@ function service_setup() {
     run systemctl enable "$SERVICE_NAME"
     assert $status -eq 0 "Error enabling systemd unit $SERVICE_NAME: $output"
 
-    run systemctl start "$SERVICE_NAME"
-    assert $status -eq 0 "Error starting systemd unit $SERVICE_NAME: $output"
+    systemctl_start "$SERVICE_NAME"
 
     run systemctl status "$SERVICE_NAME"
     assert $status -eq 0 "systemctl status $SERVICE_NAME: $output"
@@ -69,6 +98,8 @@ function service_cleanup() {
     run systemctl disable "$SERVICE_NAME"
     assert $status -eq 0 "Error disabling systemd unit $SERVICE_NAME: $output"
 
+    run systemctl reset-failed "$SERVICE_NAME"
+
     rm -f "$UNIT_FILE"
     systemctl daemon-reload
 }
@@ -76,19 +107,15 @@ function service_cleanup() {
 # These tests can fail in dev. environment because of SELinux.
 # quick fix: chcon -t container_runtime_exec_t ./bin/podman
 @test "podman generate - systemd - basic" {
-    # Flakes with "ActiveState=failed (expected =inactive)"
-    if is_ubuntu; then
-        skip "FIXME: 2022-09-01: requires conmon-2.1.4, ubuntu has 2.1.3"
-    fi
-
     # Warn when a custom restart policy is used without --new (see #15284)
     run_podman create --restart=always $IMAGE
     cid="$output"
-    run_podman generate systemd $cid
-    is "$output" ".*Container $cid has restart policy .*always.* which can lead to issues on shutdown.*" "generate systemd emits warning"
+    run_podman 0+w generate systemd $cid
+    require_warning "Container $cid has restart policy .*always.* which can lead to issues on shutdown" \
+                    "generate systemd emits warning"
     run_podman rm -f $cid
 
-    cname=$(random_string)
+    cname=c-$(safename)
     # See #7407 for --pull=always.
     run_podman create --pull=always --name $cname --label "io.containers.autoupdate=registry" $IMAGE \
         sh -c "trap 'echo Received SIGTERM, finishing; exit' SIGTERM; echo WAITING; while :; do sleep 0.1; done"
@@ -108,10 +135,10 @@ function service_cleanup() {
 
 @test "podman autoupdate local" {
     # Note that the entrypoint may be a JSON string which requires preserving the quotes (see #12477)
-    cname=$(random_string)
+    cname=c-$(safename)
 
     # Create a scratch image (copy of our regular one)
-    image_copy=base$(random_string | tr A-Z a-z)
+    image_copy=base-$(safename)
     run_podman tag $IMAGE $image_copy
 
     # Create a container based on that
@@ -136,16 +163,18 @@ function service_cleanup() {
 # These tests can fail in dev. environment because of SELinux.
 # quick fix: chcon -t container_runtime_exec_t ./bin/podman
 @test "podman generate systemd - envar" {
-    cname=$(random_string)
+    cname=c-$(safename)
     FOO=value BAR=%s run_podman create --name $cname --env FOO -e BAR --env MYVAR=myval \
-        $IMAGE sh -c 'printenv && sleep 100'
+        $IMAGE sh -c 'printenv && echo READY; trap 'exit' SIGTERM; while :; do sleep 0.1; done'
 
     # Start systemd service to run this container
     service_setup
 
-    # Give container time to start; make sure output looks top-like
-    sleep 2
-    run_podman logs $cname
+    # Give container time to start and print output
+    # wait_for_ready returns directly if the logs matches and preserves $output
+    # for us so we do not have to call podman logs again here if we match the env below.
+    wait_for_ready $cname
+
     is "$output" ".*FOO=value.*" "FOO environment variable set"
     is "$output" ".*BAR=%s.*" "BAR environment variable set"
     is "$output" ".*MYVAR=myval.*" "MYVAL environment variable set"
@@ -156,19 +185,19 @@ function service_cleanup() {
 
 # Regression test for #11438
 @test "podman generate systemd - restart policy & timeouts" {
-    cname=$(random_string)
+    cname=c1-$(safename)
     run_podman create --restart=always --name $cname $IMAGE
     run_podman generate systemd --new $cname
     is "$output" ".*Restart=always.*" "Use container's restart policy if set"
     run_podman generate systemd --new --restart-policy=on-failure $cname
     is "$output" ".*Restart=on-failure.*" "Override container's restart policy"
 
-    cname2=$(random_string)
+    cname2=c2-$(safename)
     run_podman create --restart=unless-stopped --name $cname2 $IMAGE
     run_podman generate systemd --new $cname2
     is "$output" ".*Restart=always.*" "unless-stopped translated to always"
 
-    cname3=$(random_string)
+    cname3=c3-$(safename)
     run_podman create --restart=on-failure:42 --name $cname3 $IMAGE
     run_podman generate systemd --new $cname3
     is "$output" ".*Restart=on-failure.*" "on-failure:xx is parsed correctly"
@@ -224,18 +253,21 @@ LISTEN_FDNAMES=listen_fdnames" | sort)
 }
 
 @test "podman generate - systemd template" {
-    cname=$(random_string)
+    cname=c-$(safename)
     run_podman create --name $cname $IMAGE top
 
-    run_podman generate systemd --template -n $cname
-    echo "$output" > "$TEMPLATE_FILE_PREFIX@.service"
+    # See note in service_setup() above re: using --files
+    (
+        cd $PODMAN_TMPDIR
+        run_podman generate systemd --template --files -n $cname
+        mv-safely "container-$cname.service" $TEMPLATE_FILE
+    )
     run_podman rm -f $cname
 
     systemctl daemon-reload
 
     INSTANCE="$SERVICE_NAME@1.service"
-    run systemctl start "$INSTANCE"
-    assert $status -eq 0 "Error starting systemd unit $INSTANCE: $output"
+    systemctl_start "$INSTANCE"
 
     run systemctl status "$INSTANCE"
     assert $status -eq 0 "systemctl status $INSTANCE: $output"
@@ -243,13 +275,15 @@ LISTEN_FDNAMES=listen_fdnames" | sort)
     run systemctl stop "$INSTANCE"
     assert $status -eq 0 "Error stopping systemd unit $INSTANCE: $output"
 
-    rm -f "$TEMPLATE_FILE_PREFIX@.service"
+    run systemctl reset-failed "$INSTANCE"
+
+    rm -f $TEMPLATE_FILE
     systemctl daemon-reload
 }
 
 @test "podman generate - systemd template no support for pod" {
-    cname=$(random_string)
-    podname=$(random_string)
+    cname=c-$(safename)
+    podname=p-$(safename)
     run_podman pod create --name $podname
     run_podman run --pod $podname -dt --name $cname $IMAGE top
 
@@ -258,14 +292,14 @@ LISTEN_FDNAMES=listen_fdnames" | sort)
 
     run_podman rm -f $cname
     run_podman pod rm -f $podname
-    run_podman rmi $(pause_image)
 }
 
 @test "podman generate - systemd template only used on --new" {
-    cname=$(random_string)
+    cname=c-$(safename)
     run_podman create --name $cname $IMAGE top
     run_podman 125 generate systemd --new=false --template -n $cname
     is "$output" ".*--template cannot be set" "Error message should be '--template requires --new'"
+    run_podman rm $cname
 }
 
 @test "podman --cgroup=cgroupfs doesn't show systemd warning" {
@@ -274,10 +308,12 @@ LISTEN_FDNAMES=listen_fdnames" | sort)
 }
 
 @test "podman --systemd sets container_uuid" {
-    run_podman run --systemd=always --name test $IMAGE printenv container_uuid
+    cname=c-$(safename)
+    run_podman run --systemd=always --name $cname $IMAGE printenv container_uuid
     container_uuid=$output
-    run_podman inspect test --format '{{ .ID }}'
+    run_podman inspect $cname --format '{{ .ID }}'
     is "${container_uuid}" "${output:0:32}" "UUID should be first 32 chars of Container id"
+    run_podman rm $cname
 }
 
 @test "podman --systemd fails on cgroup v1 with a private cgroupns" {
@@ -288,11 +324,11 @@ LISTEN_FDNAMES=listen_fdnames" | sort)
 }
 
 # https://github.com/containers/podman/issues/13153
-@test "podman rootless-netns slirp4netns process should be in different cgroup" {
+@test "podman rootless-netns processes should be in different cgroup" {
     is_rootless || skip "only meaningful for rootless"
 
-    cname=$(random_string)
-    local netname=testnet-$(random_string 10)
+    cname=c-$(safename)
+    local netname=testnet-$(safename)
 
     # create network and container with network
     run_podman network create $netname
@@ -302,15 +338,18 @@ LISTEN_FDNAMES=listen_fdnames" | sort)
     service_setup
 
     # run second container with network
-    cname2=$(random_string)
+    cname2=c2-$(safename)
     run_podman run -d --name $cname2 --network $netname $IMAGE top
 
     # stop systemd container
     service_cleanup
 
+    pasta_iface=$(default_ifname 4)
+    assert "$pasta_iface" != "" "pasta_iface is set"
+
     # now check that the rootless netns slirp4netns process is still alive and working
     run_podman unshare --rootless-netns ip addr
-    is "$output" ".*tap0.*" "slirp4netns interface exists in the netns"
+    is "$output" ".*$pasta_iface.*" "pasta interface exists in the netns"
     run_podman exec $cname2 nslookup google.com
 
     run_podman rm -f -t0 $cname2
@@ -318,16 +357,13 @@ LISTEN_FDNAMES=listen_fdnames" | sort)
 }
 
 @test "podman create --health-on-failure=kill" {
-    img="healthcheck_i"
-    _build_health_check_image $img
-
-    cname=c_$(random_string)
-    run_podman create --name $cname      \
-               --health-cmd /healthcheck \
-               --health-on-failure=kill  \
-               --health-retries=1        \
-               --restart=on-failure      \
-               $img
+    cname=c-$(safename)
+    run_podman create --name $cname                  \
+               --health-cmd /home/podman/healthcheck \
+               --health-on-failure=kill              \
+               --health-retries=1                    \
+               --restart=on-failure                  \
+               $IMAGE /home/podman/pause
 
     # run container in systemd unit
     service_setup
@@ -370,42 +406,44 @@ LISTEN_FDNAMES=listen_fdnames" | sort)
 
     # stop systemd container
     service_cleanup
-    run_podman rmi -f $img
 }
 
 @test "podman-kube@.service template" {
     install_kube_template
     # Create the YAMl file
     yaml_source="$PODMAN_TMPDIR/test.yaml"
+    podname=p-$(safename)
+    c1=c1-$(safename)
+    c2=c2-$(safename)
     cat >$yaml_source <<EOF
 apiVersion: v1
 kind: Pod
 metadata:
   annotations:
       io.containers.autoupdate: "local"
-      io.containers.autoupdate/b: "registry"
+      io.containers.autoupdate/$c2: "registry"
   labels:
     app: test
-  name: test_pod
+  name: $podname
 spec:
   containers:
   - command:
     - sh
     - -c
-    - echo a stdout; echo a stderr 1>&2; sleep inf
+    - echo c1 stdout; echo c1 stderr 1>&2; trap 'exit' SIGTERM; while :; do sleep 0.1; done
     image: $IMAGE
-    name: a
+    name: $c1
   - command:
     - sh
     - -c
-    - echo b stdout; echo b stderr 1>&2; sleep inf
+    - echo c2 stdout; echo c2 stderr 1>&2; trap 'exit' SIGTERM; while :; do sleep 0.1; done
     image: $IMAGE
-    name: b
+    name: $c2
 EOF
 
     # Dispatch the YAML file
     service_name="podman-kube@$(systemd-escape $yaml_source).service"
-    systemctl start $service_name
+    systemctl_start $service_name
     systemctl is-active $service_name
 
     # Make sure that Podman is the service's MainPID
@@ -426,35 +464,35 @@ EOF
     is "$output" "Error: container .* is the service container of pod(s) .* and cannot be removed without removing the pod(s)"
 
     # containers/podman/issues/17482: verify that the log-driver for the Pod's containers is NOT passthrough
-    for name in "a" "b"; do
-        run_podman container inspect test_pod-${name} --format "{{.HostConfig.LogConfig.Type}}"
+    for name in "c1" "c2"; do
+        run_podman container inspect ${podname}-${!name} --format "{{.HostConfig.LogConfig.Type}}"
         assert $output != "passthrough"
         # check that we can get the logs with passthrough when we run in a systemd unit
-        run_podman logs test_pod-$name
+        run_podman logs ${podname}-${!name}
         assert "$output" == "$name stdout
 $name stderr" "logs work with passthrough"
     done
 
     # we cannot assume the ordering between a b, this depends on timing and would flake in CI
     # use --names so we do not have to get the ID
-    run_podman pod logs --names test_pod
-    assert "$output" =~ ".*^test_pod-a a stdout.*" "logs from container a shown"
-    assert "$output" =~ ".*^test_pod-b b stdout.*" "logs from container b shown"
+    run_podman pod logs --names $podname
+    assert "$output" =~ ".*^${podname}-${c1} c1 stdout.*" "logs from container 1 shown"
+    assert "$output" =~ ".*^${podname}-${c2} c2 stdout.*" "logs from container 2 shown"
 
     # Add a simple `auto-update --dry-run` test here to avoid too much redundancy
     # with 255-auto-update.bats
     run_podman auto-update --dry-run --format "{{.Unit}},{{.Container}},{{.Image}},{{.Updated}},{{.Policy}}"
-    is "$output" ".*$service_name,.* (test_pod-a),$IMAGE,false,local.*" "global auto-update policy gets applied"
-    is "$output" ".*$service_name,.* (test_pod-b),$IMAGE,false,registry.*" "container-specified auto-update policy gets applied"
+    is "$output" ".*$service_name,.* (${podname}-${c1}),$IMAGE,false,local.*" "global auto-update policy gets applied"
+    is "$output" ".*$service_name,.* (${podname}-${c2}),$IMAGE,false,registry.*" "container-specified auto-update policy gets applied"
 
     # Kill the pod and make sure the service is not running.
-    # The restart policy is set to "never" since there is no
-    # design yet for propagating exit codes up to the service
-    # container.
-    run_podman pod kill test_pod
+    run_podman pod kill $podname
     for i in {0..20}; do
+        # echos are for debugging test flakes
+        echo "$_LOG_PROMPT systemctl is-active $service_name"
         run systemctl is-active $service_name
-        if [[ $output == "failed" ]]; then
+        echo "$output"
+        if [[ "$output" == "inactive" ]]; then
             break
         fi
         sleep 0.5
@@ -463,7 +501,7 @@ $name stderr" "logs work with passthrough"
 
     # Now stop and start the service again.
     systemctl stop $service_name
-    systemctl start $service_name
+    systemctl_start $service_name
     systemctl is-active $service_name
     run_podman container inspect $service_container --format "{{.State.Running}}"
     is "$output" "true"
@@ -471,9 +509,37 @@ $name stderr" "logs work with passthrough"
     # Clean up
     systemctl stop $service_name
     run_podman 1 container exists $service_container
-    run_podman 1 pod exists test_pod
-    run_podman rmi $(pause_image)
-    rm -f $UNIT_DIR/$unit_name
+    run_podman 1 pod exists $podname
 }
 
+@test "podman generate - systemd - DEPRECATED" {
+    run_podman generate systemd --help
+    is "$output" ".*[DEPRECATED] command:"
+    is "$output" ".*\[DEPRECATED\] Generate systemd units.*"
+
+    cname=c-$(safename)
+    run_podman create --name $cname $IMAGE
+    run_podman generate systemd $cname >/dev/null
+    is "$output" ".*[DEPRECATED] command:"
+    run_podman generate --help
+    is "$output" ".*\[DEPRECATED\] Generate systemd units"
+    run_podman rm $cname
+}
+
+@test "podman passes down the KillSignal and StopTimeout setting" {
+    ctr=systemd_test_$(safename)
+
+    run_podman run -d --name $ctr --stop-signal 5 --stop-timeout 7 --rm $IMAGE top
+    run_podman inspect $ctr --format '{{ .Id }}'
+    id="$output"
+
+    run systemctl show -p TimeoutStopUSec "libpod-${id}.scope"
+    assert "$output" == "TimeoutStopUSec=7s"
+
+    run systemctl show -p KillSignal "libpod-${id}.scope"
+    assert "$output" == "KillSignal=5"
+
+    # Clean up
+    run_podman rm -t 0 -f $ctr
+}
 # vim: filetype=sh

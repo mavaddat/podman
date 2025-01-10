@@ -7,7 +7,7 @@ import (
 	"strings"
 
 	"github.com/containers/common/pkg/parse"
-	"github.com/containers/podman/v4/libpod/define"
+	"github.com/containers/podman/v5/libpod/define"
 	spec "github.com/opencontainers/runtime-spec/specs-go"
 	"github.com/sirupsen/logrus"
 )
@@ -53,6 +53,9 @@ type ImageVolume struct {
 	Destination string
 	// ReadWrite sets the volume writable.
 	ReadWrite bool
+	// SubPath mounts a particular path within the image.
+	// If empty, the whole image is mounted.
+	SubPath string `json:"subPath,omitempty"`
 }
 
 // GenVolumeMounts parses user input into mounts, volumes and overlay volumes

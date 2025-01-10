@@ -1,3 +1,5 @@
+//go:build !remote
+
 package libpod
 
 import (
@@ -8,8 +10,8 @@ import (
 	"time"
 
 	"github.com/containers/common/pkg/config"
-	"github.com/containers/podman/v4/libpod/define"
-	"github.com/containers/podman/v4/libpod/lock"
+	"github.com/containers/podman/v5/libpod/define"
+	"github.com/containers/podman/v5/libpod/lock"
 	"github.com/opencontainers/runtime-spec/specs-go"
 )
 
@@ -275,8 +277,8 @@ func (p *Pod) VolumesFrom() []string {
 	if err != nil {
 		return nil
 	}
-	if ctrs, ok := infra.config.Spec.Annotations[define.InspectAnnotationVolumesFrom]; ok {
-		return strings.Split(ctrs, ",")
+	if ctrs, ok := infra.config.Spec.Annotations[define.VolumesFromAnnotation]; ok {
+		return strings.Split(ctrs, ";")
 	}
 	return nil
 }
@@ -360,9 +362,6 @@ func (p *Pod) CgroupPath() (string, error) {
 	defer p.lock.Unlock()
 	if err := p.updatePod(); err != nil {
 		return "", err
-	}
-	if p.state.InfraContainerID == "" {
-		return "", fmt.Errorf("pod has no infra container: %w", define.ErrNoSuchCtr)
 	}
 	return p.state.CgroupPath, nil
 }
@@ -460,7 +459,7 @@ type PodContainerStats struct {
 }
 
 // GetPodStats returns the stats for each of its containers
-func (p *Pod) GetPodStats(previousContainerStats map[string]*define.ContainerStats) (map[string]*define.ContainerStats, error) {
+func (p *Pod) GetPodStats() (map[string]*define.ContainerStats, error) {
 	p.lock.Lock()
 	defer p.lock.Unlock()
 
@@ -473,15 +472,15 @@ func (p *Pod) GetPodStats(previousContainerStats map[string]*define.ContainerSta
 	}
 	newContainerStats := make(map[string]*define.ContainerStats)
 	for _, c := range containers {
-		newStats, err := c.GetContainerStats(previousContainerStats[c.ID()])
-		// If the container wasn't running, don't include it
-		// but also suppress the error
-		if err != nil && !errors.Is(err, define.ErrCtrStateInvalid) {
+		newStats, err := c.GetContainerStats(nil)
+		if err != nil {
+			// If the container wasn't running ignore it
+			if errors.Is(err, define.ErrCtrStateInvalid) || errors.Is(err, define.ErrCtrStopped) {
+				continue
+			}
 			return nil, err
 		}
-		if err == nil {
-			newContainerStats[c.ID()] = newStats
-		}
+		newContainerStats[c.ID()] = newStats
 	}
 	return newContainerStats, nil
 }

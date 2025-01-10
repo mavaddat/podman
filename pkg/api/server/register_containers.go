@@ -1,10 +1,12 @@
+//go:build !remote
+
 package server
 
 import (
 	"net/http"
 
-	"github.com/containers/podman/v4/pkg/api/handlers/compat"
-	"github.com/containers/podman/v4/pkg/api/handlers/libpod"
+	"github.com/containers/podman/v5/pkg/api/handlers/compat"
+	"github.com/containers/podman/v5/pkg/api/handlers/libpod"
 	"github.com/gorilla/mux"
 )
 
@@ -71,21 +73,21 @@ func (s *APIServer) registerContainersHandlers(r *mux.Router) error {
 	//    name: filters
 	//    type: string
 	//    description: |
-	//       Returns a list of containers.
-	//        - ancestor=(<image-name>[:<tag>], <image id>, or <image@digest>)
-	//        - before=(<container id> or <container name>)
-	//        - expose=(<port>[/<proto>]|<startport-endport>/[<proto>])
-	//        - exited=<int> containers with exit code of <int>
-	//        - health=(starting|healthy|unhealthy|none)
-	//        - id=<ID> a container's ID
-	//        - is-task=(true|false)
-	//        - label=key or label="key=value" of a container label
-	//        - name=<name> a container's name
-	//        - network=(<network id> or <network name>)
-	//        - publish=(<port>[/<proto>]|<startport-endport>/[<proto>])
-	//        - since=(<container id> or <container name>)
-	//        - status=(created|restarting|running|removing|paused|exited|dead)
-	//        - volume=(<volume name> or <mount point destination>)
+	//        A JSON encoded value of the filters (a `map[string][]string`) to process on the containers list. Available filters:
+	//        - `ancestor`=(`<image-name>[:<tag>]`, `<image id>`, or `<image@digest>`)
+	//        - `before`=(`<container id>` or `<container name>`)
+	//        - `expose`=(`<port>[/<proto>]` or `<startport-endport>/[<proto>]`)
+	//        - `exited=<int>` containers with exit code of `<int>`
+	//        - `health`=(`starting`, `healthy`, `unhealthy` or `none`)
+	//        - `id=<ID>` a container's ID
+	//        - `is-task`=(`true` or `false`)
+	//        - `label`=(`key` or `"key=value"`) of a container label
+	//        - `name=<name>` a container's name
+	//        - `network`=(`<network id>` or `<network name>`)
+	//        - `publish`=(`<port>[/<proto>]` or `<startport-endport>/[<proto>]`)
+	//        - `since`=(`<container id>` or `<container name>`)
+	//        - `status`=(`created`, `restarting`, `running`, `removing`, `paused`, `exited` or `dead`)
+	//        - `volume`=(`<volume name>` or `<mount point destination>`)
 	// produces:
 	// - application/json
 	// responses:
@@ -444,7 +446,7 @@ func (s *APIServer) registerContainersHandlers(r *mux.Router) error {
 	//    name: ps_args
 	//    type: string
 	//    default: -ef
-	//    description: arguments to pass to ps such as aux. Requires ps(1) to be installed in the container if no ps(1) compatible AIX descriptors are used.
+	//    description: arguments to pass to ps such as aux.
 	// produces:
 	// - application/json
 	// responses:
@@ -526,7 +528,12 @@ func (s *APIServer) registerContainersHandlers(r *mux.Router) error {
 	// tags:
 	//   - containers (compat)
 	// summary: Attach to a container
-	// description: Hijacks the connection to forward the container's standard streams to the client.
+	// description: |
+	//   Attach to a container to read its output or send it input. You can attach
+	//   to the same container multiple times and you can reattach to containers
+	//   that have been detached.
+	//
+	//   It uses the same stream format as docker, see the libpod attach endpoint for a description of the format.
 	// parameters:
 	//  - in: path
 	//    name: name
@@ -670,6 +677,35 @@ func (s *APIServer) registerContainersHandlers(r *mux.Router) error {
 	//     $ref: "#/responses/internalError"
 	r.HandleFunc(VersionedPath("/containers/{name}/rename"), s.APIHandler(compat.RenameContainer)).Methods(http.MethodPost)
 	r.HandleFunc("/containers/{name}/rename", s.APIHandler(compat.RenameContainer)).Methods(http.MethodPost)
+	// swagger:operation POST /containers/{name}/update compat ContainerUpdate
+	// ---
+	// tags:
+	//   - containers (compat)
+	// summary: Update configuration of an existing container
+	// description: Change configuration settings for an existing container without requiring recreation.
+	// parameters:
+	//  - in: path
+	//    name: name
+	//    type: string
+	//    required: true
+	//    description: Full or partial ID or full name of the container to rename
+	//  - in: body
+	//    name: resources
+	//    required: false
+	//    description: attributes for updating the container
+	//    schema:
+	//      $ref: "#/definitions/containerUpdateRequest"
+	// produces:
+	// - application/json
+	// responses:
+	//   200:
+	//     description: no error
+	//   404:
+	//     $ref: "#/responses/containerNotFound"
+	//   500:
+	//     $ref: "#/responses/internalError"
+	r.HandleFunc(VersionedPath("/containers/{name}/update"), s.APIHandler(compat.UpdateContainer)).Methods(http.MethodPost)
+	r.HandleFunc("/containers/{name}/update", s.APIHandler(compat.UpdateContainer)).Methods(http.MethodPost)
 
 	/*
 		libpod endpoints
@@ -964,7 +1000,10 @@ func (s *APIServer) registerContainersHandlers(r *mux.Router) error {
 	// tags:
 	//   - containers
 	// summary: Get container logs
-	// description: Get stdout and stderr logs from a container.
+	// description: |
+	//   Get stdout and stderr logs from a container.
+	//
+	//   The stream format is the same as described in the attach endpoint.
 	// parameters:
 	//  - in: path
 	//    name: name
@@ -1173,11 +1212,11 @@ func (s *APIServer) registerContainersHandlers(r *mux.Router) error {
 	//    default: 5
 	//  - in: query
 	//    name: ps_args
-	//    type: string
-	//    default: -ef
+	//    type: array
+	//    items:
+	//       type: string
 	//    description: |
 	//      arguments to pass to ps such as aux.
-	//      Requires ps(1) to be installed in the container if no ps(1) compatible AIX descriptors are used.
 	// produces:
 	// - application/json
 	// responses:
@@ -1229,12 +1268,15 @@ func (s *APIServer) registerContainersHandlers(r *mux.Router) error {
 	//      enum:
 	//       - configured
 	//       - created
+	//       - exited
+	//       - healthy
+	//       - initialized
+	//       - paused
+	//       - removing
 	//       - running
 	//       - stopped
-	//       - paused
-	//       - exited
-	//       - removing
 	//       - stopping
+	//       - unhealthy
 	//    description: "Conditions to wait for. If no condition provided the 'exited' condition is assumed."
 	//  - in: query
 	//    name: interval
@@ -1317,7 +1359,94 @@ func (s *APIServer) registerContainersHandlers(r *mux.Router) error {
 	// tags:
 	//   - containers
 	// summary: Attach to a container
-	// description: Hijacks the connection to forward the container's standard streams to the client.
+	// description: |
+	//   Attach to a container to read its output or send it input. You can attach
+	//   to the same container multiple times and you can reattach to containers
+	//   that have been detached.
+	//
+	//   ### Hijacking
+	//
+	//   This endpoint hijacks the HTTP connection to transport `stdin`, `stdout`,
+	//   and `stderr` on the same socket.
+	//
+	//   This is the response from the service for an attach request:
+	//
+	//   ```
+	//   HTTP/1.1 200 OK
+	//   Content-Type: application/vnd.docker.raw-stream
+	//
+	//   [STREAM]
+	//   ```
+	//
+	//   After the headers and two new lines, the TCP connection can now be used
+	//   for raw, bidirectional communication between the client and server.
+	//
+	//   To inform potential proxies about connection hijacking, the client
+	//   can also optionally send connection upgrade headers.
+	//
+	//   For example, the client sends this request to upgrade the connection:
+	//
+	//   ```
+	//   POST /v4.6.0/libpod/containers/16253994b7c4/attach?stream=1&stdout=1 HTTP/1.1
+	//   Upgrade: tcp
+	//   Connection: Upgrade
+	//   ```
+	//
+	//   The service will respond with a `101 UPGRADED` response, and will
+	//   similarly follow with the raw stream:
+	//
+	//   ```
+	//   HTTP/1.1 101 UPGRADED
+	//   Content-Type: application/vnd.docker.raw-stream
+	//   Connection: Upgrade
+	//   Upgrade: tcp
+	//
+	//   [STREAM]
+	//   ```
+	//
+	//   ### Stream format
+	//
+	//   When the TTY setting is disabled for the container,
+	//   the HTTP Content-Type header is set to application/vnd.docker.multiplexed-stream
+	//   (starting with v4.7.0, previously application/vnd.docker.raw-stream was always used)
+	//   and the stream over the hijacked connected is multiplexed to separate out
+	//   `stdout` and `stderr`. The stream consists of a series of frames, each
+	//   containing a header and a payload.
+	//
+	//   The header contains the information about the output stream type and the size of
+	//   the payload.
+	//   It is encoded on the first eight bytes like this:
+	//
+	//   ```go
+	//   header := [8]byte{STREAM_TYPE, 0, 0, 0, SIZE1, SIZE2, SIZE3, SIZE4}
+	//   ```
+	//
+	//   `STREAM_TYPE` can be:
+	//
+	//   - 0: `stdin` (is written on `stdout`)
+	//   - 1: `stdout`
+	//   - 2: `stderr`
+	//
+	//   `SIZE1, SIZE2, SIZE3, SIZE4` are the four bytes of the `uint32` size
+	//   encoded as big endian.
+	//
+	//   Following the header is the payload, which contains the specified number of
+	//   bytes as written in the size.
+	//
+	//   The simplest way to implement this protocol is the following:
+	//
+	//   1. Read 8 bytes.
+	//   2. Choose `stdout` or `stderr` depending on the first byte.
+	//   3. Extract the frame size from the last four bytes.
+	//   4. Read the extracted size and output it on the correct output.
+	//   5. Goto 1.
+	//
+	//   ### Stream format when using a TTY
+	//
+	//   When the TTY setting is enabled for the container,
+	//   the stream is not multiplexed. The data exchanged over the hijacked
+	//   connection is simply the raw data from the process PTY and client's
+	//   `stdin`.
 	// parameters:
 	//  - in: path
 	//    name: name
@@ -1649,25 +1778,36 @@ func (s *APIServer) registerContainersHandlers(r *mux.Router) error {
 	// ---
 	// tags:
 	//   - containers
-	// summary: Update an existing containers cgroup configuration
-	// description: Update an existing containers cgroup configuration.
+	// summary: Updates the configuration of an existing container, allowing changes to resource limits and healthchecks
+	// description: Updates the configuration of an existing container, allowing changes to resource limits and healthchecks.
 	// parameters:
 	//  - in: path
 	//    name: name
 	//    type: string
 	//    required: true
 	//    description: Full or partial ID or full name of the container to update
+	//  - in: query
+	//    name: restartPolicy
+	//    type: string
+	//    required: false
+	//    description: New restart policy for the container.
+	//  - in: query
+	//    name: restartRetries
+	//    type: integer
+	//    required: false
+	//    description: New amount of retries for the container's restart policy. Only allowed if restartPolicy is set to on-failure
 	//  - in: body
-	//    name: resources
+	//    name: config
 	//    description: attributes for updating the container
 	//    schema:
 	//      $ref: "#/definitions/UpdateEntities"
 	// produces:
 	// - application/json
 	// responses:
-	//   responses:
-	//     201:
-	//       $ref: "#/responses/containerUpdateResponse"
+	//   201:
+	//     $ref: "#/responses/containerUpdateResponse"
+	//   400:
+	//     $ref: "#/responses/badParamError"
 	//   404:
 	//     $ref: "#/responses/containerNotFound"
 	//   500:

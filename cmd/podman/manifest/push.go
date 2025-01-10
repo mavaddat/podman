@@ -8,11 +8,11 @@ import (
 	"github.com/containers/common/pkg/auth"
 	"github.com/containers/common/pkg/completion"
 	"github.com/containers/image/v5/types"
-	"github.com/containers/podman/v4/cmd/podman/common"
-	"github.com/containers/podman/v4/cmd/podman/registry"
-	"github.com/containers/podman/v4/cmd/podman/utils"
-	"github.com/containers/podman/v4/pkg/domain/entities"
-	"github.com/containers/podman/v4/pkg/util"
+	"github.com/containers/podman/v5/cmd/podman/common"
+	"github.com/containers/podman/v5/cmd/podman/registry"
+	"github.com/containers/podman/v5/cmd/podman/utils"
+	"github.com/containers/podman/v5/pkg/domain/entities"
+	"github.com/containers/podman/v5/pkg/util"
 	"github.com/spf13/cobra"
 )
 
@@ -42,6 +42,7 @@ var (
 )
 
 func init() {
+	podmanConfig := registry.PodmanConfig()
 	registry.Commands = append(registry.Commands, registry.CliCommand{
 		Command: pushCmd,
 		Parent:  manifestCmd,
@@ -56,6 +57,10 @@ func init() {
 	flags.StringVar(&manifestPushOpts.Authfile, authfileFlagName, auth.GetDefaultAuthFile(), "path of the authentication file. Use REGISTRY_AUTH_FILE environment variable to override")
 	_ = pushCmd.RegisterFlagCompletionFunc(authfileFlagName, completion.AutocompleteDefault)
 
+	addCompressionFlagName := "add-compression"
+	flags.StringSliceVar(&manifestPushOpts.AddCompression, addCompressionFlagName, podmanConfig.ContainersConfDefaultsRO.Engine.AddCompression.Get(), "add instances with selected compression while pushing")
+	_ = pushCmd.RegisterFlagCompletionFunc(addCompressionFlagName, common.AutocompleteCompressionFormat)
+
 	certDirFlagName := "cert-dir"
 	flags.StringVar(&manifestPushOpts.CertDir, certDirFlagName, "", "use certificates at the specified path to access the registry")
 	_ = pushCmd.RegisterFlagCompletionFunc(certDirFlagName, completion.AutocompleteDefault)
@@ -67,6 +72,8 @@ func init() {
 	digestfileFlagName := "digestfile"
 	flags.StringVar(&manifestPushOpts.DigestFile, digestfileFlagName, "", "after copying the image, write the digest of the resulting digest to the file")
 	_ = pushCmd.RegisterFlagCompletionFunc(digestfileFlagName, completion.AutocompleteDefault)
+
+	flags.BoolVar(&manifestPushOpts.ForceCompressionFormat, "force-compression", false, "Use the specified compression algorithm even if the destination contains a differently-compressed variant already")
 
 	formatFlagName := "format"
 	flags.StringVarP(&manifestPushOpts.Format, formatFlagName, "f", "", "manifest type (oci or v2s2) to attempt to use when pushing the manifest list (default is manifest type of source)")
@@ -100,6 +107,10 @@ func init() {
 	flags.StringVar(&manifestPushOpts.CompressionFormat, compressionFormat, "", "compression format to use")
 	_ = pushCmd.RegisterFlagCompletionFunc(compressionFormat, common.AutocompleteCompressionFormat)
 
+	compressionLevel := "compression-level"
+	flags.Int(compressionLevel, 0, "compression level to use")
+	_ = pushCmd.RegisterFlagCompletionFunc(compressionLevel, completion.AutocompleteNone)
+
 	if registry.IsRemote() {
 		_ = flags.MarkHidden("cert-dir")
 		_ = flags.MarkHidden(signByFlagName)
@@ -110,8 +121,10 @@ func init() {
 }
 
 func push(cmd *cobra.Command, args []string) error {
-	if err := auth.CheckAuthFile(manifestPushOpts.Authfile); err != nil {
-		return err
+	if cmd.Flags().Changed("authfile") {
+		if err := auth.CheckAuthFile(manifestPushOpts.Authfile); err != nil {
+			return err
+		}
 	}
 	listImageSpec := args[0]
 	destSpec := args[len(args)-1]
@@ -155,6 +168,23 @@ func push(cmd *cobra.Command, args []string) error {
 		}
 		manifestPushOpts.SkipTLSVerify = types.NewOptionalBool(manifestPushOpts.Insecure)
 	}
+
+	if cmd.Flags().Changed("compression-level") {
+		val, err := cmd.Flags().GetInt("compression-level")
+		if err != nil {
+			return err
+		}
+		manifestPushOpts.CompressionLevel = &val
+	}
+
+	if cmd.Flags().Changed("compression-format") {
+		if !cmd.Flags().Changed("force-compression") {
+			// If `compression-format` is set and no value for `--force-compression`
+			// is selected then defaults to `true`.
+			manifestPushOpts.ForceCompressionFormat = true
+		}
+	}
+
 	digest, err := registry.ImageEngine().ManifestPush(registry.Context(), listImageSpec, destSpec, manifestPushOpts.ImagePushOptions)
 	if err != nil {
 		return err

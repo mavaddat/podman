@@ -1,3 +1,5 @@
+//go:build !remote
+
 package compat
 
 import (
@@ -11,28 +13,29 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/containers/podman/v4/libpod"
-	"github.com/containers/podman/v4/libpod/define"
-	"github.com/containers/podman/v4/pkg/api/handlers"
-	"github.com/containers/podman/v4/pkg/api/handlers/utils"
-	api "github.com/containers/podman/v4/pkg/api/types"
-	"github.com/containers/podman/v4/pkg/domain/entities"
-	"github.com/containers/podman/v4/pkg/domain/filters"
-	"github.com/containers/podman/v4/pkg/domain/infra/abi"
-	"github.com/containers/podman/v4/pkg/ps"
-	"github.com/containers/podman/v4/pkg/signal"
-	"github.com/containers/podman/v4/pkg/util"
+	"github.com/containers/podman/v5/libpod"
+	"github.com/containers/podman/v5/libpod/define"
+	"github.com/containers/podman/v5/pkg/api/handlers"
+	"github.com/containers/podman/v5/pkg/api/handlers/utils"
+	api "github.com/containers/podman/v5/pkg/api/types"
+	"github.com/containers/podman/v5/pkg/domain/entities"
+	"github.com/containers/podman/v5/pkg/domain/filters"
+	"github.com/containers/podman/v5/pkg/domain/infra/abi"
+	"github.com/containers/podman/v5/pkg/ps"
+	"github.com/containers/podman/v5/pkg/signal"
+	"github.com/containers/podman/v5/pkg/util"
 	"github.com/docker/docker/api/types"
+	dockerBackend "github.com/docker/docker/api/types/backend"
 	"github.com/docker/docker/api/types/container"
 	"github.com/docker/docker/api/types/network"
 	"github.com/docker/go-connections/nat"
 	"github.com/docker/go-units"
-	"github.com/gorilla/schema"
+	spec "github.com/opencontainers/runtime-spec/specs-go"
 	"github.com/sirupsen/logrus"
 )
 
 func RemoveContainer(w http.ResponseWriter, r *http.Request) {
-	decoder := r.Context().Value(api.DecoderKey).(*schema.Decoder)
+	decoder := utils.GetDecoder(r)
 	query := struct {
 		Force         bool  `schema:"force"`
 		Ignore        bool  `schema:"ignore"`
@@ -99,7 +102,7 @@ func RemoveContainer(w http.ResponseWriter, r *http.Request) {
 
 func ListContainers(w http.ResponseWriter, r *http.Request) {
 	runtime := r.Context().Value(api.RuntimeKey).(*libpod.Runtime)
-	decoder := r.Context().Value(api.DecoderKey).(*schema.Decoder)
+	decoder := utils.GetDecoder(r)
 	query := struct {
 		All   bool `schema:"all"`
 		Limit int  `schema:"limit"`
@@ -121,7 +124,7 @@ func ListContainers(w http.ResponseWriter, r *http.Request) {
 
 	filterFuncs := make([]libpod.ContainerFilter, 0, len(*filterMap))
 	all := query.All || query.Limit > 0
-	if len((*filterMap)) > 0 {
+	if len(*filterMap) > 0 {
 		for k, v := range *filterMap {
 			generatedFunc, err := filters.GenerateContainerFilterFuncs(k, v, runtime)
 			if err != nil {
@@ -179,7 +182,7 @@ func ListContainers(w http.ResponseWriter, r *http.Request) {
 
 func GetContainer(w http.ResponseWriter, r *http.Request) {
 	runtime := r.Context().Value(api.RuntimeKey).(*libpod.Runtime)
-	decoder := r.Context().Value(api.DecoderKey).(*schema.Decoder)
+	decoder := utils.GetDecoder(r)
 	query := struct {
 		Size bool `schema:"size"`
 	}{
@@ -208,7 +211,7 @@ func GetContainer(w http.ResponseWriter, r *http.Request) {
 func KillContainer(w http.ResponseWriter, r *http.Request) {
 	// /{version}/containers/(name)/kill
 	runtime := r.Context().Value(api.RuntimeKey).(*libpod.Runtime)
-	decoder := r.Context().Value(api.DecoderKey).(*schema.Decoder)
+	decoder := utils.GetDecoder(r)
 	query := struct {
 		Signal string `schema:"signal"`
 	}{
@@ -243,6 +246,11 @@ func KillContainer(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if len(report) > 0 && report[0].Err != nil {
+		if errors.Is(report[0].Err, define.ErrCtrStateInvalid) ||
+			errors.Is(report[0].Err, define.ErrCtrStopped) {
+			utils.Error(w, http.StatusConflict, report[0].Err)
+			return
+		}
 		utils.InternalServerError(w, report[0].Err)
 		return
 	}
@@ -256,8 +264,8 @@ func KillContainer(w http.ResponseWriter, r *http.Request) {
 		}
 		if sig == 0 || sig == syscall.SIGKILL {
 			opts := entities.WaitOptions{
-				Condition: []define.ContainerStatus{define.ContainerStateExited, define.ContainerStateStopped},
-				Interval:  time.Millisecond * 250,
+				Conditions: []string{define.ContainerStateExited.String(), define.ContainerStateStopped.String()},
+				Interval:   time.Millisecond * 250,
 			}
 			if _, err := containerEngine.ContainerWait(r.Context(), []string{name}, opts); err != nil {
 				utils.Error(w, http.StatusInternalServerError, err)
@@ -385,15 +393,18 @@ func LibpodToContainer(l *libpod.Container, sz bool) (*handlers.Container, error
 			Labels:     l.Labels(),
 			State:      stateStr,
 			Status:     status,
+			// FIXME: this seems broken, the field is never shown in the API output.
 			HostConfig: struct {
-				NetworkMode string `json:",omitempty"`
+				NetworkMode string            `json:",omitempty"`
+				Annotations map[string]string `json:",omitempty"`
 			}{
-				"host",
+				NetworkMode: "host",
+				// TODO: add annotations here for >= v1.46
 			},
 			NetworkSettings: &networkSettings,
 			Mounts:          mounts,
 		},
-		ContainerCreateConfig: types.ContainerCreateConfig{},
+		ContainerCreateConfig: dockerBackend.ContainerCreateConfig{},
 	}, nil
 }
 
@@ -437,22 +448,28 @@ func LibpodToContainerJSON(l *libpod.Container, sz bool) (*types.ContainerJSON, 
 	}
 
 	if l.HasHealthCheck() && state.Status != "created" {
-		state.Health = &types.Health{
-			Status:        inspect.State.Health.Status,
-			FailingStreak: inspect.State.Health.FailingStreak,
-		}
+		state.Health = &types.Health{}
+		if inspect.State.Health != nil {
+			state.Health.Status = inspect.State.Health.Status
+			state.Health.FailingStreak = inspect.State.Health.FailingStreak
+			log := inspect.State.Health.Log
 
-		log := inspect.State.Health.Log
-
-		for _, item := range log {
-			res := &types.HealthcheckResult{}
-			s, _ := time.Parse(time.RFC3339Nano, item.Start)
-			e, _ := time.Parse(time.RFC3339Nano, item.End)
-			res.Start = s
-			res.End = e
-			res.ExitCode = item.ExitCode
-			res.Output = item.Output
-			state.Health.Log = append(state.Health.Log, res)
+			for _, item := range log {
+				res := &types.HealthcheckResult{}
+				s, err := time.Parse(time.RFC3339Nano, item.Start)
+				if err != nil {
+					return nil, err
+				}
+				e, err := time.Parse(time.RFC3339Nano, item.End)
+				if err != nil {
+					return nil, err
+				}
+				res.Start = s
+				res.End = e
+				res.ExitCode = item.ExitCode
+				res.Output = item.Output
+				state.Health.Log = append(state.Health.Log, res)
+			}
 		}
 	}
 
@@ -518,19 +535,6 @@ func LibpodToContainerJSON(l *libpod.Container, sz bool) (*types.ContainerJSON, 
 	}
 	stopTimeout := int(l.StopTimeout())
 
-	exposedPorts := make(nat.PortSet)
-	for ep := range inspect.NetworkSettings.Ports {
-		splitp := strings.SplitN(ep, "/", 2)
-		if len(splitp) != 2 {
-			return nil, fmt.Errorf("PORT/PROTOCOL Format required for %q", ep)
-		}
-		exposedPort, err := nat.NewPort(splitp[1], splitp[0])
-		if err != nil {
-			return nil, err
-		}
-		exposedPorts[exposedPort] = struct{}{}
-	}
-
 	var healthcheck *container.HealthConfig
 	if inspect.Config.Healthcheck != nil {
 		healthcheck = &container.HealthConfig{
@@ -539,6 +543,16 @@ func LibpodToContainerJSON(l *libpod.Container, sz bool) (*types.ContainerJSON, 
 			Timeout:     inspect.Config.Healthcheck.Timeout,
 			StartPeriod: inspect.Config.Healthcheck.StartPeriod,
 			Retries:     inspect.Config.Healthcheck.Retries,
+		}
+	}
+
+	// Apparently the compiler can't convert a map[string]struct{} into a nat.PortSet
+	// (Despite a nat.PortSet being that exact struct with some types added)
+	var exposedPorts nat.PortSet
+	if len(inspect.Config.ExposedPorts) > 0 {
+		exposedPorts = make(nat.PortSet)
+		for p := range inspect.Config.ExposedPorts {
+			exposedPorts[nat.Port(p)] = struct{}{}
 		}
 	}
 
@@ -622,7 +636,7 @@ func formatCapabilities(slice []string) {
 
 func RenameContainer(w http.ResponseWriter, r *http.Request) {
 	runtime := r.Context().Value(api.RuntimeKey).(*libpod.Runtime)
-	decoder := r.Context().Value(api.DecoderKey).(*schema.Decoder)
+	decoder := utils.GetDecoder(r)
 
 	name := utils.GetName(r)
 	query := struct {
@@ -649,4 +663,134 @@ func RenameContainer(w http.ResponseWriter, r *http.Request) {
 	}
 
 	utils.WriteResponse(w, http.StatusNoContent, nil)
+}
+
+func UpdateContainer(w http.ResponseWriter, r *http.Request) {
+	runtime := r.Context().Value(api.RuntimeKey).(*libpod.Runtime)
+	name := utils.GetName(r)
+
+	ctr, err := runtime.LookupContainer(name)
+	if err != nil {
+		utils.ContainerNotFound(w, name, err)
+		return
+	}
+
+	options := new(container.UpdateConfig)
+	if err := json.NewDecoder(r.Body).Decode(options); err != nil {
+		utils.Error(w, http.StatusInternalServerError, fmt.Errorf("decoding request body: %w", err))
+		return
+	}
+
+	// Only handle the bits of update that Docker uses as examples.
+	// For example, the update API claims to be able to update devices for
+	// existing containers... Which I am very dubious about.
+	// Ignore bits like that unless someone asks us for them.
+
+	// We're going to be editing this, so we have to deep-copy to not affect
+	// the container's own resources
+	resources := new(spec.LinuxResources)
+	oldResources := ctr.LinuxResources()
+	if oldResources != nil {
+		if err := libpod.JSONDeepCopy(oldResources, resources); err != nil {
+			utils.Error(w, http.StatusInternalServerError, fmt.Errorf("copying old resource limits: %w", err))
+			return
+		}
+	}
+
+	// CPU limits
+	cpu := resources.CPU
+	if cpu == nil {
+		cpu = new(spec.LinuxCPU)
+	}
+	useCPU := false
+	if options.CPUShares != 0 {
+		shares := uint64(options.CPUShares)
+		cpu.Shares = &shares
+		useCPU = true
+	}
+	if options.CPUPeriod != 0 {
+		period := uint64(options.CPUPeriod)
+		cpu.Period = &period
+		useCPU = true
+	}
+	if options.CPUQuota != 0 {
+		cpu.Quota = &options.CPUQuota
+		useCPU = true
+	}
+	if options.CPURealtimeRuntime != 0 {
+		cpu.RealtimeRuntime = &options.CPURealtimeRuntime
+		useCPU = true
+	}
+	if options.CPURealtimePeriod != 0 {
+		period := uint64(options.CPURealtimePeriod)
+		cpu.RealtimePeriod = &period
+		useCPU = true
+	}
+	if options.CpusetCpus != "" {
+		cpu.Cpus = options.CpusetCpus
+		useCPU = true
+	}
+	if options.CpusetMems != "" {
+		cpu.Mems = options.CpusetMems
+		useCPU = true
+	}
+	if useCPU {
+		resources.CPU = cpu
+	}
+
+	// Memory limits
+	mem := resources.Memory
+	if mem == nil {
+		mem = new(spec.LinuxMemory)
+	}
+	useMem := false
+	if options.Memory != 0 {
+		mem.Limit = &options.Memory
+		useMem = true
+	}
+	if options.MemorySwap != 0 {
+		mem.Swap = &options.MemorySwap
+		useMem = true
+	}
+	if options.MemoryReservation != 0 {
+		mem.Reservation = &options.MemoryReservation
+		useMem = true
+	}
+	if useMem {
+		resources.Memory = mem
+	}
+
+	// PIDs limit
+	if options.PidsLimit != nil {
+		if resources.Pids == nil {
+			resources.Pids = new(spec.LinuxPids)
+		}
+		resources.Pids.Limit = *options.PidsLimit
+	}
+
+	// Blkio Weight
+	if options.BlkioWeight != 0 {
+		if resources.BlockIO == nil {
+			resources.BlockIO = new(spec.LinuxBlockIO)
+		}
+		resources.BlockIO.Weight = &options.BlkioWeight
+	}
+
+	// Restart policy
+	localPolicy := string(options.RestartPolicy.Name)
+	restartPolicy := &localPolicy
+
+	var restartRetries *uint
+	if options.RestartPolicy.MaximumRetryCount != 0 {
+		localRetries := uint(options.RestartPolicy.MaximumRetryCount)
+		restartRetries = &localRetries
+	}
+
+	if err := ctr.Update(resources, restartPolicy, restartRetries, &define.UpdateHealthCheckConfig{}); err != nil {
+		utils.Error(w, http.StatusInternalServerError, fmt.Errorf("updating container: %w", err))
+		return
+	}
+
+	responseStruct := container.ContainerUpdateOKBody{}
+	utils.WriteResponse(w, http.StatusOK, responseStruct)
 }

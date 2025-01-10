@@ -1,12 +1,10 @@
-//go:build darwin || dragonfly || freebsd || linux || netbsd || openbsd
-// +build darwin dragonfly freebsd linux netbsd openbsd
+//go:build dragonfly || freebsd || linux || netbsd || openbsd
 
 package qemu
 
 import (
 	"bytes"
 	"fmt"
-	"strings"
 	"syscall"
 
 	"golang.org/x/sys/unix"
@@ -24,7 +22,7 @@ func checkProcessStatus(processHint string, pid int, stderrBuf *bytes.Buffer) er
 	var status syscall.WaitStatus
 	pid, err := syscall.Wait4(pid, &status, syscall.WNOHANG, nil)
 	if err != nil {
-		return fmt.Errorf("failed to read qem%su process status: %w", processHint, err)
+		return fmt.Errorf("failed to read %s process status: %w", processHint, err)
 	}
 	if pid > 0 {
 		// child exited
@@ -33,13 +31,16 @@ func checkProcessStatus(processHint string, pid int, stderrBuf *bytes.Buffer) er
 	return nil
 }
 
-func pathsFromVolume(volume string) []string {
-	return strings.SplitN(volume, ":", 3)
+func sigKill(pid int) error {
+	return unix.Kill(pid, unix.SIGKILL)
 }
 
-func extractTargetPath(paths []string) string {
-	if len(paths) > 1 {
-		return paths[1]
+func findProcess(pid int) (int, error) {
+	if err := unix.Kill(pid, 0); err != nil {
+		if err == unix.ESRCH {
+			return -1, nil
+		}
+		return -1, fmt.Errorf("pinging QEMU process: %w", err)
 	}
-	return paths[0]
+	return pid, nil
 }

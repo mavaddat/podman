@@ -1,6 +1,7 @@
 package bindings
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -9,13 +10,17 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"os/user"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
 
 	"github.com/blang/semver/v4"
 	"github.com/containers/common/pkg/ssh"
-	"github.com/containers/podman/v4/version"
+	"github.com/containers/podman/v5/version"
+	"github.com/containers/storage/pkg/fileutils"
+	"github.com/kevinburke/ssh_config"
 	"github.com/sirupsen/logrus"
 	"golang.org/x/net/proxy"
 )
@@ -86,11 +91,9 @@ func NewConnection(ctx context.Context, uri string) (context.Context, error) {
 // A valid URI connection should be scheme://
 // For example tcp://localhost:<port>
 // or unix:///run/podman/podman.sock
-// or ssh://<user>@<host>[:port]/run/podman/podman.sock?secure=True
+// or ssh://<user>@<host>[:port]/run/podman/podman.sock
 func NewConnectionWithIdentity(ctx context.Context, uri string, identity string, machine bool) (context.Context, error) {
-	var (
-		err error
-	)
+	var err error
 	if v, found := os.LookupEnv("CONTAINER_HOST"); found && uri == "" {
 		uri = v
 	}
@@ -108,30 +111,11 @@ func NewConnectionWithIdentity(ctx context.Context, uri string, identity string,
 	var connection Connection
 	switch _url.Scheme {
 	case "ssh":
-		port := 22
-		if _url.Port() != "" {
-			port, err = strconv.Atoi(_url.Port())
-			if err != nil {
-				return nil, err
-			}
-		}
-		conn, err := ssh.Dial(&ssh.ConnectionDialOptions{
-			Host:                        uri,
-			Identity:                    identity,
-			User:                        _url.User,
-			Port:                        port,
-			InsecureIsMachineConnection: machine,
-		}, "golang")
+		conn, err := sshClient(_url, uri, identity, machine)
 		if err != nil {
-			return nil, newConnectError(err)
+			return nil, err
 		}
-		connection = Connection{URI: _url}
-		connection.Client = &http.Client{
-			Transport: &http.Transport{
-				DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
-					return ssh.DialNet(conn, "unix", _url)
-				},
-			}}
+		connection = conn
 	case "unix":
 		if !strings.HasPrefix(uri, "unix:///") {
 			// autofix unix://path_element vs unix:///path_element
@@ -159,6 +143,139 @@ func NewConnectionWithIdentity(ctx context.Context, uri string, identity string,
 	}
 	ctx = context.WithValue(ctx, versionKey, serviceVersion)
 	return ctx, nil
+}
+
+func sshClient(_url *url.URL, uri string, identity string, machine bool) (Connection, error) {
+	var (
+		err  error
+		port int
+	)
+	connection := Connection{
+		URI: _url,
+	}
+	userinfo := _url.User
+
+	if _url.Port() != "" {
+		port, err = strconv.Atoi(_url.Port())
+		if err != nil {
+			return connection, err
+		}
+	}
+
+	// only parse ssh_config when we are not connecting to a machine
+	// For machine connections we always have the full URL in the
+	// system connection so reading the file is just unnecessary.
+	if !machine {
+		alias := _url.Hostname()
+		cfg := ssh_config.DefaultUserSettings
+		cfg.IgnoreErrors = true
+		found := false
+
+		if userinfo == nil {
+			if val := cfg.Get(alias, "User"); val != "" {
+				userinfo = url.User(val)
+				found = true
+			}
+		}
+		// not in url or ssh_config so default to current user
+		if userinfo == nil {
+			u, err := user.Current()
+			if err != nil {
+				return connection, fmt.Errorf("current user could not be determined: %w", err)
+			}
+			userinfo = url.User(u.Username)
+		}
+
+		if val := cfg.Get(alias, "Hostname"); val != "" {
+			uri = val
+			found = true
+		}
+
+		if port == 0 {
+			if val := cfg.Get(alias, "Port"); val != "" {
+				if val != ssh_config.Default("Port") {
+					port, err = strconv.Atoi(val)
+					if err != nil {
+						return connection, fmt.Errorf("port is not an int: %s: %w", val, err)
+					}
+					found = true
+				}
+			}
+		}
+		// not in ssh config or url so use default 22 port
+		if port == 0 {
+			port = 22
+		}
+
+		if identity == "" {
+			if val := cfg.Get(alias, "IdentityFile"); val != "" {
+				// we get default IdentityFile value (~/.ssh/identity) every time
+				// checking if we got default
+				defaultIdentityPath := val == ssh_config.Default("IdentityFile")
+
+				identity = strings.Trim(val, "\"")
+
+				if strings.HasPrefix(identity, "~/") {
+					homedir, err := os.UserHomeDir()
+					if err != nil {
+						return connection, fmt.Errorf("failed to find home dir: %w", err)
+					}
+
+					identity = filepath.Join(homedir, identity[2:])
+				}
+
+				// if we have default value but no file exists ignoring identity
+				if err := fileutils.Exists(identity); err != nil && defaultIdentityPath {
+					identity = ""
+				} else {
+					found = true
+				}
+			}
+		}
+
+		if found {
+			logrus.Debugf("ssh_config alias found: %s", alias)
+			logrus.Debugf("  User: %s", userinfo.Username())
+			logrus.Debugf("  Hostname: %s", uri)
+			logrus.Debugf("  Port: %d", port)
+			logrus.Debugf("  IdentityFile: %q", identity)
+		}
+	}
+	conn, err := ssh.Dial(&ssh.ConnectionDialOptions{
+		Host:                        uri,
+		Identity:                    identity,
+		User:                        userinfo,
+		Port:                        port,
+		InsecureIsMachineConnection: machine,
+	}, ssh.GolangMode)
+	if err != nil {
+		return connection, newConnectError(err)
+	}
+	if _url.Path == "" {
+		session, err := conn.NewSession()
+		if err != nil {
+			return connection, err
+		}
+		defer session.Close()
+
+		var b bytes.Buffer
+		session.Stdout = &b
+		if err := session.Run(
+			"podman info --format '{{.Host.RemoteSocket.Path}}'"); err != nil {
+			return connection, err
+		}
+		val := strings.TrimSuffix(b.String(), "\n")
+		_url.Path = val
+	}
+	dialContext := func(ctx context.Context, _, _ string) (net.Conn, error) {
+		return ssh.DialNet(conn, "unix", _url)
+	}
+	connection.Client = &http.Client{
+		Transport: &http.Transport{
+			DialContext: dialContext,
+		},
+	}
+	return connection, nil
 }
 
 func tcpClient(_url *url.URL) (Connection, error) {
@@ -276,7 +393,12 @@ func (c *Connection) DoRequest(ctx context.Context, httpBody io.Reader, httpMeth
 		params[i+1] = url.PathEscape(pv)
 	}
 
-	uri := fmt.Sprintf("http://d/v%s/libpod"+endpoint, params...)
+	baseURL := "http://d"
+	if c.URI.Scheme == "tcp" {
+		// Allow path prefixes for tcp connections to match Docker behavior
+		baseURL = "http://" + c.URI.Host + c.URI.Path
+	}
+	uri := fmt.Sprintf(baseURL+"/v%s/libpod"+endpoint, params...)
 	logrus.Debugf("DoRequest Method: %s URI: %v", httpMethod, uri)
 
 	req, err := http.NewRequestWithContext(ctx, httpMethod, uri, httpBody)
@@ -321,30 +443,35 @@ func (c *Connection) GetDialer(ctx context.Context) (net.Conn, error) {
 
 // IsInformational returns true if the response code is 1xx
 func (h *APIResponse) IsInformational() bool {
+	//nolint:usestdlibvars // linter wants to use http.StatusContinue over 100 but that makes less readable IMO
 	return h.Response.StatusCode/100 == 1
 }
 
 // IsSuccess returns true if the response code is 2xx
 func (h *APIResponse) IsSuccess() bool {
+	//nolint:usestdlibvars // linter wants to use http.StatusContinue over 100 but that makes less readable IMO
 	return h.Response.StatusCode/100 == 2
 }
 
 // IsRedirection returns true if the response code is 3xx
 func (h *APIResponse) IsRedirection() bool {
+	//nolint:usestdlibvars // linter wants to use http.StatusContinue over 100 but that makes less readable IMO
 	return h.Response.StatusCode/100 == 3
 }
 
 // IsClientError returns true if the response code is 4xx
 func (h *APIResponse) IsClientError() bool {
+	//nolint:usestdlibvars // linter wants to use http.StatusContinue over 100 but that makes less readable IMO
 	return h.Response.StatusCode/100 == 4
 }
 
 // IsConflictError returns true if the response code is 409
 func (h *APIResponse) IsConflictError() bool {
-	return h.Response.StatusCode == 409
+	return h.Response.StatusCode == http.StatusConflict
 }
 
 // IsServerError returns true if the response code is 5xx
 func (h *APIResponse) IsServerError() bool {
+	//nolint:usestdlibvars // linter wants to use http.StatusContinue over 100 but that makes less readable IMO
 	return h.Response.StatusCode/100 == 5
 }

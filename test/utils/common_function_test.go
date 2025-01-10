@@ -8,7 +8,7 @@ import (
 	"reflect"
 	"strings"
 
-	. "github.com/containers/podman/v4/test/utils"
+	. "github.com/containers/podman/v5/test/utils"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 )
@@ -27,22 +27,9 @@ var _ = Describe("Common functions test", func() {
 		ProcessOneCgroupPath = defaultCgroupPath
 	})
 
-	It("Test CreateTempDirInTempDir", func() {
-		tmpDir, _ := CreateTempDirInTempDir()
-		_, err := os.Stat(tmpDir)
-		Expect(os.IsNotExist(err)).ShouldNot(BeTrue(), "Directory is not created as expect")
-	})
-
 	It("Test SystemExec", func() {
 		session := SystemExec(GoechoPath, []string{})
 		Expect(session.Command.Process).ShouldNot(BeNil(), "SystemExec cannot start a process")
-	})
-
-	It("Test StringInSlice", func() {
-		testSlice := []string{"apple", "peach", "pear"}
-		Expect(StringInSlice("apple", testSlice)).To(BeTrue(), "apple should in ['apple', 'peach', 'pear']")
-		Expect(StringInSlice("banana", testSlice)).ShouldNot(BeTrue(), "banana should not in ['apple', 'peach', 'pear']")
-		Expect(StringInSlice("anything", []string{})).ShouldNot(BeTrue(), "anything should not in empty slice")
 	})
 
 	DescribeTable("Test GetHostDistributionInfo",
@@ -67,18 +54,6 @@ var _ = Describe("Common functions test", func() {
 		Entry("Configure file is not exist.", "/tmp/nonexistent", "", "", true),
 		Entry("Item value with and without \"", "/tmp/os-release.test", "fedora", "\"28\"", false),
 		Entry("Item empty with and without \"", "/tmp/os-release.test", "", "\"\"", false),
-	)
-
-	DescribeTable("Test IsKernelNewerThan",
-		func(kv string, expect, isNil bool) {
-			newer, err := IsKernelNewerThan(kv)
-			Expect(newer).To(Equal(expect), "Version compare results is not as expect.")
-			Expect(err == nil).To(Equal(isNil), "Error is not as expect.")
-		},
-		Entry("Invalid kernel version: 0", "0", false, false),
-		Entry("Older kernel version:0.0", "0.0", true, true),
-		Entry("Newer kernel version: 100.17.14", "100.17.14", false, true),
-		Entry("Invalid kernel version: I am not a kernel version", "I am not a kernel version", false, false),
 	)
 
 	DescribeTable("Test TestIsCommandAvailable",

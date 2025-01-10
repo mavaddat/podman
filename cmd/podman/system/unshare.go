@@ -5,10 +5,10 @@ import (
 	"os"
 
 	"github.com/containers/common/pkg/completion"
-	"github.com/containers/podman/v4/cmd/podman/registry"
-	"github.com/containers/podman/v4/cmd/podman/utils"
-	"github.com/containers/podman/v4/pkg/domain/entities"
-	"github.com/containers/podman/v4/pkg/rootless"
+	"github.com/containers/podman/v5/cmd/podman/registry"
+	"github.com/containers/podman/v5/cmd/podman/utils"
+	"github.com/containers/podman/v5/pkg/domain/entities"
+	"github.com/containers/podman/v5/pkg/rootless"
 	"github.com/spf13/cobra"
 	"github.com/spf13/pflag"
 )
@@ -24,7 +24,7 @@ var (
 		RunE:              unshare,
 		ValidArgsFunction: completion.AutocompleteDefault,
 		Example: `podman unshare id
-  podman unshare cat /proc/self/uid_map,
+  podman unshare cat /proc/self/uid_map
   podman unshare podman-script.sh`,
 	}
 )

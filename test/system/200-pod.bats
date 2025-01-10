@@ -5,18 +5,16 @@ load helpers.network
 
 LOOPDEVICE=
 
-# This is a long ugly way to clean up pods and remove the pause image
+# Emergency cleanup if loop test fails
 function teardown() {
-    run_podman pod rm -f -t 0 -a
-    run_podman rm -f -t 0 -a
-    run_podman rmi --ignore $(pause_image)
-    basic_teardown
     if [[ -n "$LOOPDEVICE" ]]; then
         losetup -d $LOOPDEVICE
     fi
+
+    basic_teardown
 }
 
-
+# CANNOT BE PARALLELIZED: requires empty pod list
 @test "podman pod - basic tests" {
     run_podman pod list --noheading
     is "$output" "" "baseline: empty results from list --noheading"
@@ -28,6 +26,7 @@ function teardown() {
     is "$output" "" "baseline: empty results from ps --noheading"
 }
 
+# bats test_tags=ci:parallel
 @test "podman pod top - containers in different PID namespaces" {
     # With infra=false, we don't get a /pause container
     no_infra='--infra=false'
@@ -55,12 +54,44 @@ function teardown() {
         is "$output" ".*0 \+1 \+0 \+[0-9. ?s]\+/pause" "there is a /pause container"
     fi
 
+    # Cannot remove pod while containers are still running. Error messages
+    # differ slightly between local and remote; these are the common elements.
+    run_podman 125 pod rm $podid
+    assert "${lines[0]}" =~ "Error: not all containers could be removed from pod $podid: removing pod containers.*" \
+           "pod rm while busy: error message line 1 of 3"
+    assert "${lines[1]}" =~ "cannot remove container .* as it is running - running or paused containers cannot be removed without force: container state improper" \
+           "pod rm while busy: error message line 2 of 3"
+    assert "${lines[2]}" =~ "cannot remove container .* as it is running - running or paused containers cannot be removed without force: container state improper" \
+           "pod rm while busy: error message line 3 of 3"
+
     # Clean up
     run_podman --noout pod rm -f -t 0 $podid
     is "$output" "" "output should be empty"
 }
 
 
+# bats test_tags=ci:parallel
+@test "podman pod create - custom volumes" {
+    skip_if_remote "CONTAINERS_CONF_OVERRIDE only affects server side"
+    image="i.do/not/exist:image"
+    tmpdir=$PODMAN_TMPDIR/pod-test
+    mkdir -p $tmpdir
+    containersconf=$tmpdir/containers.conf
+    cat >$containersconf <<EOF
+[containers]
+volumes = ["/tmp:/foobar"]
+EOF
+
+    CONTAINERS_CONF_OVERRIDE=$containersconf run_podman pod create
+    podid="$output"
+
+    CONTAINERS_CONF_OVERRIDE=$containersconf run_podman create --pod $podid $IMAGE grep foobar /proc/mounts
+
+    run_podman pod rm $podid
+}
+
+
+# bats test_tags=ci:parallel
 @test "podman pod create - custom infra image" {
     skip_if_remote "CONTAINERS_CONF_OVERRIDE only affects server side"
     image="i.do/not/exist:image"
@@ -82,6 +113,7 @@ EOF
     is "$output" ".*initializing source docker://$image:.*"
 }
 
+# CANNOT BE PARALLELIZED - uses naked ps
 @test "podman pod - communicating between pods" {
     podname=pod$(random_string)
     run_podman 1 pod exists $podname
@@ -119,7 +151,7 @@ EOF
     # Clean up. First the nc -l container...
     run_podman rm $cid1
 
-    # ...then rm the pod, then rmi the pause image so we don't leave strays.
+    # ...then rm the pod and verify that it's gone
     run_podman pod rm $podname
 
     # Pod no longer exists
@@ -127,8 +159,9 @@ EOF
     run_podman 1 pod exists $podname
 }
 
+# bats test_tags=ci:parallel
 @test "podman pod - communicating via /dev/shm " {
-    podname=pod$(random_string)
+    podname="p-$(safename)"
     run_podman 1 pod exists $podname
     run_podman pod create --infra=true --name=$podname
     podid="$output"
@@ -139,7 +172,7 @@ EOF
     run_podman run --rm --pod $podname $IMAGE ls /dev/shm/test1
     is "$output" "/dev/shm/test1"
 
-    # ...then rm the pod, then rmi the pause image so we don't leave strays.
+    # ...then rm the pod and confirm it's gone
     run_podman pod rm $podname
 
     # Pod no longer exists
@@ -174,6 +207,8 @@ function random_ip() {
     echo $ip
 }
 
+
+# bats test_tags=ci:parallel
 @test "podman pod create - hashtag AllTheOptions" {
     mac=$(random_mac)
     add_host_ip=$(random_ip)
@@ -183,10 +218,10 @@ function random_ip() {
     dns_opt="ndots:$(octet)"
     dns_search=$(random_string 15 | tr A-Z a-z).abc
 
-    hostname=$(random_string | tr A-Z a-z).$(random_string | tr A-Z a-z).net
+    hostname=$(random_string | tr A-Z a-z)."host$(safename)".net
 
-    labelname=$(random_string 11)
-    labelvalue=$(random_string 22)
+    labelname="label-$(random_string 11)"
+    labelvalue="labelvalue-$(random_string 22)"
 
     pod_id_file=${PODMAN_TMPDIR}/pod-id-file
 
@@ -203,19 +238,21 @@ function random_ip() {
     # It will have a randomly generated infra command, using the
     # existing 'pause' script in our testimage. We assign a bogus
     # entrypoint to confirm that --infra-command will override.
-    local infra_image="infra_$(random_string 10 | tr A-Z a-z)"
-    local infra_command="/pause_$(random_string 10)"
-    local infra_name="infra_container_$(random_string 10 | tr A-Z a-z)"
-    run_podman build -t $infra_image - << EOF
+    local infra_image="infra_image_$(safename)"
+    local infra_command="/pause_$(safename)"
+    local infra_name="infra_container_$(safename)"
+    # --layers=false needed to work around buildah#5674 parallel flake
+    run_podman build -t $infra_image --layers=false - << EOF
 FROM $IMAGE
 RUN ln /home/podman/pause $infra_command
 ENTRYPOINT ["/original-entrypoint-should-be-overridden"]
 EOF
 
+    local podname="pod-$(safename)"
     if is_rootless; then
         mac_option=
     fi
-    run_podman pod create --name=mypod                   \
+    run_podman pod create --name=$podname                \
                --pod-id-file=$pod_id_file                \
                $mac_option                               \
                --hostname=$hostname                      \
@@ -228,31 +265,31 @@ EOF
                --infra-image   "$infra_image"            \
                --infra-command "$infra_command"          \
                --infra-name "$infra_name"
-    pod_id="$output"
+    local pod_id="$output"
 
     # Check --pod-id-file
     is "$(<$pod_id_file)" "$pod_id" "contents of pod-id-file"
 
     # Get ID of infra container
-    run_podman pod inspect --format '{{(index .Containers 0).ID}}' mypod
+    run_podman pod inspect --format '{{(index .Containers 0).ID}}' $podname
     local infra_cid="$output"
     # confirm that entrypoint is what we set
     run_podman container inspect --format '{{.Config.Entrypoint}}' $infra_cid
-    is "$output" "$infra_command" "infra-command took effect"
+    is "$output" "[${infra_command}]" "infra-command took effect"
     # confirm that infra container name is set
     run_podman container inspect --format '{{.Name}}' $infra_cid
     is "$output" "$infra_name" "infra-name took effect"
 
     # Check each of the options
     if [ -n "$mac_option" ]; then
-        run_podman run --rm --pod mypod $IMAGE ip link show
+        run_podman run --rm --pod $podname $IMAGE ip link show
         # 'ip' outputs hex in lower-case, ${expr,,} converts UC to lc
         is "$output" ".* link/ether ${mac,,} " "requested MAC address was set"
     fi
 
-    run_podman run --rm --pod mypod $IMAGE hostname
+    run_podman run --rm --pod $podname $IMAGE hostname
     is "$output" "$hostname" "--hostname set the hostname"
-    run_podman 125 run --rm --pod mypod --hostname foobar $IMAGE hostname
+    run_podman 125 run --rm --pod $podname --hostname foobar $IMAGE hostname
     is "$output" ".*invalid config provided: cannot set hostname when joining the pod UTS namespace: invalid configuration" "--hostname should not be allowed in share UTS pod"
 
     run_podman run --rm --pod $pod_id $IMAGE cat /etc/hosts
@@ -260,37 +297,37 @@ EOF
     is "$output" ".*	$hostname"            "--hostname is in /etc/hosts"
     #               ^^^^ this must be a tab, not a space
 
-    run_podman run --rm --pod mypod $IMAGE cat /etc/resolv.conf
+    run_podman run --rm --pod $podname $IMAGE cat /etc/resolv.conf
     is "$output" ".*nameserver $dns_server"  "--dns [server] was added"
     is "$output" ".*search $dns_search"      "--dns-search was added"
     is "$output" ".*options $dns_opt"        "--dns-option was added"
 
     # pod inspect
-    run_podman pod inspect --format '{{.Name}}: {{.ID}} : {{.NumContainers}} : {{.Labels}}' mypod
-    is "$output" "mypod: $pod_id : 1 : map\[${labelname}:${labelvalue}]" \
+    run_podman pod inspect --format '{{.Name}}: {{.ID}} : {{.NumContainers}} : {{.Labels}}' $podname
+    is "$output" "$podname: $pod_id : 1 : map\[${labelname}:${labelvalue}]" \
        "pod inspect --format ..."
 
     # pod ps
     run_podman pod ps --format '{{.ID}} {{.Name}} {{.Status}} {{.Labels}}'
-    is "$output" "${pod_id:0:12} mypod Running map\[${labelname}:${labelvalue}]"  "pod ps"
+    assert "$output" =~ "${pod_id:0:12} $podname Running map\[${labelname}:${labelvalue}]"  "pod ps"
 
     run_podman pod ps --no-trunc --filter "label=${labelname}=${labelvalue}" --format '{{.ID}}'
     is "$output" "$pod_id" "pod ps --filter label=..."
 
     # Test local port forwarding, as well as 'ps' output showing ports
     # Run 'nc' in a container, waiting for input on the published port.
-    c_name=$(random_string 15)
-    run_podman run -d --pod mypod --name $c_name $IMAGE nc -l -p $port_in
+    c_name="ctr-$(safename)"
+    run_podman run -d --pod $podname --name $c_name $IMAGE nc -l -p $port_in
     cid="$output"
 
     # Try running another container also listening on the same port.
-    run_podman 1 run --pod mypod --name dsfsdfsdf $IMAGE nc -l -p $port_in
+    run_podman 1 run --pod $podname --name dsfsdfsdf $IMAGE nc -l -p $port_in
     is "$output" "nc: bind: Address in use" \
        "two containers cannot bind to same port"
 
     # make sure we can ping; failure here might mean that capabilities are wrong
-    run_podman run --rm --pod mypod $IMAGE ping -c1 127.0.0.1
-    run_podman run --rm --pod mypod $IMAGE ping -c1 $hostname
+    run_podman run --rm --pod $podname $IMAGE ping -c1 127.0.0.1
+    run_podman run --rm --pod $podname $IMAGE ping -c1 $hostname
 
     # While the container is still running, run 'podman ps' (no --format)
     # and confirm that the output includes the published port
@@ -323,10 +360,11 @@ EOF
     run_podman rmi $infra_image
 }
 
+# bats test_tags=ci:parallel
 @test "podman pod create should fail when infra-name is already in use" {
-    local infra_name="infra_container_$(random_string 10 | tr A-Z a-z)"
-    local infra_image="registry.k8s.io/pause:3.5"
-    local pod_name="$(random_string 10 | tr A-Z a-z)"
+    local infra_name="infra_container_$(safename)"
+    local infra_image="quay.io/libpod/k8s-pause:3.5"
+    local pod_name="p-$(safename)"
 
     run_podman --noout pod create --name $pod_name --infra-name "$infra_name" --infra-image "$infra_image"
     is "$output" "" "output from pod create should be empty"
@@ -339,8 +377,9 @@ EOF
     run_podman rmi $infra_image
 }
 
+# bats test_tags=ci:parallel
 @test "podman pod create --share" {
-    local pod_name="$(random_string 10 | tr A-Z a-z)"
+    local pod_name="p-$(safename)"
     run_podman 125 pod create --share bogus --name $pod_name
     is "$output" ".*invalid kernel namespace to share: bogus. Options are: cgroup, ipc, net, pid, uts or none" \
        "pod test for bogus --share option"
@@ -354,19 +393,24 @@ EOF
     for ns in uts pid ipc net; do
         is "$output" ".*$ns"
     done
+
+    run_podman pod rm -f $pod_name
 }
 
+# bats test_tags=ci:parallel
 @test "podman pod create --pod new:$POD --hostname" {
-    local pod_name="$(random_string 10 | tr A-Z a-z)"
+    local pod_name="p-$(safename)"
     run_podman run --rm --pod "new:$pod_name" --hostname foobar $IMAGE hostname
     is "$output" "foobar" "--hostname should work when creating a new:pod"
     run_podman pod rm $pod_name
     run_podman run --rm --pod "new:$pod_name" $IMAGE hostname
     is "$output" "$pod_name" "new:POD should have hostname name set to podname"
+    run_podman pod rm $pod_name
 }
 
+# bats test_tags=ci:parallel
 @test "podman rm --force to remove infra container" {
-    local pod_name="$(random_string 10 | tr A-Z a-z)"
+    local pod_name="p-$(safename)"
     run_podman create --pod "new:$pod_name" $IMAGE
     container_ID="$output"
     run_podman pod inspect --format "{{.InfraContainerID}}" $pod_name
@@ -391,40 +435,44 @@ EOF
     run_podman pod inspect --format "{{.InfraContainerID}}" $pod_name
     infra_ID="$output"
 
-    run_podman container rm --force --all $infraID
-    is "$output" ".*$infra_ID.*"
-    is "$output" ".*$container_1_ID.*"
-    is "$output" ".*$container_2_ID.*"
-    is "$output" ".*$container_3_ID.*"
+    run_podman container rm --force --depend $infra_ID
+    assert "$output" =~ ".*$infra_ID.*"        "removed infra container"
+    assert "$output" =~ ".*$container_1_ID.*"  "removed container 1"
+    assert "$output" =~ ".*$container_2_ID.*"  "removed container 2"
+    assert "$output" !~ ".*$container_3_ID.*"  "container 3 should not have been removed!"
+
+    run_podman container rm $container_3_ID
 }
 
+# bats test_tags=ci:parallel
 @test "podman pod create share net" {
-    run_podman pod create --name test
-    run_podman pod inspect test --format {{.InfraConfig.HostNetwork}}
+    podname="p-$(safename)"
+    run_podman pod create --name $podname
+    run_podman pod inspect $podname --format {{.InfraConfig.HostNetwork}}
     is "$output" "false" "Default network sharing should be false"
-    run_podman pod rm test
+    run_podman pod rm $podname
 
-    run_podman pod create --share ipc  --network private test
-    run_podman pod inspect test --format {{.InfraConfig.HostNetwork}}
+    run_podman pod create --share ipc  --network private $podname
+    run_podman pod inspect $podname --format {{.InfraConfig.HostNetwork}}
     is "$output" "false" "Private network sharing with only ipc should be false"
-    run_podman pod rm test
+    run_podman pod rm $podname
 
-    local name="$(random_string 10 | tr A-Z a-z)"
-    run_podman pod create --name $name --share net  --network private
-    run_podman pod inspect $name --format {{.InfraConfig.HostNetwork}}
+    run_podman pod create --name $podname --share net  --network private
+    run_podman pod inspect $podname --format {{.InfraConfig.HostNetwork}}
     is "$output" "false" "Private network sharing with only net should be false"
 
-    run_podman pod create --share net --network host --replace $name
-    run_podman pod inspect $name --format {{.InfraConfig.HostNetwork}}
+    run_podman pod create --share net --network host --replace $podname
+    run_podman pod inspect $podname --format {{.InfraConfig.HostNetwork}}
     is "$output" "true" "Host network sharing with only net should be true"
-    run_podman pod rm $name
+    run_podman pod rm $podname
 
-    run_podman pod create --name test --share ipc --network host
-    run_podman pod inspect test --format {{.InfraConfig.HostNetwork}}
+    run_podman pod create --name $podname --share ipc --network host
+    run_podman pod inspect $podname --format {{.InfraConfig.HostNetwork}}
     is "$output" "true" "Host network sharing with only ipc should be true"
-    run_podman pod rm test
+    run_podman pod rm $podname
 }
 
+# bats test_tags=ci:parallel
 @test "pod exit policies" {
     # Test setting exit policies
     run_podman pod create
@@ -455,17 +503,18 @@ EOF
     run_podman run --pod $podID $IMAGE true
     run_podman pod inspect $podID --format "{{.State}}"
     _ensure_pod_state $podID Exited
-    run_podman pod rm $podID
+    run_podman pod rm -t -1 -f $podID
 }
 
+# bats test_tags=ci:parallel
 @test "pod exit policies - play kube" {
     # play-kube sets the exit policy to "stop"
-    local name="$(random_string 10 | tr A-Z a-z)"
+    local name="p-$(safename)"
 
     kubeFile="apiVersion: v1
 kind: Pod
 metadata:
-  name: $name-pod
+  name: $name
 spec:
   containers:
   - command:
@@ -476,17 +525,17 @@ spec:
 
     echo "$kubeFile" > $PODMAN_TMPDIR/test.yaml
     run_podman play kube $PODMAN_TMPDIR/test.yaml
-    run_podman pod inspect $name-pod --format "{{.ExitPolicy}}"
+    run_podman pod inspect $name --format "{{.ExitPolicy}}"
     is "$output" "stop" "custom exit policy"
-    _ensure_pod_state $name-pod Exited
-    run_podman pod rm $name-pod
+    _ensure_pod_state $name Exited
+    run_podman pod rm $name
 }
 
+# bats test_tags=ci:parallel
 @test "pod resource limits" {
     skip_if_remote "resource limits only implemented on non-remote"
     skip_if_rootless "resource limits only work with root"
     skip_if_cgroupsv1 "resource limits only meaningful on cgroups V2"
-    skip_if_aarch64 "FIXME: #15074 - flakes often on aarch64"
 
     # create loopback device
     lofile=${PODMAN_TMPDIR}/disk.img
@@ -512,8 +561,9 @@ io.bfq.weight   | default 50
 io.max          | $lomajmin rbps=1048576 wbps=1048576 riops=max wiops=max
 "
 
+    defer-assertion-failures
     for cgm in systemd cgroupfs; do
-        local name=resources-$cgm
+        local name="p-resources-$cgm-$(safename)"
         run_podman --cgroup-manager=$cgm pod create --name=$name --cpus=5 --memory=5m --memory-swap=1g --cpu-shares=1000 --cpuset-cpus=0 --cpuset-mems=0 --device-read-bps=${LOOPDEVICE}:1mb --device-write-bps=${LOOPDEVICE}:1mb --blkio-weight=50
         run_podman --cgroup-manager=$cgm pod start $name
         run_podman pod inspect --format '{{.CgroupPath}}' $name
@@ -531,6 +581,7 @@ io.max          | $lomajmin rbps=1048576 wbps=1048576 riops=max wiops=max
     LOOPDEVICE=
 }
 
+# CANNOT BE PARALLELIZED: rm -a
 @test "podman pod ps doesn't race with pod rm" {
     # create a few pods
     for i in {0..10}; do
@@ -547,16 +598,24 @@ io.max          | $lomajmin rbps=1048576 wbps=1048576 riops=max wiops=max
     wait
 }
 
+# CANNOT BE PARALLELIZED: naked ps
 @test "podman pod rm --force bogus" {
     run_podman 1 pod rm bogus
     is "$output" "Error: .*bogus.*: no such pod" "Should print error"
-    run_podman pod rm --force bogus
+    run_podman pod rm -t -1 --force bogus
     is "$output" "" "Should print no output"
+
+    run_podman pod create --name testpod
+    run_podman pod rm --force bogus testpod
+    assert "$output" =~ "[0-9a-f]{64}" "rm pod"
+    run_podman pod ps -q
+    assert "$output" = "" "no pods listed"
 }
 
+# bats test_tags=ci:parallel
 @test "podman pod create on failure" {
-    podname=pod$(random_string)
-    nwname=pod$(random_string)
+    podname="p-$(safename)"
+    nwname="n-$(safename)"
 
     run_podman 125 pod create --network $nwname --name $podname
     # FIXME: podman and podman-remote do not return the same error message
@@ -565,6 +624,22 @@ io.max          | $lomajmin rbps=1048576 wbps=1048576 riops=max wiops=max
 
     # Make sure the pod doesn't get created on failure
     run_podman 1 pod exists $podname
+}
+
+# bats test_tags=ci:parallel
+@test "podman pod create restart tests" {
+    podname="p-$(safename)"
+
+    run_podman pod create --restart=on-failure --name $podname
+    run_podman create --name test-ctr --pod $podname $IMAGE
+    run_podman container inspect --format '{{ .HostConfig.RestartPolicy.Name }}' test-ctr
+    is "$output" "on-failure" "container inherits from pod"
+
+    run_podman create --replace --restart=always --name test-ctr --pod $podname $IMAGE
+    run_podman container inspect --format '{{ .HostConfig.RestartPolicy.Name }}' test-ctr
+    is "$output" "always" "container overrides restart policy from pod"
+
+    run_podman pod rm -f $podname
 }
 
 # Helper used by pod ps --filter test. Creates one pod or container
@@ -597,6 +672,7 @@ function thingy_with_unique_id() {
     done
 }
 
+# bats test_tags=ci:parallel
 @test "podman pod ps --filter" {
     local -A podid
     local -A ctrid
@@ -606,13 +682,14 @@ function thingy_with_unique_id() {
     for p in 1 2 3;do
         # no infra, please! That creates an extra container with a CID
         # that may collide with our other ones, and it's too hard to fix.
-        thingy_with_unique_id "pod" "--infra=false --name p${p}" \
+        podname="p-${p}-$(safename)"
+        thingy_with_unique_id "pod" "--infra=false --name $podname" \
                               ${podid[*]} ${ctrid[*]}
         podid[$p]=$id
 
         for c in 1 2 3; do
             thingy_with_unique_id "container" \
-                                  "--pod p${p} --name p${p}c${c} $IMAGE true" \
+                                  "--pod $podname --name $podname-c${c} $IMAGE true" \
                                   ${podid[*]} ${ctrid[*]}
             ctrid[$p$c]=$id
         done
@@ -623,30 +700,47 @@ function thingy_with_unique_id() {
     run_podman pod ps
     run_podman ps -a
 
+    # Normally (sequential Bats) we can do equality checks on ps output,
+    # because thingy_with_unique_id() guarantees that we won't have collisions
+    # in the first two characters of the hash. When running in parallel,
+    # there's no such guarantee.
+    local op="="
+    if [[ -n "$PARALLEL_JOBSLOT" ]]; then
+        op="=~"
+    fi
+
     # Test: ps and filter for each pod and container, by ID
+    defer-assertion-failures
     for p in 1 2 3; do
         local pid=${podid[$p]}
+        local podname="p-$p-$(safename)"
 
         # Search by short pod ID, longer pod ID, pod ID regex, and pod name
         # ps by short ID, longer ID, regex, and name
-        for filter in "id=${pid:0:2}" "id=${pid:0:10}" "id=^${pid:0:2}" "name=p$p"; do
+        for filter in "id=${pid:0:2}" "id=${pid:0:10}" "id=^${pid:0:2}" "name=$podname"; do
             run_podman pod ps --filter=$filter --format '{{.Name}}:{{.Id}}'
-            assert "$output" == "p$p:${pid:0:12}" "pod $p, filter=$filter"
+            assert "$output" $op "$podname:${pid:0:12}" "pod $p, filter=$filter"
         done
 
         # ps by negation (regex) of our pid, should find all other pods
         f1="^[^${pid:0:1}]"
         f2="^.[^${pid:1:1}]"
         run_podman pod ps --filter=id="$f1" --filter=id="$f2" --format '{{.Name}}'
-        assert "${#lines[*]}" == "2" "filter=$f1 + $f2 finds 2 pods"
-        assert "$output" !~ "p$p"    "filter=$f1 + $f2 does not find p$p"
-
+        assert "${#lines[*]}" -ge "2"  "filter=$f1 + $f2 finds at least 2 pods"
+        assert "$output" !~ "$podname" "filter=$f1 + $f2 does not find pod $p"
+        # Confirm that the other two pods _are_ in our list
+        for notp in 1 2 3; do
+            if [[ $notp -ne $p ]]; then
+                assert "$output" =~ "p-$notp-$(safename)" "filter=$f1 + $f2 finds pod $notp"
+            fi
+        done
         # Search by *container* ID
         for c in 1 2 3;do
             local cid=${ctrid[$p$c]}
+            local podname="p-$p-$(safename)"
             for filter in "ctr-ids=${cid:0:2}" "ctr-ids=^${cid:0:2}.*"; do
                 run_podman pod ps --filter=$filter --format '{{.Name}}:{{.Id}}'
-                assert "$output" == "p${p}:${pid:0:12}" \
+                assert "$output" $op "$podname:${pid:0:12}" \
                        "pod $p, container $c, filter=$filter"
             done
         done
@@ -657,11 +751,62 @@ function thingy_with_unique_id() {
                       --filter=ctr-ids=${ctrid[23]} \
                       --filter=ctr-ids=${ctrid[31]} \
                       --format='{{.Name}}' --sort=name
-    assert "$(echo $output)" == "p1 p2 p3" "multiple ctr-ids filters"
+    assert "$(echo $output)" == "p-1-$(safename) p-2-$(safename) p-3-$(safename)" \
+           "multiple ctr-ids filters"
 
     # Clean up
-    run_podman pod rm -f -a
-    run_podman rm -f -a
+    run_podman pod rm -f ${podid[*]}
+}
+
+
+# bats test_tags=ci:parallel
+@test "podman pod cleans cgroup and keeps limits" {
+    skip_if_remote "we cannot check cgroup settings"
+    skip_if_rootless_cgroupsv1 "rootless cannot use cgroups on v1"
+
+    for infra in true false; do
+        run_podman pod create --infra=$infra --memory=256M
+        podid="$output"
+        run_podman run -d --pod $podid $IMAGE top -d 2
+
+        run_podman pod inspect $podid --format "{{.CgroupPath}}"
+        result="$output"
+        assert "$result" =~ "/" ".CgroupPath is a valid path"
+
+        if is_cgroupsv2; then
+           cgroup_path=/sys/fs/cgroup/$result
+        else
+           cgroup_path=/sys/fs/cgroup/memory/$result
+        fi
+
+        if test ! -e $cgroup_path; then
+            die "the cgroup $cgroup_path does not exist"
+        fi
+
+        run_podman pod stop -t 0 $podid
+        if test -e $cgroup_path; then
+            die "the cgroup $cgroup_path should not exist after pod stop"
+        fi
+
+        run_podman pod start $podid
+        if test ! -e $cgroup_path; then
+            die "the cgroup $cgroup_path does not exist"
+        fi
+
+        # validate that cgroup limits are in place after a restart
+        # issue #19175
+        if is_cgroupsv2; then
+           memory_limit_file=$cgroup_path/memory.max
+        else
+           memory_limit_file=$cgroup_path/memory.limit_in_bytes
+        fi
+        assert "$(< $memory_limit_file)" = "268435456" "Contents of $memory_limit_file"
+
+        run_podman pod rm -t 0 -f $podid
+        if test -e $cgroup_path; then
+            die "the cgroup $cgroup_path should not exist after pod rm"
+        fi
+    done
 }
 
 # vim: filetype=sh

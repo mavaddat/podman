@@ -1,10 +1,12 @@
+//go:build !remote
+
 package server
 
 import (
 	"net/http"
 
-	"github.com/containers/podman/v4/pkg/api/handlers/compat"
-	"github.com/containers/podman/v4/pkg/api/handlers/libpod"
+	"github.com/containers/podman/v5/pkg/api/handlers/compat"
+	"github.com/containers/podman/v5/pkg/api/handlers/libpod"
 	"github.com/gorilla/mux"
 )
 
@@ -267,11 +269,20 @@ func (s *APIServer) registerImagesHandlers(r *mux.Router) error {
 	//  - in: query
 	//    name: compress
 	//    type: boolean
-	//    description: use compression on image
+	//    description: Use compression on image.
 	//  - in: query
 	//    name: destination
 	//    type: string
-	//    description: destination name for the image being pushed
+	//    description: Allows for pushing the image to a different destination than the image refers to.
+	//  - in: query
+	//    name: format
+	//    type: string
+	//    description: Manifest type (oci, v2s1, or v2s2) to use when pushing an image. Default is manifest type of source, with fallbacks.
+	//  - in: query
+	//    name: tlsVerify
+	//    description: Require TLS verification.
+	//    type: boolean
+	//    default: true
 	//  - in: header
 	//    name: X-Registry-Auth
 	//    type: string
@@ -512,6 +523,12 @@ func (s *APIServer) registerImagesHandlers(r *mux.Router) error {
 	//      TBD Extra hosts to add to /etc/hosts
 	//      (As of version 1.xx)
 	//  - in: query
+	//    name: nohosts
+	//    type: boolean
+	//    default:
+	//    description: |
+	//      Not to create /etc/hosts when building the image
+	//  - in: query
 	//    name: remote
 	//    type: string
 	//    default:
@@ -525,11 +542,30 @@ func (s *APIServer) registerImagesHandlers(r *mux.Router) error {
 	//      with the corresponding path inside the tarball.
 	//      (As of version 1.xx)
 	//  - in: query
+	//    name: retry
+	//    type: integer
+	//    default: 3
+	//    description: |
+	//      Number of times to retry in case of failure when performing push/pull.
+	//  - in: query
+	//    name: retry-delay
+	//    type: string
+	//    default: 2s
+	//    description: |
+	//      Delay between retries in case of push/pull failures.
+	//  - in: query
 	//    name: q
 	//    type: boolean
 	//    default: false
 	//    description: |
 	//      Suppress verbose build output
+	//  - in: query
+	//    name: compatvolumes
+	//    type: boolean
+	//    default: false
+	//    description: |
+	//      Contents of base images to be modified on ADD or COPY only
+	//      (As of Podman version v5.2)
 	//  - in: query
 	//    name: nocache
 	//    type: boolean
@@ -546,8 +582,8 @@ func (s *APIServer) registerImagesHandlers(r *mux.Router) error {
 	//      (As of version 1.xx)
 	//  - in: query
 	//    name: pull
-	//    type: string
-	//    default:
+	//    type: boolean
+	//    default: false
 	//    description: |
 	//      Attempt to pull the image even if an older image exists locally
 	//      (As of version 1.xx)
@@ -658,6 +694,7 @@ func (s *APIServer) registerImagesHandlers(r *mux.Router) error {
 	//    default:
 	//    description: |
 	//      Platform format os[/arch[/variant]]
+	//      Can be comma separated list for multi arch builds.
 	//      (As of version 1.xx)
 	//  - in: query
 	//    name: target
@@ -726,15 +763,48 @@ func (s *APIServer) registerImagesHandlers(r *mux.Router) error {
 	//    type: string
 	//    description: Allows for pushing the image to a different destination than the image refers to.
 	//  - in: query
+	//    name: forceCompressionFormat
+	//    description: Enforce compressing the layers with the specified --compression and do not reuse differently compressed blobs on the registry.
+	//    type: boolean
+	//    default: false
+	//  - in: query
+	//    name: compressionFormat
+	//    type: string
+	//    description: Compression format used to compress image layers.
+	//  - in: query
+	//    name: compressionLevel
+	//    type: integer
+	//    description: Compression level used to compress image layers.
+	//  - in: query
 	//    name: tlsVerify
 	//    description: Require TLS verification.
 	//    type: boolean
 	//    default: true
 	//  - in: query
 	//    name: quiet
-	//    description: "silences extra stream data on push"
+	//    description: Silences extra stream data on push.
 	//    type: boolean
 	//    default: true
+	//  - in: query
+	//    name: format
+	//    type: string
+	//    description: Manifest type (oci, v2s1, or v2s2) to use when pushing an image. Default is manifest type of source, with fallbacks.
+	//  - in: query
+	//    name: all
+	//    type: boolean
+	//    description: All indicates whether to push all images related to the image list.
+	//  - in: query
+	//    name: removeSignatures
+	//    type: boolean
+	//    description: Discard any pre-existing signatures in the image.
+	//  - in: query
+	//    name: retry
+	//    type: integer
+	//    description: Number of times to retry push in case of failure.
+	//  - in: query
+	//    name: retryDelay
+	//    type: string
+	//    description: Delay between retries in case of push failures. Duration format such as "412ms", or "3.5h".
 	//  - in: header
 	//    name: X-Registry-Auth
 	//    type: string
@@ -1014,6 +1084,11 @@ func (s *APIServer) registerImagesHandlers(r *mux.Router) error {
 	//     type: boolean
 	//     default: false
 	//   - in: query
+	//     name: compatMode
+	//     description: "Return the same JSON payload as the Docker-compat endpoint."
+	//     type: boolean
+	//     default: false
+	//   - in: query
 	//     name: Arch
 	//     description: Pull image for the specified architecture.
 	//     type: string
@@ -1071,6 +1146,12 @@ func (s *APIServer) registerImagesHandlers(r *mux.Router) error {
 	//    type: boolean
 	//    description: |
 	//      Remove images even when they are used by external containers (e.g, by build containers)
+	//  - in: query
+	//    name: buildcache
+	//    default: false
+	//    type: boolean
+	//    description: |
+	//      Remove persistent build cache created by build instructions such as `--mount=type=cache`.
 	//  - in: query
 	//    name: filters
 	//    type: string
@@ -1271,25 +1352,9 @@ func (s *APIServer) registerImagesHandlers(r *mux.Router) error {
 	//    description: the name or ID of a container
 	//    required: true
 	//  - in: query
-	//    name: repo
-	//    type: string
-	//    description: the repository name for the created image
-	//  - in: query
-	//    name: tag
-	//    type: string
-	//    description: tag name for the created image
-	//  - in: query
-	//    name: comment
-	//    type: string
-	//    description: commit message
-	//  - in: query
 	//    name: author
 	//    type: string
 	//    description: author of the image
-	//  - in: query
-	//    name: pause
-	//    type: boolean
-	//    description: pause the container before committing it
 	//  - in: query
 	//    name: changes
 	//    description: instructions to apply while committing in Dockerfile format (i.e. "CMD=/bin/foo")
@@ -1297,9 +1362,33 @@ func (s *APIServer) registerImagesHandlers(r *mux.Router) error {
 	//    items:
 	//       type: string
 	//  - in: query
+	//    name: comment
+	//    type: string
+	//    description: commit message
+	//  - in: query
 	//    name: format
 	//    type: string
 	//    description: format of the image manifest and metadata (default "oci")
+	//  - in: query
+	//    name: pause
+	//    type: boolean
+	//    description: pause the container before committing it
+	//  - in: query
+	//    name: squash
+	//    type: boolean
+	//    description: squash the container before committing it
+	//  - in: query
+	//    name: repo
+	//    type: string
+	//    description: the repository name for the created image
+	//  - in: query
+	//    name: stream
+	//    type: boolean
+	//    description: output from commit process
+	//  - in: query
+	//    name: tag
+	//    type: string
+	//    description: tag name for the created image
 	// produces:
 	// - application/json
 	// responses:
@@ -1419,6 +1508,12 @@ func (s *APIServer) registerImagesHandlers(r *mux.Router) error {
 	//      TBD Extra hosts to add to /etc/hosts
 	//      (As of version 1.xx)
 	//  - in: query
+	//    name: nohosts
+	//    type: boolean
+	//    default:
+	//    description: |
+	//      Not to create /etc/hosts when building the image
+	//  - in: query
 	//    name: remote
 	//    type: string
 	//    default:
@@ -1438,6 +1533,13 @@ func (s *APIServer) registerImagesHandlers(r *mux.Router) error {
 	//    description: |
 	//      Suppress verbose build output
 	//  - in: query
+	//    name: compatvolumes
+	//    type: boolean
+	//    default: false
+	//    description: |
+	//      Contents of base images to be modified on ADD or COPY only
+	//      (As of Podman version v5.2)
+	//  - in: query
 	//    name: nocache
 	//    type: boolean
 	//    default: false
@@ -1453,8 +1555,8 @@ func (s *APIServer) registerImagesHandlers(r *mux.Router) error {
 	//      (As of version 1.xx)
 	//  - in: query
 	//    name: pull
-	//    type: string
-	//    default:
+	//    type: boolean
+	//    default: false
 	//    description: |
 	//      Attempt to pull the image even if an older image exists locally
 	//      (As of version 1.xx)
@@ -1547,6 +1649,12 @@ func (s *APIServer) registerImagesHandlers(r *mux.Router) error {
 	//      JSON map of key, value pairs to set as labels on the new image
 	//      (As of version 1.xx)
 	//  - in: query
+	//    name: layerLabel
+	//    description: Add an intermediate image *label* (e.g. label=*value*) to the intermediate image metadata.
+	//    type: array
+	//    items:
+	//      type: string
+	//  - in: query
 	//    name: layers
 	//    type: boolean
 	//    default: true
@@ -1597,6 +1705,12 @@ func (s *APIServer) registerImagesHandlers(r *mux.Router) error {
 	//  - in: query
 	//    name: unsetenv
 	//    description: Unset environment variables from the final image.
+	//    type: array
+	//    items:
+	//      type: string
+	//  - in: query
+	//    name: unsetlabel
+	//    description: Unset the image label, causing the label not to be inherited from the base image.
 	//    type: array
 	//    items:
 	//      type: string
@@ -1660,5 +1774,27 @@ func (s *APIServer) registerImagesHandlers(r *mux.Router) error {
 	//   500:
 	//     $ref: '#/responses/internalError'
 	r.Handle(VersionedPath("/libpod/images/scp/{name:.*}"), s.APIHandler(libpod.ImageScp)).Methods(http.MethodPost)
+	// swagger:operation GET /libpod/images/{name}/resolve libpod ImageResolveLibpod
+	// ---
+	// tags:
+	//  - images
+	// summary: Resolve an image (short) name
+	// description: Resolve the passed image name to a list of fully-qualified images referring to container registries.
+	// parameters:
+	//  - in: path
+	//    name: name
+	//    type: string
+	//    required: true
+	//    description: the (short) name to resolve
+	// produces:
+	// - application/json
+	// responses:
+	//   204:
+	//     description: resolved image names
+	//   400:
+	//     $ref: "#/responses/badParamError"
+	//   500:
+	//     $ref: '#/responses/internalError'
+	r.Handle(VersionedPath("/libpod/images/{name:.*}/resolve"), s.APIHandler(libpod.ImageResolve)).Methods(http.MethodGet)
 	return nil
 }

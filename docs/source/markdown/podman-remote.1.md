@@ -52,7 +52,7 @@ Log messages above specified level: debug, info, warn, error (default), fatal or
 
 #### **--url**=*value*
 
-URL to access Podman service (default from `containers.conf`, rootless "unix://run/user/$UID/podman/podman.sock" or as root "unix://run/podman/podman.sock).
+URL to access Podman service (default from `containers.conf`, rootless "unix:///run/user/$UID/podman/podman.sock" or as root "unix:///run/podman/podman.sock).
 
  - `CONTAINER_HOST` is of the format `<schema>://[<user[:<password>]@]<host>[:<port>][<path>]`
  - `CONTAINER_PROXY` is of the format `<socks5|socks5h>://[<user[:<password>]@]<host>[:<port>]`
@@ -72,14 +72,14 @@ Details:
 URL value resolution precedence:
  - command line value
  - environment variable `CONTAINER_HOST`
- - `containers.conf` `service_destinations` table
- - `unix://run/podman/podman.sock`
+ - `engine.service_destinations` table in containers.conf, excluding the /usr/share/containers directory
+ - `unix:///run/podman/podman.sock`
 
 Remote connections use local containers.conf for default.
 
 Some example URL values in valid formats:
- - unix://run/podman/podman.sock
- - unix://run/user/$UID/podman/podman.sock
+ - unix:///run/podman/podman.sock
+ - unix:///run/user/$UID/podman/podman.sock
  - ssh://notroot@localhost:22/run/user/$UID/podman/podman.sock
  - ssh://root@localhost:22/run/podman/podman.sock
  - tcp://localhost:34451
@@ -151,7 +151,7 @@ the exit codes follow the `chroot` standard, see below:
 | [podman-diff(1)](podman-diff.1.md)               | Inspect changes on a container or image's filesystem.                       |
 | [podman-events(1)](podman-events.1.md)           | Monitor Podman events                                                       |
 | [podman-export(1)](podman-export.1.md)           | Export a container's filesystem contents as a tar archive.                  |
-| [podman-generate(1)](podman-generate.1.md)       | Generate structured data based for a containers and pods.                   |
+| [podman-generate(1)](podman-generate.1.md)       | Generate structured data based on containers and pods.                   |
 | [podman-healthcheck(1)](podman-healthcheck.1.md) | Manage healthchecks for containers                                          |
 | [podman-history(1)](podman-history.1.md)         | Show the history of an image.                                               |
 | [podman-image(1)](podman-image.1.md)             | Manage images.                                                              |
@@ -194,3 +194,8 @@ Podman uses builtin defaults if no containers.conf file is found.
 
 ## SEE ALSO
 **[podman(1)](podman.1.md)**, **[podman-system-service(1)](podman-system-service.1.md)**, **[containers.conf(5)](https://github.com/containers/common/blob/main/docs/containers.conf.5.md)**
+
+### Troubleshooting
+
+See [podman-troubleshooting(7)](https://github.com/containers/podman/blob/main/troubleshooting.md)
+for solutions to common issues.

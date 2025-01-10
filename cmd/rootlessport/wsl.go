@@ -5,14 +5,14 @@ import (
 	"strings"
 
 	"github.com/containers/common/pkg/machine"
-	rkport "github.com/rootless-containers/rootlesskit/pkg/port"
+	rkport "github.com/rootless-containers/rootlesskit/v2/pkg/port"
 )
 
 // WSL machines do not relay ipv4 traffic to dual-stack ports, simulate instead
 func splitDualStackSpecIfWsl(spec rkport.Spec) []rkport.Spec {
 	specs := []rkport.Spec{spec}
 	protocol := spec.Proto
-	if machine.MachineHostType() != machine.Wsl || strings.HasSuffix(protocol, "4") || strings.HasSuffix(protocol, "6") {
+	if machine.HostType() != machine.Wsl || strings.HasSuffix(protocol, "4") || strings.HasSuffix(protocol, "6") {
 		return specs
 	}
 

@@ -33,11 +33,24 @@ if grep -n ^$'\t' test/system/*; then
     die "Found leading tabs in system tests. Use spaces to indent, not tabs."
 fi
 
-# Defined by CI config.
+# Lookup 'env' dict. string value from key specified as argument from YAML file.
+get_env_key() {
+    local yaml
+    local script
+
+    yaml="$CIRRUS_WORKING_DIR/.github/workflows/scan-secrets.yml"
+    script="from yaml import safe_load; print(safe_load(open('$yaml'))['env']['$1'])"
+    python -c "$script"
+}
+
+# Only need to check CI-stuffs on a single build-task, there's
+# generally one latest fedora task so use that one. In some cases
+# when we have to drop testing for the prior fedora task we may
+# run twice on current fedora but this is not a problem.
+# Envars all defined by CI config.
 # shellcheck disable=SC2154
-if [[ "${DISTRO_NV}" =~ fedora ]]; then
+if [[ "${DISTRO_NV}" == "$FEDORA_NAME" ]]; then
     msg "Checking shell scripts"
-    showrun ooe.sh dnf install -y ShellCheck  # small/quick addition
     showrun shellcheck --format=tty \
         --shell=bash --external-sources \
         --enable add-default-case,avoid-nullary-conditions,check-unassigned-uppercase \
@@ -50,6 +63,9 @@ if [[ "${DISTRO_NV}" =~ fedora ]]; then
     # Tests for lib.sh
     showrun ${SCRIPT_BASE}/lib.sh.t
 
+    # Tests for pr-should-link-jira
+    showrun ${SCRIPT_BASE}/pr-should-link-jira.t
+
     # Run this during daily cron job to prevent a GraphQL API change/breakage
     # from impacting every PR.  Down-side being if it does fail, a maintainer
     # will need to do some archaeology to find it.
@@ -60,42 +76,3 @@ if [[ "${DISTRO_NV}" =~ fedora ]]; then
       showrun bash ${CIRRUS_WORKING_DIR}/.github/actions/check_cirrus_cron/test.sh
     fi
 fi
-
-msg "Checking 3rd party network service connectivity"
-# shellcheck disable=SC2154
-cat ${CIRRUS_WORKING_DIR}/${SCRIPT_BASE}/required_host_ports.txt | \
-    while read host port
-    do
-        if [[ "$port" -eq "443" ]]
-        then
-            echo "SSL/TLS to $host:$port"
-            echo -n '' | \
-                err_retry 9 1000 "" openssl s_client -quiet -no_ign_eof -connect $host:$port
-        else
-            echo "Connect to $host:$port"
-            err_retry 9 1000 1 nc -zv -w 13 $host $port
-        fi
-    done
-
-# Verify we can pull metadata from a few key testing images on quay.io
-# in the 'libpod' namespace.  This is mostly aimed at validating the
-# quay.io service is up and responsive.  Images were hand-picked with
-# grep -E -ro 'quay.io/libpod/.+:latest' test | sort -u
-TEST_IMGS=(\
-    alpine:latest
-    busybox:latest
-    alpine_labels:latest
-    alpine_nginx:latest
-    alpine_healthcheck:latest
-    badhealthcheck:latest
-    cirros:latest
-)
-
-msg "Checking quay.io test image accessibility"
-for testimg in "${TEST_IMGS[@]}"; do
-    fqin="quay.io/libpod/$testimg"
-    echo "    $fqin"
-    # Belt-and-suspenders: Catch skopeo (somehow) returning False or null
-    # in addition to "bad" (invalid) JSON.
-    skopeo inspect --retry-times 5 "docker://$fqin" | jq -e . > /dev/null
-done

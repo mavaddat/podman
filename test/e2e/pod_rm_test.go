@@ -1,3 +1,5 @@
+//go:build linux || freebsd
+
 package integration
 
 import (
@@ -8,10 +10,9 @@ import (
 	"path/filepath"
 	"strings"
 
-	. "github.com/containers/podman/v4/test/utils"
+	. "github.com/containers/podman/v5/test/utils"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
-	. "github.com/onsi/gomega/gexec"
 )
 
 var _ = Describe("Podman pod rm", func() {
@@ -22,7 +23,7 @@ var _ = Describe("Podman pod rm", func() {
 
 		result := podmanTest.Podman([]string{"pod", "rm", podid})
 		result.WaitWithDefaultTimeout()
-		Expect(result).Should(Exit(0))
+		Expect(result).Should(ExitCleanly())
 
 		// Also check that we don't leak cgroups
 		err := filepath.WalkDir("/sys/fs/cgroup", func(path string, d fs.DirEntry, err error) error {
@@ -55,11 +56,11 @@ var _ = Describe("Podman pod rm", func() {
 		}
 		result := podmanTest.Podman([]string{"pod", "rm", latest})
 		result.WaitWithDefaultTimeout()
-		Expect(result).Should(Exit(0))
+		Expect(result).Should(ExitCleanly())
 
 		result = podmanTest.Podman([]string{"pod", "ps", "-q", "--no-trunc"})
 		result.WaitWithDefaultTimeout()
-		Expect(result).Should(Exit(0))
+		Expect(result).Should(ExitCleanly())
 		Expect(result.OutputToString()).To(ContainSubstring(podid))
 		Expect(result.OutputToString()).To(Not(ContainSubstring(podid2)))
 	})
@@ -73,7 +74,7 @@ var _ = Describe("Podman pod rm", func() {
 
 		result := podmanTest.Podman([]string{"pod", "rm", podid})
 		result.WaitWithDefaultTimeout()
-		Expect(result).Should(Exit(0))
+		Expect(result).Should(ExitCleanly())
 
 		result = podmanTest.Podman([]string{"ps", "-qa"})
 		result.WaitWithDefaultTimeout()
@@ -86,11 +87,11 @@ var _ = Describe("Podman pod rm", func() {
 
 		session := podmanTest.RunTopContainerInPod("", podid)
 		session.WaitWithDefaultTimeout()
-		Expect(session).Should(Exit(0))
+		Expect(session).Should(ExitCleanly())
 
 		result := podmanTest.Podman([]string{"pod", "rm", "-t", "0", "-f", podid})
 		result.WaitWithDefaultTimeout()
-		Expect(result).Should(Exit(0))
+		Expect(result).Should(ExitCleanly())
 
 		result = podmanTest.Podman([]string{"ps", "-q"})
 		result.WaitWithDefaultTimeout()
@@ -108,7 +109,7 @@ var _ = Describe("Podman pod rm", func() {
 
 		session := podmanTest.RunTopContainerInPod("", podid1)
 		session.WaitWithDefaultTimeout()
-		Expect(session).Should(Exit(0))
+		Expect(session).Should(ExitCleanly())
 		podmanTest.WaitForContainer()
 		Expect(podmanTest.NumberOfContainersRunning()).To(Equal(1))
 		GinkgoWriter.Printf("Started container running in one pod")
@@ -122,8 +123,8 @@ var _ = Describe("Podman pod rm", func() {
 		GinkgoWriter.Printf("Removing all empty pods\n")
 		result := podmanTest.Podman([]string{"pod", "rm", "-a"})
 		result.WaitWithDefaultTimeout()
-		Expect(result).To(ExitWithError())
-		Expect(result.ErrorToString()).To(ContainSubstring("cannot be removed"))
+		Expect(result).To(ExitWithError(125, "it is running - running or paused containers cannot be removed without force: container state improper"))
+		Expect(result.ErrorToString()).To(ContainSubstring("not all containers could be removed from pod"))
 
 		numPods = podmanTest.NumberOfPods()
 		ps = podmanTest.Podman([]string{"pod", "ps"})
@@ -146,22 +147,22 @@ var _ = Describe("Podman pod rm", func() {
 
 		session := podmanTest.RunTopContainerInPod("", podid1)
 		session.WaitWithDefaultTimeout()
-		Expect(session).Should(Exit(0))
+		Expect(session).Should(ExitCleanly())
 
 		session = podmanTest.Podman([]string{"create", "--pod", podid1, ALPINE, "ls"})
 		session.WaitWithDefaultTimeout()
-		Expect(session).Should(Exit(0))
+		Expect(session).Should(ExitCleanly())
 
 		_, ec, _ = podmanTest.RunLsContainerInPod("", podid2)
 		Expect(ec).To(Equal(0))
 
 		session = podmanTest.RunTopContainerInPod("", podid2)
 		session.WaitWithDefaultTimeout()
-		Expect(session).Should(Exit(0))
+		Expect(session).Should(ExitCleanly())
 
 		result := podmanTest.Podman([]string{"pod", "rm", "-t", "0", "-fa"})
 		result.WaitWithDefaultTimeout()
-		Expect(result).Should(Exit(0))
+		Expect(result).Should(ExitCleanly())
 
 		result = podmanTest.Podman([]string{"ps", "-q"})
 		result.WaitWithDefaultTimeout()
@@ -176,7 +177,11 @@ var _ = Describe("Podman pod rm", func() {
 	It("podman rm bogus pod", func() {
 		session := podmanTest.Podman([]string{"pod", "rm", "bogus"})
 		session.WaitWithDefaultTimeout()
-		Expect(session).Should(Exit(1))
+		expect := "no pod with name or ID bogus found: no such pod"
+		if IsRemote() {
+			expect = `unable to find pod "bogus": no such pod`
+		}
+		Expect(session).Should(ExitWithError(1, expect))
 	})
 
 	It("podman rm bogus pod and a running pod", func() {
@@ -185,15 +190,27 @@ var _ = Describe("Podman pod rm", func() {
 
 		session := podmanTest.RunTopContainerInPod("test1", podid1)
 		session.WaitWithDefaultTimeout()
-		Expect(session).Should(Exit(0))
+		Expect(session).Should(ExitCleanly())
 
 		session = podmanTest.Podman([]string{"pod", "rm", "bogus", "test1"})
 		session.WaitWithDefaultTimeout()
-		Expect(session).Should(Exit(1))
+		expect := "no pod with name or ID bogus found: no such pod"
+		if IsRemote() {
+			expect = `unable to find pod "bogus": no such pod`
+		}
+		Expect(session).Should(ExitWithError(1, expect))
 
 		session = podmanTest.Podman([]string{"pod", "rm", "test1", "bogus"})
 		session.WaitWithDefaultTimeout()
-		Expect(session).Should(Exit(1))
+		// FIXME-someday: consolidate different error messages
+		expect = "no pod with name or ID test1 found"
+		if podmanTest.DatabaseBackend == "boltdb" {
+			expect = "test1 is a container, not a pod"
+		}
+		if IsRemote() {
+			expect = `unable to find pod "test1"`
+		}
+		Expect(session).Should(ExitWithError(1, expect+": no such pod"))
 	})
 
 	It("podman rm --ignore bogus pod and a running pod", func() {
@@ -203,82 +220,75 @@ var _ = Describe("Podman pod rm", func() {
 
 		session := podmanTest.RunTopContainerInPod("test1", podid1)
 		session.WaitWithDefaultTimeout()
-		Expect(session).Should(Exit(0))
+		Expect(session).Should(ExitCleanly())
 
 		session = podmanTest.Podman([]string{"pod", "rm", "-t", "0", "--force", "--ignore", "bogus", "test1"})
 		session.WaitWithDefaultTimeout()
-		Expect(session).Should(Exit(0))
+		Expect(session).Should(ExitCleanly())
 
 		session = podmanTest.Podman([]string{"pod", "rm", "--ignore", "test1", "bogus"})
 		session.WaitWithDefaultTimeout()
-		Expect(session).Should(Exit(0))
+		Expect(session).Should(ExitCleanly())
 	})
 
 	It("podman pod start/remove single pod via --pod-id-file", func() {
-		tmpDir, err := os.MkdirTemp("", "")
-		Expect(err).ToNot(HaveOccurred())
-		tmpFile := tmpDir + "podID"
-		defer os.RemoveAll(tmpDir)
+		podIDFile := filepath.Join(tempdir, "podID")
 
 		podName := "rudolph"
 
 		// Create a pod with --pod-id-file.
-		session := podmanTest.Podman([]string{"pod", "create", "--name", podName, "--pod-id-file", tmpFile})
+		session := podmanTest.Podman([]string{"pod", "create", "--name", podName, "--pod-id-file", podIDFile})
 		session.WaitWithDefaultTimeout()
-		Expect(session).Should(Exit(0))
+		Expect(session).Should(ExitCleanly())
 
 		// Create container inside the pod.
 		session = podmanTest.Podman([]string{"create", "--pod", podName, ALPINE, "top"})
 		session.WaitWithDefaultTimeout()
-		Expect(session).Should(Exit(0))
+		Expect(session).Should(ExitCleanly())
 
-		session = podmanTest.Podman([]string{"pod", "start", "--pod-id-file", tmpFile})
+		session = podmanTest.Podman([]string{"pod", "start", "--pod-id-file", podIDFile})
 		session.WaitWithDefaultTimeout()
-		Expect(session).Should(Exit(0))
+		Expect(session).Should(ExitCleanly())
 		Expect(podmanTest.NumberOfContainersRunning()).To(Equal(2)) // infra+top
 
-		session = podmanTest.Podman([]string{"pod", "rm", "-t", "0", "--pod-id-file", tmpFile, "--force"})
+		session = podmanTest.Podman([]string{"pod", "rm", "-t", "0", "--pod-id-file", podIDFile, "--force"})
 		session.WaitWithDefaultTimeout()
-		Expect(session).Should(Exit(0))
+		Expect(session).Should(ExitCleanly())
 		Expect(podmanTest.NumberOfContainersRunning()).To(Equal(0))
 	})
 
 	It("podman pod start/remove multiple pods via --pod-id-file", func() {
-		tmpDir, err := os.MkdirTemp("", "")
-		Expect(err).ToNot(HaveOccurred())
-		defer os.RemoveAll(tmpDir)
-
 		podIDFiles := []string{}
 		for _, i := range "0123456789" {
-			tmpFile := tmpDir + "cid" + string(i)
+			cidFile := filepath.Join(tempdir, "cid"+string(i))
 			podName := "rudolph" + string(i)
 			// Create a pod with --pod-id-file.
-			session := podmanTest.Podman([]string{"pod", "create", "--name", podName, "--pod-id-file", tmpFile})
+			session := podmanTest.Podman([]string{"pod", "create", "--name", podName, "--pod-id-file", cidFile})
 			session.WaitWithDefaultTimeout()
-			Expect(session).Should(Exit(0))
+			Expect(session).Should(ExitCleanly())
 
 			// Create container inside the pod.
 			session = podmanTest.Podman([]string{"create", "--pod", podName, ALPINE, "top"})
 			session.WaitWithDefaultTimeout()
-			Expect(session).Should(Exit(0))
+			Expect(session).Should(ExitCleanly())
 
 			// Append the id files along with the command.
 			podIDFiles = append(podIDFiles, "--pod-id-file")
-			podIDFiles = append(podIDFiles, tmpFile)
+			podIDFiles = append(podIDFiles, cidFile)
 		}
 
 		cmd := []string{"pod", "start"}
 		cmd = append(cmd, podIDFiles...)
 		session := podmanTest.Podman(cmd)
 		session.WaitWithDefaultTimeout()
-		Expect(session).Should(Exit(0))
+		Expect(session).Should(ExitCleanly())
 		Expect(podmanTest.NumberOfContainersRunning()).To(Equal(20)) // 10*(infra+top)
 
 		cmd = []string{"pod", "rm", "--time=0", "--force"}
 		cmd = append(cmd, podIDFiles...)
 		session = podmanTest.Podman(cmd)
 		session.WaitWithDefaultTimeout()
-		Expect(session).Should(Exit(0))
+		Expect(session).Should(ExitCleanly())
 		Expect(podmanTest.NumberOfContainersRunning()).To(Equal(0))
 	})
 
@@ -288,15 +298,15 @@ var _ = Describe("Podman pod rm", func() {
 
 		session := podmanTest.Podman([]string{"run", "--pod", podid, ALPINE})
 		session.WaitWithDefaultTimeout()
-		Expect(session).Should(Exit(0))
+		Expect(session).Should(ExitCleanly())
 
 		session = podmanTest.Podman([]string{"run", "--pod", podid, ALPINE})
 		session.WaitWithDefaultTimeout()
-		Expect(session).Should(Exit(0))
+		Expect(session).Should(ExitCleanly())
 
 		result := podmanTest.Podman([]string{"pod", "rm", podid})
 		result.WaitWithDefaultTimeout()
-		Expect(result).Should(Exit(0))
+		Expect(result).Should(ExitCleanly())
 	})
 
 	It("podman pod rm pod with infra container and running container", func() {
@@ -305,24 +315,24 @@ var _ = Describe("Podman pod rm", func() {
 
 		ctrAndPod := podmanTest.Podman([]string{"run", "-d", "--pod", fmt.Sprintf("new:%s", podName), "--name", ctrName, ALPINE, "top"})
 		ctrAndPod.WaitWithDefaultTimeout()
-		Expect(ctrAndPod).Should(Exit(0))
+		Expect(ctrAndPod).Should(ExitCleanly())
 
 		removePod := podmanTest.Podman([]string{"pod", "rm", "-a"})
 		removePod.WaitWithDefaultTimeout()
-		Expect(removePod).Should(Not(Exit(0)))
+		Expect(removePod).Should(Not(ExitCleanly()))
 
 		ps := podmanTest.Podman([]string{"pod", "ps"})
 		ps.WaitWithDefaultTimeout()
-		Expect(ps).Should(Exit(0))
+		Expect(ps).Should(ExitCleanly())
 		Expect(ps.OutputToString()).To(ContainSubstring(podName))
 
 		removePodForce := podmanTest.Podman([]string{"pod", "rm", "-af"})
 		removePodForce.WaitWithDefaultTimeout()
-		Expect(removePodForce).Should(Exit(0))
+		Expect(removePodForce).Should(ExitCleanly())
 
 		ps2 := podmanTest.Podman([]string{"pod", "ps"})
 		ps2.WaitWithDefaultTimeout()
-		Expect(ps2).Should(Exit(0))
+		Expect(ps2).Should(ExitCleanly())
 		Expect(ps2.OutputToString()).To(Not(ContainSubstring(podName)))
 	})
 })
