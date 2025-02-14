@@ -1,3 +1,5 @@
+//go:build !remote
+
 package libpod
 
 import (
@@ -8,17 +10,17 @@ import (
 	"os"
 	"strings"
 
-	"github.com/containers/podman/v4/libpod"
-	"github.com/containers/podman/v4/libpod/define"
-	"github.com/containers/podman/v4/pkg/api/handlers"
-	"github.com/containers/podman/v4/pkg/api/handlers/compat"
-	"github.com/containers/podman/v4/pkg/api/handlers/utils"
-	api "github.com/containers/podman/v4/pkg/api/types"
-	"github.com/containers/podman/v4/pkg/domain/entities"
-	"github.com/containers/podman/v4/pkg/domain/infra/abi"
-	"github.com/containers/podman/v4/pkg/util"
+	"github.com/containers/podman/v5/libpod"
+	"github.com/containers/podman/v5/libpod/define"
+	"github.com/containers/podman/v5/pkg/api/handlers"
+	"github.com/containers/podman/v5/pkg/api/handlers/compat"
+	"github.com/containers/podman/v5/pkg/api/handlers/utils"
+	api "github.com/containers/podman/v5/pkg/api/types"
+	"github.com/containers/podman/v5/pkg/domain/entities"
+	"github.com/containers/podman/v5/pkg/domain/infra/abi"
+	"github.com/containers/podman/v5/pkg/specgenutil"
+	"github.com/containers/podman/v5/pkg/util"
 	"github.com/gorilla/schema"
-	"github.com/opencontainers/runtime-spec/specs-go"
 	"github.com/sirupsen/logrus"
 )
 
@@ -144,6 +146,11 @@ func GetContainer(w http.ResponseWriter, r *http.Request) {
 		utils.InternalServerError(w, err)
 		return
 	}
+	// if client request old v4 payload we should return v4 compatible json
+	if _, err := utils.SupportedVersion(r, ">=5.0.0"); err != nil {
+		data.Config.V4PodmanCompatMarshal = true
+	}
+
 	utils.WriteResponse(w, http.StatusOK, data)
 }
 
@@ -402,18 +409,53 @@ func InitContainer(w http.ResponseWriter, r *http.Request) {
 func UpdateContainer(w http.ResponseWriter, r *http.Request) {
 	name := utils.GetName(r)
 	runtime := r.Context().Value(api.RuntimeKey).(*libpod.Runtime)
+	decoder := utils.GetDecoder(r)
+	query := struct {
+		RestartPolicy  string `schema:"restartPolicy"`
+		RestartRetries uint   `schema:"restartRetries"`
+	}{
+		// override any golang type defaults
+	}
+
+	if err := decoder.Decode(&query, r.URL.Query()); err != nil {
+		utils.Error(w, http.StatusBadRequest, fmt.Errorf("failed to parse parameters for %s: %w", r.URL.String(), err))
+		return
+	}
+
 	ctr, err := runtime.LookupContainer(name)
 	if err != nil {
 		utils.ContainerNotFound(w, name, err)
 		return
 	}
 
-	options := &handlers.UpdateEntities{Resources: &specs.LinuxResources{}}
-	if err := json.NewDecoder(r.Body).Decode(&options.Resources); err != nil {
+	var restartPolicy *string
+	var restartRetries *uint
+	if query.RestartPolicy != "" {
+		restartPolicy = &query.RestartPolicy
+		if query.RestartPolicy == define.RestartPolicyOnFailure {
+			restartRetries = &query.RestartRetries
+		} else if query.RestartRetries != 0 {
+			utils.Error(w, http.StatusBadRequest, errors.New("cannot set restart retries unless restart policy is on-failure"))
+			return
+		}
+	} else if query.RestartRetries != 0 {
+		utils.Error(w, http.StatusBadRequest, errors.New("cannot set restart retries unless restart policy is set"))
+		return
+	}
+
+	options := &handlers.UpdateEntities{}
+	if err := json.NewDecoder(r.Body).Decode(&options); err != nil {
 		utils.Error(w, http.StatusInternalServerError, fmt.Errorf("decode(): %w", err))
 		return
 	}
-	err = ctr.Update(options.Resources)
+
+	resourceLimits, err := specgenutil.UpdateMajorAndMinorNumbers(&options.LinuxResources, &options.UpdateContainerDevicesLimits)
+	if err != nil {
+		utils.InternalServerError(w, err)
+		return
+	}
+
+	err = ctr.Update(resourceLimits, restartPolicy, restartRetries, &options.UpdateHealthCheckConfig)
 	if err != nil {
 		utils.InternalServerError(w, err)
 		return

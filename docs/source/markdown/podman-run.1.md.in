@@ -20,7 +20,7 @@ Podman command.
 
 If the _image_ is not already loaded then **podman run** will pull the _image_, and
 all image dependencies, from the repository in the same way running **podman
-pull** _image_ , before it starts the container from that image.
+pull** _image_, before it starts the container from that image.
 
 Several files will be automatically created within the container. These include
 _/etc/hosts_, _/etc/hostname_, and _/etc/resolv.conf_ to manage networking.
@@ -28,7 +28,8 @@ These will be based on the host's version of the files, though they can be
 customized with options (for example, **--dns** will override the host's DNS
 servers in the created _resolv.conf_). Additionally, a container environment
 file is created in each container to indicate to programs they are running in a
-container. This file is located at _/run/.containerenv_. When using the
+container. This file is located at _/run/.containerenv_ (or
+_/var/run/.containerenv_ for FreeBSD containers). When using the
 --privileged flag the .containerenv contains name/value pairs indicating the
 container engine version, whether the engine is running in rootless mode, the
 container name and ID, as well as the image name and ID that the container is based on. Note: _/run/.containerenv_ will not be created when a volume is mounted on /run.
@@ -192,6 +193,8 @@ See [**Environment**](#environment) note below for precedence and examples.
 
 @@option gidmap.container
 
+@@option gpus
+
 @@option group-add
 
 @@option group-entry
@@ -199,6 +202,12 @@ See [**Environment**](#environment) note below for precedence and examples.
 @@option health-cmd
 
 @@option health-interval
+
+@@option health-log-destination
+
+@@option health-max-log-count
+
+@@option health-max-log-size
 
 @@option health-on-failure
 
@@ -223,6 +232,8 @@ See [**Environment**](#environment) note below for precedence and examples.
 Print usage statement
 
 @@option hostname.container
+
+@@option hosts-file
 
 @@option hostuser
 
@@ -276,6 +287,8 @@ If used together with **--pod**, the container joins the pod's network namespace
 
 @@option no-healthcheck
 
+@@option no-hostname
+
 @@option no-hosts
 
 This option conflicts with **--add-host**.
@@ -307,6 +320,8 @@ This is used to override the Podman provided user setup in favor of entrypoint c
 
 @@option pod-id-file.container
 
+@@option preserve-fd
+
 @@option preserve-fds
 
 @@option privileged
@@ -329,6 +344,8 @@ by having one container bind to localhost in the pod, and another connect to tha
 
 Suppress output information when pulling images
 
+@@option rdt-class
+
 @@option read-only
 
 @@option read-only-tmpfs
@@ -339,6 +356,10 @@ Suppress output information when pulling images
 
 @@option restart
 
+@@option retry
+
+@@option retry-delay
+
 #### **--rm**
 
 Automatically remove the container and any anonymous unnamed volume associated with
@@ -347,7 +368,7 @@ the container when it exits. The default is **false**.
 #### **--rmi**
 
 After exit of the container, remove the image unless another
-container is using it. The default is *false*.
+container is using it. Implies --rm on the new container. The default is *false*.
 
 @@option rootfs
 
@@ -459,13 +480,22 @@ to volumes if they need to write to file systems at all. Applications can be
 made more secure by running them in read-only mode using the **--read-only** switch.
 This protects the container's image from modification. By default read-only
 containers can write to temporary data. Podman mounts a tmpfs on _/run_ and
-_/tmp_ within the container. If the container does not write to any file
-system within the container, including tmpfs, set --read-only-tmpfs=false.
+_/tmp_ within the container.
 
 ```
 $ podman run --read-only -i -t fedora /bin/bash
+```
 
+If the container does not write to any file
+system within the container, including tmpfs, set --read-only-tmpfs=false.
+```
 $ podman run --read-only --read-only-tmpfs=false --tmpfs /run -i -t fedora /bin/bash
+```
+
+### Exposing shared libraries inside of container as read-only using a glob
+
+```
+$ podman run --mount type=glob,src=/usr/lib64/libnvidia\*,ro=true -i -t fedora /bin/bash
 ```
 
 ### Exposing log messages from the container to the host's log
@@ -595,7 +625,7 @@ $ podman run -v /var/cache/dnf:/var/cache/dnf:O -ti fedora dnf -y update
 
 If the container needs a writeable mounted volume by a non root user inside the container, use the **U** option. This option tells Podman to chown the source volume to match the default UID and GID used within the container.
 ```
-$ podman run -d -e MYSQL_ROOT_PASSWORD=root --user mysql --userns=keep-id -v ~/data:/var/lib/mysql:Z,U mariadb
+$ podman run -d -e MARIADB_ROOT_PASSWORD=root --user mysql --userns=keep-id -v ~/data:/var/lib/mysql:Z,U mariadb
 ```
 
 Alternatively if the container needs a writable volume by a non root
@@ -603,7 +633,7 @@ user inside of the container, the --userns=keep-id option allows users to
 specify the UID and GID of the user executing Podman to specific UIDs and GIDs
 within the container. Since the processes running in the container run as the user's UID, they can read/write files owned by the user.
 ```
-$ podman run -d -e MYSQL_ROOT_PASSWORD=root --user mysql --userns=keep-id:uid=999,gid=999 -v ~/data:/var/lib/mysql:Z mariadb
+$ podman run -d -e MARIADB_ROOT_PASSWORD=root --user mysql --userns=keep-id:uid=999,gid=999 -v ~/data:/var/lib/mysql:Z mariadb
 ```
 
 Using **--mount** flags to mount a host directory as a container folder, specify
@@ -870,7 +900,7 @@ run in detached mode (backgrounded), so Podman can exit but conmon continues to
 run.  Each container has their own instance of conmon. Conmon waits for the
 container to exit, gathers and saves the exit code, and then launches a Podman
 process to complete the container cleanup, by shutting down the network and
-storage.   For more information on conmon, please reference the conmon(8) man
+storage.   For more information about conmon, see the conmon(8) man
 page.
 
 ## FILES
@@ -883,6 +913,14 @@ NOTE: Use the environment variable `TMPDIR` to change the temporary storage loca
 
 ## SEE ALSO
 **[podman(1)](podman.1.md)**, **[podman-save(1)](podman-save.1.md)**, **[podman-ps(1)](podman-ps.1.md)**, **[podman-attach(1)](podman-attach.1.md)**, **[podman-pod-create(1)](podman-pod-create.1.md)**, **[podman-port(1)](podman-port.1.md)**, **[podman-start(1)](podman-start.1.md)**, **[podman-kill(1)](podman-kill.1.md)**, **[podman-stop(1)](podman-stop.1.md)**, **[podman-generate-systemd(1)](podman-generate-systemd.1.md)**, **[podman-rm(1)](podman-rm.1.md)**, **[subgid(5)](https://www.unix.com/man-page/linux/5/subgid)**, **[subuid(5)](https://www.unix.com/man-page/linux/5/subuid)**, **[containers.conf(5)](https://github.com/containers/common/blob/main/docs/containers.conf.5.md)**, **[systemd.unit(5)](https://www.freedesktop.org/software/systemd/man/systemd.unit.html)**, **[setsebool(8)](https://man7.org/linux/man-pages/man8/setsebool.8.html)**, **[slirp4netns(1)](https://github.com/rootless-containers/slirp4netns/blob/master/slirp4netns.1.md)**, **[pasta(1)](https://passt.top/builds/latest/web/passt.1.html)**, **[fuse-overlayfs(1)](https://github.com/containers/fuse-overlayfs/blob/main/fuse-overlayfs.1.md)**, **proc(5)**, **[conmon(8)](https://github.com/containers/conmon/blob/main/docs/conmon.8.md)**, **personality(2)**
+
+### Troubleshooting
+
+See [podman-troubleshooting(7)](https://github.com/containers/podman/blob/main/troubleshooting.md)
+for solutions to common issues.
+
+See [podman-rootless(7)](https://github.com/containers/podman/blob/main/rootless.md)
+for rootless issues.
 
 ## HISTORY
 September 2018, updated by Kunal Kushwaha `<kushwaha_kunal_v7@lab.ntt.co.jp>`

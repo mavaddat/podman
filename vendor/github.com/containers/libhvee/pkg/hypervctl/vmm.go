@@ -4,6 +4,7 @@
 package hypervctl
 
 import (
+	"errors"
 	"fmt"
 
 	"github.com/containers/libhvee/pkg/wmiext"
@@ -12,6 +13,7 @@ import (
 const (
 	HyperVNamespace                = "root\\virtualization\\v2"
 	VirtualSystemManagementService = "Msvm_VirtualSystemManagementService"
+	MsvmComputerSystem             = "Msvm_ComputerSystem"
 )
 
 // https://learn.microsoft.com/en-us/windows/win32/hyperv_v2/msvm-computersystem
@@ -23,12 +25,22 @@ func NewVirtualMachineManager() *VirtualMachineManager {
 	return &VirtualMachineManager{}
 }
 
+func NewLocalHyperVService() (*wmiext.Service, error) {
+	service, err := wmiext.NewLocalService(HyperVNamespace)
+	if err != nil {
+		return nil, translateCommonHyperVWmiError(err)
+	}
+
+	return service, nil
+}
+
 func (vmm *VirtualMachineManager) GetAll() ([]*VirtualMachine, error) {
-	const wql = "Select * From Msvm_ComputerSystem Where Caption = 'Virtual Machine'"
+	// Fetch through settings to avoid locale sensitive properties
+	const wql = "Select * From Msvm_VirtualSystemSettingData Where VirtualSystemType = 'Microsoft:Hyper-V:System:Realized'"
 
 	var service *wmiext.Service
 	var err error
-	if service, err = wmiext.NewLocalService(HyperVNamespace); err != nil {
+	if service, err = NewLocalHyperVService(); err != nil {
 		return []*VirtualMachine{}, err
 	}
 	defer service.Close()
@@ -38,22 +50,31 @@ func (vmm *VirtualMachineManager) GetAll() ([]*VirtualMachine, error) {
 		return nil, err
 	}
 	defer enum.Close()
-
 	var vms []*VirtualMachine
+
 	for {
-		vm := &VirtualMachine{vmm: vmm}
-		done, err := wmiext.NextObject(enum, vm)
+		settings, err := enum.Next()
 		if err != nil {
 			return vms, err
 		}
-		if done {
+
+		// Finished iterating
+		if settings == nil {
 			break
 		}
+
+		vm, err := vmm.findVMFromSettings(service, settings)
+		settings.Close()
+		if err != nil {
+			return vms, err
+		}
+
 		vms = append(vms, vm)
 	}
 
 	return vms, nil
 }
+
 func (vmm *VirtualMachineManager) Exists(name string) (bool, error) {
 	vms, err := vmm.GetAll()
 	if err != nil {
@@ -68,14 +89,32 @@ func (vmm *VirtualMachineManager) Exists(name string) (bool, error) {
 	return false, nil
 }
 
-func (*VirtualMachineManager) GetMachine(name string) (*VirtualMachine, error) {
-	const wql = "Select * From Msvm_ComputerSystem Where Caption = 'Virtual Machine' And ElementName='%s'"
+// GetMachine is a stub to lookup and get settings for a VM
+func (vmm *VirtualMachineManager) GetMachine(name string) (*VirtualMachine, error) {
+	return vmm.getMachine(name)
+}
+
+// GetMachineExists looks for a machine defined in hyperv and returns it if it exists
+func (vmm *VirtualMachineManager) GetMachineExists(name string) (bool, *VirtualMachine, error) {
+	vm, err := vmm.getMachine(name)
+	if err != nil {
+		if errors.Is(err, wmiext.ErrNoResults) {
+			return false, nil, nil
+		}
+		return false, nil, err
+	}
+	return true, vm, nil
+}
+
+// getMachine looks up a single VM by name
+func (vmm *VirtualMachineManager) getMachine(name string) (*VirtualMachine, error) {
+	const wql = "Select * From Msvm_VirtualSystemSettingData Where VirtualSystemType = 'Microsoft:Hyper-V:System:Realized' And ElementName='%s'"
 
 	vm := &VirtualMachine{}
 	var service *wmiext.Service
 	var err error
 
-	if service, err = wmiext.NewLocalService(HyperVNamespace); err != nil {
+	if service, err = NewLocalHyperVService(); err != nil {
 		return vm, err
 	}
 	defer service.Close()
@@ -86,22 +125,34 @@ func (*VirtualMachineManager) GetMachine(name string) (*VirtualMachine, error) {
 	}
 	defer enum.Close()
 
-	done, err := wmiext.NextObject(enum, vm)
+	settings, err := service.FindFirstInstance(fmt.Sprintf(wql, name))
 	if err != nil {
-		return vm, err
+		if errors.Is(err, wmiext.ErrNoResults) {
+			return nil, err
+		}
+		return vm, fmt.Errorf("could not find virtual machine %q: %w", name, err)
+	}
+	defer settings.Close()
+
+	return vmm.findVMFromSettings(service, settings)
+}
+
+func (vmm *VirtualMachineManager) findVMFromSettings(service *wmiext.Service, settings *wmiext.Instance) (*VirtualMachine, error) {
+	path, err := settings.Path()
+	if err != nil {
+		return nil, err
 	}
 
-	if done {
-		return vm, fmt.Errorf("could not find virtual machine %q", name)
-	}
+	vm := &VirtualMachine{vmm: vmm}
+	err = service.FindFirstRelatedObject(path, MsvmComputerSystem, vm)
 
-	return vm, nil
+	return vm, err
 }
 
 func (*VirtualMachineManager) CreateVhdxFile(path string, maxSize uint64) error {
 	var service *wmiext.Service
 	var err error
-	if service, err = wmiext.NewLocalService(HyperVNamespace); err != nil {
+	if service, err = NewLocalHyperVService(); err != nil {
 		return err
 	}
 	defer service.Close()
@@ -152,7 +203,7 @@ func (vmm *VirtualMachineManager) GetSummaryInformation(requestedFields SummaryR
 func (vmm *VirtualMachineManager) getSummaryInformation(settingsPath string, requestedFields SummaryRequestSet) ([]SummaryInformation, error) {
 	var service *wmiext.Service
 	var err error
-	if service, err = wmiext.NewLocalService(HyperVNamespace); err != nil {
+	if service, err = NewLocalHyperVService(); err != nil {
 		return nil, err
 	}
 	defer service.Close()

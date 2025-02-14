@@ -1,6 +1,10 @@
+//go:build !remote
+
 package libpod
 
 import (
+	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -13,24 +17,29 @@ import (
 	"github.com/containers/common/libimage"
 	"github.com/containers/common/pkg/ssh"
 	"github.com/containers/image/v5/manifest"
-	"github.com/containers/podman/v4/libpod"
-	"github.com/containers/podman/v4/libpod/define"
-	"github.com/containers/podman/v4/pkg/api/handlers"
-	"github.com/containers/podman/v4/pkg/api/handlers/utils"
-	api "github.com/containers/podman/v4/pkg/api/types"
-	"github.com/containers/podman/v4/pkg/domain/entities"
-	"github.com/containers/podman/v4/pkg/domain/entities/reports"
-	"github.com/containers/podman/v4/pkg/domain/infra/abi"
-	domainUtils "github.com/containers/podman/v4/pkg/domain/utils"
-	"github.com/containers/podman/v4/pkg/errorhandling"
-	"github.com/containers/podman/v4/pkg/rootless"
-	"github.com/containers/podman/v4/pkg/util"
-	utils2 "github.com/containers/podman/v4/utils"
+	"github.com/containers/image/v5/pkg/shortnames"
+	"github.com/containers/image/v5/types"
+	"github.com/containers/podman/v5/libpod"
+	"github.com/containers/podman/v5/libpod/define"
+	"github.com/containers/podman/v5/pkg/api/handlers"
+	"github.com/containers/podman/v5/pkg/api/handlers/utils"
+	api "github.com/containers/podman/v5/pkg/api/types"
+	"github.com/containers/podman/v5/pkg/bindings/images"
+	"github.com/containers/podman/v5/pkg/channel"
+	"github.com/containers/podman/v5/pkg/domain/entities"
+	"github.com/containers/podman/v5/pkg/domain/entities/reports"
+	"github.com/containers/podman/v5/pkg/domain/infra/abi"
+	domainUtils "github.com/containers/podman/v5/pkg/domain/utils"
+	"github.com/containers/podman/v5/pkg/errorhandling"
+	"github.com/containers/podman/v5/pkg/util"
+	utils2 "github.com/containers/podman/v5/utils"
 	"github.com/containers/storage"
 	"github.com/containers/storage/pkg/archive"
 	"github.com/containers/storage/pkg/chrootarchive"
 	"github.com/containers/storage/pkg/idtools"
+	"github.com/docker/docker/pkg/jsonmessage"
 	"github.com/gorilla/schema"
+	"github.com/sirupsen/logrus"
 )
 
 // Commit
@@ -98,7 +107,7 @@ func GetImage(w http.ResponseWriter, r *http.Request) {
 	options := &libimage.InspectOptions{WithParent: true, WithSize: true}
 	inspect, err := newImage.Inspect(r.Context(), options)
 	if err != nil {
-		utils.Error(w, http.StatusInternalServerError, fmt.Errorf("failed in inspect image %s: %w", inspect.ID, err))
+		utils.Error(w, http.StatusInternalServerError, fmt.Errorf("failed in inspect image %s: %w", name, err))
 		return
 	}
 	utils.WriteResponse(w, http.StatusOK, inspect)
@@ -109,8 +118,9 @@ func PruneImages(w http.ResponseWriter, r *http.Request) {
 	runtime := r.Context().Value(api.RuntimeKey).(*libpod.Runtime)
 	decoder := r.Context().Value(api.DecoderKey).(*schema.Decoder)
 	query := struct {
-		All      bool `schema:"all"`
-		External bool `schema:"external"`
+		All        bool `schema:"all"`
+		External   bool `schema:"external"`
+		BuildCache bool `schema:"buildcache"`
 	}{
 		// override any golang type defaults
 	}
@@ -148,9 +158,10 @@ func PruneImages(w http.ResponseWriter, r *http.Request) {
 	imageEngine := abi.ImageEngine{Libpod: runtime}
 
 	pruneOptions := entities.ImagePruneOptions{
-		All:      query.All,
-		External: query.External,
-		Filter:   libpodFilters,
+		All:        query.All,
+		External:   query.External,
+		Filter:     libpodFilters,
+		BuildCache: query.BuildCache,
 	}
 	imagePruneReports, err := imageEngine.Prune(r.Context(), pruneOptions)
 	if err != nil {
@@ -324,10 +335,7 @@ func ExportImages(w http.ResponseWriter, r *http.Request) {
 	}
 
 	tarOptions := &archive.TarOptions{
-		ChownOpts: &idtools.IDPair{
-			UID: rootless.GetRootlessUID(),
-			GID: rootless.GetRootlessGID(),
-		},
+		ChownOpts: &idtools.IDPair{UID: 0, GID: 0},
 	}
 	tar, err := chrootarchive.Tar(output, tarOptions, output)
 	if err != nil {
@@ -395,14 +403,17 @@ func ImagesImport(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		defer os.Remove(tmpfile.Name())
-		defer tmpfile.Close()
 
 		if _, err := io.Copy(tmpfile, r.Body); err != nil && err != io.EOF {
 			utils.Error(w, http.StatusInternalServerError, fmt.Errorf("unable to write archive to temporary file: %w", err))
+			tmpfile.Close()
 			return
 		}
 
-		tmpfile.Close()
+		if err := tmpfile.Close(); err != nil {
+			utils.Error(w, http.StatusInternalServerError, fmt.Errorf("unable to close tempfile: %w", err))
+			return
+		}
 		source = tmpfile.Name()
 	}
 
@@ -442,6 +453,7 @@ func CommitContainer(w http.ResponseWriter, r *http.Request) {
 		Pause     bool     `schema:"pause"`
 		Squash    bool     `schema:"squash"`
 		Repo      string   `schema:"repo"`
+		Stream    bool     `schema:"stream"`
 		Tag       string   `schema:"tag"`
 	}{
 		Format: "oci",
@@ -480,7 +492,13 @@ func CommitContainer(w http.ResponseWriter, r *http.Request) {
 		SystemContext:         sc,
 		PreferredManifestType: mimeType,
 	}
-
+	if r.Body != nil {
+		defer r.Body.Close()
+		if options.CommitOptions.OverrideConfig, err = abi.DecodeOverrideConfig(r.Body); err != nil {
+			utils.Error(w, http.StatusBadRequest, err)
+			return
+		}
+	}
 	if len(query.Tag) > 0 {
 		tag = query.Tag
 	}
@@ -488,7 +506,7 @@ func CommitContainer(w http.ResponseWriter, r *http.Request) {
 	options.Author = query.Author
 	options.Pause = query.Pause
 	options.Squash = query.Squash
-	options.Changes = query.Changes
+	options.Changes = util.DecodeChanges(query.Changes)
 	ctr, err := runtime.LookupContainer(query.Container)
 	if err != nil {
 		utils.Error(w, http.StatusNotFound, err)
@@ -498,12 +516,80 @@ func CommitContainer(w http.ResponseWriter, r *http.Request) {
 	if len(query.Repo) > 0 {
 		destImage = fmt.Sprintf("%s:%s", query.Repo, tag)
 	}
-	commitImage, err := ctr.Commit(r.Context(), destImage, options)
-	if err != nil && !strings.Contains(err.Error(), "is not running") {
-		utils.Error(w, http.StatusInternalServerError, fmt.Errorf("CommitFailure: %w", err))
+
+	if !query.Stream {
+		commitImage, err := ctr.Commit(r.Context(), destImage, options)
+		if err != nil && !strings.Contains(err.Error(), "is not running") {
+			utils.Error(w, http.StatusInternalServerError, err)
+			return
+		}
+		utils.WriteResponse(w, http.StatusOK, entities.IDResponse{ID: commitImage.ID()})
 		return
 	}
-	utils.WriteResponse(w, http.StatusOK, entities.IDResponse{ID: commitImage.ID()})
+
+	// Channels all mux'ed in select{} below to follow API commit protocol
+	stdout := channel.NewWriter(make(chan []byte))
+	defer stdout.Close()
+	// Channels all mux'ed in select{} below to follow API commit protocol
+	options.CommitOptions.ReportWriter = stdout
+	var (
+		commitImage *libimage.Image
+		commitErr   error
+	)
+	runCtx, cancel := context.WithCancel(r.Context())
+	go func() {
+		defer cancel()
+		commitImage, commitErr = ctr.Commit(r.Context(), destImage, options)
+	}()
+
+	flush := func() {
+		if flusher, ok := w.(http.Flusher); ok {
+			flusher.Flush()
+		}
+	}
+
+	enc := json.NewEncoder(w)
+
+	statusWritten := false
+	writeStatusCode := func(code int) {
+		if !statusWritten {
+			w.WriteHeader(code)
+			w.Header().Set("Content-Type", "application/json")
+			flush()
+			statusWritten = true
+		}
+	}
+
+	for {
+		m := images.BuildResponse{}
+
+		select {
+		case e := <-stdout.Chan():
+			writeStatusCode(http.StatusOK)
+			m.Stream = string(e)
+			if err := enc.Encode(m); err != nil {
+				logrus.Errorf("%v", err)
+			}
+			flush()
+		case <-runCtx.Done():
+			if commitErr != nil {
+				m.Error = &jsonmessage.JSONError{
+					Message: commitErr.Error(),
+				}
+			} else {
+				m.Stream = commitImage.ID()
+			}
+			if err := enc.Encode(m); err != nil {
+				logrus.Errorf("%v", err)
+			}
+			flush()
+			return
+		case <-r.Context().Done():
+			cancel()
+			logrus.Infof("Client disconnect reported for commit")
+			return
+		}
+	}
 }
 
 func UntagImage(w http.ResponseWriter, r *http.Request) {
@@ -582,6 +668,7 @@ func ImagesRemove(w http.ResponseWriter, r *http.Request) {
 	query := struct {
 		Force          bool `schema:"force"`
 		LookupManifest bool `schema:"lookupManifest"`
+		Ignore         bool `schema:"ignore"`
 	}{
 		Force: false,
 	}
@@ -591,7 +678,7 @@ func ImagesRemove(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	opts := entities.ImageRemoveOptions{Force: query.Force, LookupManifest: query.LookupManifest}
+	opts := entities.ImageRemoveOptions{Force: query.Force, LookupManifest: query.LookupManifest, Ignore: query.Ignore}
 	imageEngine := abi.ImageEngine{Libpod: runtime}
 	rmReport, rmErrors := imageEngine.Remove(r.Context(), []string{utils.GetName(r)}, opts)
 
@@ -630,16 +717,52 @@ func ImageScp(w http.ResponseWriter, r *http.Request) {
 
 	sourceArg := utils.GetName(r)
 
-	rep, source, dest, _, err := domainUtils.ExecuteTransfer(sourceArg, query.Destination, []string{}, query.Quiet, ssh.GolangMode)
+	opts := entities.ScpExecuteTransferOptions{}
+	opts.Quiet = query.Quiet
+	opts.SSHMode = ssh.GolangMode
+	report, err := domainUtils.ExecuteTransfer(sourceArg, query.Destination, opts)
 	if err != nil {
 		utils.Error(w, http.StatusInternalServerError, err)
 		return
 	}
 
-	if source != nil || dest != nil {
+	if report.Source != nil || report.Dest != nil {
 		utils.Error(w, http.StatusBadRequest, fmt.Errorf("cannot use the user transfer function on the remote client: %w", define.ErrInvalidArg))
 		return
 	}
 
-	utils.WriteResponse(w, http.StatusOK, &reports.ScpReport{Id: rep.Names[0]})
+	utils.WriteResponse(w, http.StatusOK, &reports.ScpReport{Id: report.LoadReport.Names[0]})
+}
+
+// Resolve the passed (short) name to one more candidates it may resolve to.
+// See https://www.redhat.com/sysadmin/container-image-short-names.
+//
+// One user of this endpoint is Podman Desktop which needs to figure out where
+// an image may resolve to.
+func ImageResolve(w http.ResponseWriter, r *http.Request) {
+	runtime := r.Context().Value(api.RuntimeKey).(*libpod.Runtime)
+	name := utils.GetName(r)
+
+	mode := types.ShortNameModeDisabled
+	sys := runtime.SystemContext()
+	sys.ShortNameMode = &mode
+
+	resolved, err := shortnames.Resolve(sys, name)
+	if err != nil {
+		utils.Error(w, http.StatusBadRequest, fmt.Errorf("resolving %q: %w", name, err))
+		return
+	}
+
+	if len(resolved.PullCandidates) == 0 { // Should never happen but let's be defensive.
+		utils.Error(w, http.StatusInternalServerError, fmt.Errorf("name %q did not resolve to any candidate", name))
+		return
+	}
+
+	names := make([]string, 0, len(resolved.PullCandidates))
+	for _, candidate := range resolved.PullCandidates {
+		names = append(names, candidate.Value.String())
+	}
+
+	report := handlers.LibpodImagesResolveReport{Names: names}
+	utils.WriteResponse(w, http.StatusOK, report)
 }

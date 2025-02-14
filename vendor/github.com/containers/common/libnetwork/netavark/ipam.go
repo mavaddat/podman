@@ -1,10 +1,10 @@
 //go:build linux || freebsd
-// +build linux freebsd
 
 package netavark
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net"
 
@@ -48,7 +48,7 @@ func (e *ipamError) Error() string {
 	return msg
 }
 
-func newIPAMError(cause error, msg string, args ...interface{}) *ipamError {
+func newIPAMError(cause error, msg string, args ...any) *ipamError {
 	return &ipamError{
 		msg:   fmt.Sprintf(msg, args...),
 		cause: cause,
@@ -65,7 +65,7 @@ func (n *netavarkNetwork) openDB() (*bbolt.DB, error) {
 	return db, nil
 }
 
-// allocIPs will allocate ips for the the container. It will change the
+// allocIPs will allocate ips for the container. It will change the
 // NetworkOptions in place. When static ips are given it will validate
 // that these are free to use and will allocate them to the container.
 func (n *netavarkNetwork) allocIPs(opts *types.NetworkOptions) error {
@@ -173,19 +173,22 @@ func getFreeIPFromBucket(bucket *bbolt.Bucket, subnet *types.Subnet) (net.IP, er
 	if rangeStart == nil {
 		// let start with the first ip in subnet
 		rangeStart = util.NextIP(subnet.Subnet.IP)
+	} else if util.Cmp(rangeStart, subnet.Subnet.IP) == 0 {
+		// when we start on the subnet ip we need to inc by one as the subnet ip cannot be assigned
+		rangeStart = util.NextIP(rangeStart)
 	}
 
+	lastIP, err := util.LastIPInSubnet(&subnet.Subnet.IPNet)
+	// this error should never happen but lets check anyways to prevent panics
+	if err != nil {
+		return nil, fmt.Errorf("failed to get lastIP: %w", err)
+	}
 	if rangeEnd == nil {
-		lastIP, err := util.LastIPInSubnet(&subnet.Subnet.IPNet)
-		// this error should never happen but lets check anyways to prevent panics
-		if err != nil {
-			return nil, fmt.Errorf("failed to get lastIP: %w", err)
-		}
-		// ipv4 uses the last ip in a subnet for broadcast so we cannot use it
-		if util.IsIPv4(lastIP) {
-			lastIP = util.PrevIP(lastIP)
-		}
 		rangeEnd = lastIP
+	}
+	// ipv4 uses the last ip in a subnet for broadcast so we cannot use it
+	if util.IsIPv4(rangeEnd) && util.Cmp(rangeEnd, lastIP) == 0 {
+		rangeEnd = util.PrevIP(rangeEnd)
 	}
 
 	lastIPByte := bucket.Get(lastIPKey)
@@ -353,6 +356,26 @@ func (n *netavarkNetwork) deallocIPs(opts *types.NetworkOptions) error {
 		return nil
 	})
 	return err
+}
+
+func (n *netavarkNetwork) removeNetworkIPAMBucket(network *types.Network) error {
+	if !requiresIPAMAlloc(network) {
+		return nil
+	}
+	db, err := n.openDB()
+	if err != nil {
+		return err
+	}
+	defer db.Close()
+
+	return db.Update(func(tx *bbolt.Tx) error {
+		// Ignore ErrBucketNotFound, can happen if the network never allocated any ips,
+		// i.e. because no container was started.
+		if err := tx.DeleteBucket([]byte(network.Name)); err != nil && !errors.Is(err, bbolt.ErrBucketNotFound) {
+			return err
+		}
+		return nil
+	})
 }
 
 // requiresIPAMAlloc return true when we have to allocate ips for this network

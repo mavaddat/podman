@@ -1,19 +1,21 @@
+//go:build !remote
+
 package compat
 
 import (
+	"errors"
 	"net/http"
 
-	api "github.com/containers/podman/v4/pkg/api/types"
+	api "github.com/containers/podman/v5/pkg/api/types"
 	"github.com/sirupsen/logrus"
 
-	"github.com/containers/podman/v4/libpod"
-	"github.com/containers/podman/v4/libpod/define"
-	"github.com/containers/podman/v4/pkg/api/handlers/utils"
-	"github.com/gorilla/schema"
+	"github.com/containers/podman/v5/libpod"
+	"github.com/containers/podman/v5/libpod/define"
+	"github.com/containers/podman/v5/pkg/api/handlers/utils"
 )
 
 func StartContainer(w http.ResponseWriter, r *http.Request) {
-	decoder := r.Context().Value(api.DecoderKey).(*schema.Decoder)
+	decoder := utils.GetDecoder(r)
 	query := struct {
 		DetachKeys string `schema:"detachKeys"`
 	}{
@@ -34,16 +36,11 @@ func StartContainer(w http.ResponseWriter, r *http.Request) {
 		utils.ContainerNotFound(w, name, err)
 		return
 	}
-	state, err := con.State()
-	if err != nil {
-		utils.InternalServerError(w, err)
-		return
-	}
-	if state == define.ContainerStateRunning {
-		utils.WriteResponse(w, http.StatusNotModified, nil)
-		return
-	}
 	if err := con.Start(r.Context(), true); err != nil {
+		if errors.Is(err, define.ErrCtrStateRunning) {
+			utils.WriteResponse(w, http.StatusNotModified, nil)
+			return
+		}
 		utils.InternalServerError(w, err)
 		return
 	}

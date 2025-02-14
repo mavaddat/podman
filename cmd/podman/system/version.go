@@ -7,10 +7,10 @@ import (
 
 	"github.com/containers/common/pkg/completion"
 	"github.com/containers/common/pkg/report"
-	"github.com/containers/podman/v4/cmd/podman/common"
-	"github.com/containers/podman/v4/cmd/podman/registry"
-	"github.com/containers/podman/v4/cmd/podman/validate"
-	"github.com/containers/podman/v4/pkg/domain/entities"
+	"github.com/containers/podman/v5/cmd/podman/common"
+	"github.com/containers/podman/v5/cmd/podman/registry"
+	"github.com/containers/podman/v5/cmd/podman/validate"
+	"github.com/containers/podman/v5/pkg/domain/entities"
 	"github.com/sirupsen/logrus"
 	"github.com/spf13/cobra"
 )
@@ -97,6 +97,7 @@ API Version:\t{{.APIVersion}}
 Go Version:\t{{.GoVersion}}
 {{if .GitCommit -}}Git Commit:\t{{.GitCommit}}\n{{end -}}
 Built:\t{{.BuiltTime}}
+{{if .BuildOrigin -}}Build Origin:\t{{.BuildOrigin}}\n{{end -}}
 OS/Arch:\t{{.OsArch}}
 {{- end}}
 
@@ -108,6 +109,7 @@ API Version:\t{{.APIVersion}}
 Go Version:\t{{.GoVersion}}
 {{if .GitCommit -}}Git Commit:\t{{.GitCommit}}\n{{end -}}
 Built:\t{{.BuiltTime}}
+{{if .BuildOrigin -}}Build Origin:\t{{.BuildOrigin}}\n{{end -}}
 OS/Arch:\t{{.OsArch}}
 {{- end}}{{- end}}
 `

@@ -1,3 +1,5 @@
+//go:build !remote
+
 package libpod
 
 import (
@@ -7,8 +9,7 @@ import (
 	"runtime"
 	"strings"
 
-	"github.com/containers/podman/v4/libpod/define"
-	"github.com/containers/podman/v4/pkg/rootless"
+	"github.com/containers/podman/v5/libpod/define"
 	"github.com/containers/storage"
 	"github.com/sirupsen/logrus"
 	bolt "go.etcd.io/bbolt"
@@ -91,13 +92,14 @@ type dbConfigValidation struct {
 	runtimeValue string
 	key          []byte
 	defaultValue string
+	isPath       bool
 }
 
 // Check if the configuration of the database is compatible with the
 // configuration of the runtime opening it
 // If there is no runtime configuration loaded, load our own
 func checkRuntimeConfig(db *bolt.DB, rt *Runtime) error {
-	storeOpts, err := storage.DefaultStoreOptions(rootless.IsRootless(), rootless.GetRootlessUID())
+	storeOpts, err := storage.DefaultStoreOptions()
 	if err != nil {
 		return err
 	}
@@ -109,42 +111,49 @@ func checkRuntimeConfig(db *bolt.DB, rt *Runtime) error {
 			runtime.GOOS,
 			osKey,
 			runtime.GOOS,
+			false,
 		},
 		{
 			"libpod root directory (staticdir)",
 			filepath.Clean(rt.config.Engine.StaticDir),
 			staticDirKey,
 			"",
+			true,
 		},
 		{
 			"libpod temporary files directory (tmpdir)",
 			filepath.Clean(rt.config.Engine.TmpDir),
 			tmpDirKey,
 			"",
+			true,
 		},
 		{
 			"storage temporary directory (runroot)",
 			filepath.Clean(rt.StorageConfig().RunRoot),
 			runRootKey,
 			storeOpts.RunRoot,
+			true,
 		},
 		{
 			"storage graph root directory (graphroot)",
 			filepath.Clean(rt.StorageConfig().GraphRoot),
 			graphRootKey,
 			storeOpts.GraphRoot,
+			true,
 		},
 		{
 			"storage graph driver",
 			rt.StorageConfig().GraphDriverName,
 			graphDriverKey,
 			storeOpts.GraphDriverName,
+			false,
 		},
 		{
 			"volume path",
 			rt.config.Engine.VolumePath,
 			volPathKey,
 			"",
+			true,
 		},
 	}
 
@@ -219,22 +228,43 @@ func readOnlyValidateConfig(bucket *bolt.Bucket, toCheck dbConfigValidation) (bo
 	}
 
 	dbValue := string(keyBytes)
+	ourValue := toCheck.runtimeValue
 
-	if toCheck.runtimeValue != dbValue {
+	// Tolerate symlinks when possible - most relevant for OStree systems
+	// and rootless containers, where we want to put containers in /home,
+	// which is symlinked to /var/home.
+	if toCheck.isPath {
+		if dbValue != "" {
+			checkedVal, err := evalSymlinksIfExists(dbValue)
+			if err != nil {
+				return false, fmt.Errorf("evaluating symlinks on DB %s path %q: %w", toCheck.name, dbValue, err)
+			}
+			dbValue = checkedVal
+		}
+		if ourValue != "" {
+			checkedVal, err := evalSymlinksIfExists(ourValue)
+			if err != nil {
+				return false, fmt.Errorf("evaluating symlinks on configured %s path %q: %w", toCheck.name, ourValue, err)
+			}
+			ourValue = checkedVal
+		}
+	}
+
+	if ourValue != dbValue {
 		// If the runtime value is the empty string and default is not,
 		// check against default.
-		if toCheck.runtimeValue == "" && toCheck.defaultValue != "" && dbValue == toCheck.defaultValue {
+		if ourValue == "" && toCheck.defaultValue != "" && dbValue == toCheck.defaultValue {
 			return true, nil
 		}
 
 		// If the DB value is the empty string, check that the runtime
 		// value is the default.
-		if dbValue == "" && toCheck.defaultValue != "" && toCheck.runtimeValue == toCheck.defaultValue {
+		if dbValue == "" && toCheck.defaultValue != "" && ourValue == toCheck.defaultValue {
 			return true, nil
 		}
 
 		return true, fmt.Errorf("database %s %q does not match our %s %q: %w",
-			toCheck.name, dbValue, toCheck.name, toCheck.runtimeValue, define.ErrDBBadConfig)
+			toCheck.name, dbValue, toCheck.name, ourValue, define.ErrDBBadConfig)
 	}
 
 	return true, nil
@@ -607,8 +637,6 @@ func (s *BoltState) addContainer(ctr *Container, pod *Pod) error {
 		if opts.InterfaceName == "" {
 			return fmt.Errorf("network interface name cannot be an empty string: %w", define.ErrInvalidArg)
 		}
-		// always add the short id as alias for docker compat
-		opts.Aliases = append(opts.Aliases, ctr.config.ID[:12])
 		optBytes, err := json.Marshal(opts)
 		if err != nil {
 			return fmt.Errorf("marshalling network options JSON for container %s: %w", ctr.ID(), err)

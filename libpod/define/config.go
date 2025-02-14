@@ -5,7 +5,6 @@ import (
 	"io"
 
 	"github.com/containers/common/libnetwork/types"
-	"github.com/containers/storage/pkg/regexp"
 )
 
 var (
@@ -18,9 +17,6 @@ var (
 	// This must NOT be changed from outside of Libpod. It should be a
 	// constant, but Go won't let us do that.
 	NameRegex = types.NameRegex
-	// NotHexRegex is a regular expression to check if a string is
-	// a hexadecimal string.
-	NotHexRegex = regexp.Delayed(`[^0-9a-fA-F]`)
 	// RegexError is thrown in presence of an invalid container/pod name.
 	RegexError = types.RegexError
 )
@@ -55,9 +51,9 @@ const (
 // AttachStreams contains streams that will be attached to the container
 type AttachStreams struct {
 	// OutputStream will be attached to container's STDOUT
-	OutputStream io.WriteCloser
+	OutputStream io.Writer
 	// ErrorStream will be attached to container's STDERR
-	ErrorStream io.WriteCloser
+	ErrorStream io.Writer
 	// InputStream will be attached to container's STDIN
 	InputStream *bufio.Reader
 	// AttachOutput is whether to attach to STDOUT
@@ -85,6 +81,9 @@ const NoLogging = "none"
 
 // PassthroughLogging is the string conmon expects when specifying to use the passthrough driver
 const PassthroughLogging = "passthrough"
+
+// PassthroughTTYLogging is the string conmon expects when specifying to use the passthrough driver even on a tty.
+const PassthroughTTYLogging = "passthrough-tty"
 
 // DefaultRlimitValue is the value set by default for nofile and nproc
 const RLimitDefaultValue = uint64(1048576)

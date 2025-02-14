@@ -7,86 +7,45 @@
 %global debug_package %{nil}
 %endif
 
-# RHEL 8's default %%gobuild macro doesn't account for the BUILDTAGS variable, so we
-# set it separately here and do not depend on RHEL 8's go-srpm-macros package.
-%if !0%{?fedora} && 0%{?rhel} <= 8
-%define gobuild(o:) go build -buildmode pie -compiler gc -tags="rpm_crashtraceback libtrust_openssl ${BUILDTAGS:-}" -ldflags "-linkmode=external -compressdwarf=false ${LDFLAGS:-} -B 0x$(head -c20 /dev/urandom|od -An -tx1|tr -d ' \\n') -extldflags '%__global_ldflags'" -a -v -x %{?**};
+%global gomodulesmode GO111MODULE=on
+
+%if %{defined fedora}
+%define build_with_btrfs 1
+# qemu-system* isn't packageed for CentOS Stream / RHEL
+%define qemu 1
 %endif
 
-%if 0%{?rhel}
-%bcond_with btrfs
-# _user_tmpfiles.d currently undefined on rhel
-%global _user_tmpfilesdir %{_datadir}/user-tmpfiles.d
+%if %{defined copr_username}
+%define copr_build 1
+%endif
+
+# Only RHEL and CentOS Stream rpms are built with fips-enabled go compiler
+%if %{defined rhel}
+%define fips_enabled 1
+%endif
+
+%global container_base_path github.com/containers
+%global container_base_url https://%{container_base_path}
+
+# For LDFLAGS
+%global ld_project %{container_base_path}/%{name}/v5
+%global ld_libpod %{ld_project}/libpod
+
+# %%{name}
+%global git0 %{container_base_url}/%{name}
+
+# podman-machine subpackage will be present only on these architectures
+%global machine_arches x86_64 aarch64
+
+%if %{defined copr_build}
+%define build_origin Copr: %{?copr_username}/%{?copr_projectname}
 %else
-%bcond_without btrfs
+%define build_origin %{?packager}
 %endif
-
-# RHEL 8 needs /usr/bin/python3 to build docs
-%if 0%{?rhel} == 8
-%bcond_without python3
-%else
-%bcond_with python3
-%endif
-
-%if 0%{?fedora} || 0%{?rhel} >= 10
-%bcond_without modules_load
-%else
-%bcond_with modules_load
-%endif
-
-%if 0%{?fedora} || 0%{?rhel} >= 9
-%bcond_without go_rpm_macros
-%else
-%bcond_with go_rpm_macros
-%endif
-
-# copr_username is only set on copr environments, not on others like koji
-%if "%{?copr_username}" != "rhcontainerbot"
-%bcond_with copr
-%else
-%bcond_without copr
-%endif
-
-%if 0%{?centos} <= 8
-%bcond_without changelog
-%else
-%bcond_with changelog
-%endif
-
-%if 0%{?fedora}
-%bcond_without golang_arches_future
-%else
-%bcond_with golang_arches_future
-%endif
-
-%global provider github
-%global provider_tld com
-%global project containers
-%global repo %{name}
-# https://github.com/containers/%%{name}
-%global import_path %{provider}.%{provider_tld}/%{project}/%{repo}
-%global git0 https://%{import_path}
-
-# dnsname
-%global repo_plugins dnsname
-# https://github.com/containers/dnsname
-%global import_path_plugins %{provider}.%{provider_tld}/%{project}/%{repo_plugins}
-%global git_plugins https://%{import_path_plugins}
-%global commit_plugins 18822f9a4fb35d1349eb256f4cd2bfd372474d84
-
-# gvproxy
-%global repo_gvproxy gvisor-tap-vsock
-# https://github.com/containers/gvisor-tap-vsock
-%global import_path_gvproxy %{provider}.%{provider_tld}/%{project}/%{repo_gvproxy}
-%global git_gvproxy https://%{import_path_gvproxy}
-%global commit_gvproxy 407efb5dcdb0f4445935f7360535800b60447544
-
-# podman
-%global git0 https://github.com/containers/%{name}
 
 Name: podman
-%if %{with copr}
-Epoch: 101
+%if %{defined copr_build}
+Epoch: 102
 %else
 Epoch: 5
 %endif
@@ -97,9 +56,10 @@ Epoch: 5
 # copr and koji builds.
 # If you're reading this on dist-git, the version is automatically filled in by Packit.
 Version: 0
-License: Apache-2.0 and BSD-2-Clause and BSD-3-Clause and ISC and MIT and MPL-2.0
+# The `AND` needs to be uppercase in the License for SPDX compatibility
+License: Apache-2.0 AND BSD-2-Clause AND BSD-3-Clause AND ISC AND MIT AND MPL-2.0
 Release: %autorelease
-%if %{with golang_arches_future}
+%if %{defined golang_arches_future}
 ExclusiveArch: %{golang_arches_future}
 %else
 ExclusiveArch: aarch64 ppc64le s390x x86_64
@@ -107,13 +67,10 @@ ExclusiveArch: aarch64 ppc64le s390x x86_64
 Summary: Manage Pods, Containers and Container Images
 URL: https://%{name}.io/
 # All SourceN files fetched from upstream
-Source0: %{git0}/archive/v%{version}.tar.gz
-Source1: %{git_plugins}/archive/%{commit_plugins}/%{repo_plugins}-%{commit_plugins}.tar.gz
-Source2: %{git_gvproxy}/archive/%{commit_gvproxy}/%{repo_gvproxy}-%{commit_gvproxy}.tar.gz
+Source0: %{git0}/archive/v%{version_no_tilde}.tar.gz
 Provides: %{name}-manpages = %{epoch}:%{version}-%{release}
 BuildRequires: %{_bindir}/envsubst
-BuildRequires: go-md2man
-%if %{with btrfs}
+%if %{defined build_with_btrfs}
 BuildRequires: btrfs-progs-devel
 %endif
 BuildRequires: gcc
@@ -122,7 +79,7 @@ BuildRequires: glibc-devel
 BuildRequires: glibc-static
 BuildRequires: golang
 BuildRequires: git-core
-%if %{with go_rpm_macros}
+%if %{undefined rhel} || 0%{?rhel} >= 10
 BuildRequires: go-rpm-macros
 %endif
 BuildRequires: gpgme-devel
@@ -133,29 +90,22 @@ BuildRequires: libselinux-devel
 BuildRequires: shadow-utils-subid-devel
 BuildRequires: pkgconfig
 BuildRequires: make
+BuildRequires: man-db
 BuildRequires: ostree-devel
 BuildRequires: systemd
 BuildRequires: systemd-devel
-%if %{with python3}
-BuildRequires: python3
-%endif
 Requires: catatonit
 Requires: conmon >= 2:2.1.7-2
-%if 0%{?fedora} > 38
-Requires: containers-common-extra >= 4:1-90
+%if %{defined fedora} && 0%{?fedora} >= 40
+# TODO: Remove the f40 conditional after a few releases to keep conditionals to
+# a minimum
+# Ref: https://bugzilla.redhat.com/show_bug.cgi?id=2269148
+Requires: containers-common-extra >= 5:0.58.0-1
 %else
-%if 0%{?fedora} == 38
-Requires: containers-common-extra >= 4:1-89
-%else
-Requires: containers-common-extra >= 4:1-82
+Requires: containers-common-extra
 %endif
-%endif
-Recommends: %{name}-gvproxy = %{epoch}:%{version}-%{release}
-Provides: %{name}-quadlet
 Obsoletes: %{name}-quadlet <= 5:4.4.0-1
 Provides: %{name}-quadlet = %{epoch}:%{version}-%{release}
-# DO NOT DELETE BELOW LINE - used for updating downstream goimports
-# vendored libraries
 
 %description
 %{name} (Pod Manager) is a fully featured container engine that is a simple
@@ -169,8 +119,6 @@ additional privileges.
 Both tools share image (not container) storage, hence each can use or
 manipulate images (but not containers) created by the other.
 
-%{summary}
-%{repo} Simple management tool for pods, containers and images
 
 %package docker
 Summary: Emulate Docker CLI using %{name}
@@ -191,7 +139,10 @@ pages and %{name}.
 Summary: Tests for %{name}
 
 Requires: %{name} = %{epoch}:%{version}-%{release}
+%if %{defined fedora}
 Requires: bats
+%endif
+Requires: attr
 Requires: jq
 Requires: skopeo
 Requires: nmap-ncat
@@ -219,41 +170,64 @@ run %{name}-remote in production.
 manage pods, containers and container images. %{name}-remote supports ssh
 connections as well.
 
-%package plugins
-Summary: Plugins for %{name}
-Requires: dnsmasq
-Recommends: %{name}-gvproxy = %{epoch}:%{version}-%{release}
+%package -n %{name}sh
+Summary: Confined login and user shell using %{name}
+Requires: %{name} = %{epoch}:%{version}-%{release}
+Provides: %{name}-shell = %{epoch}:%{version}-%{release}
+Provides: %{name}-%{name}sh = %{epoch}:%{version}-%{release}
 
-%description plugins
-This plugin sets up the use of dnsmasq on a given CNI network so
-that Pods can resolve each other by name.  When configured,
-the pod and its IP address are added to a network specific hosts file
-that dnsmasq will read in.  Similarly, when a pod
-is removed from the network, it will remove the entry from the hosts
-file.  Each CNI network will have its own dnsmasq instance.
+%description -n %{name}sh
+%{name}sh provides a confined login and user shell with access to volumes and
+capabilities specified in user quadlets.
 
-%package gvproxy
-Summary: Go replacement for libslirp and VPNKit
+It is a symlink to %{_bindir}/%{name} and execs into the `%{name}sh` container
+when `%{_bindir}/%{name}sh` is set as a login shell or set as os.Args[0].
 
-%description gvproxy
-A replacement for libslirp and VPNKit, written in pure Go.
-It is based on the network stack of gVisor. Compared to libslirp,
-gvisor-tap-vsock brings a configurable DNS server and
-dynamic port forwarding.
+%ifarch %{machine_arches}
+%package machine
+Summary: Metapackage for setting up %{name} machine
+Requires: %{name} = %{epoch}:%{version}-%{release}
+Requires: gvisor-tap-vsock
+%if %{defined qemu}
+%ifarch aarch64
+Requires: qemu-system-aarch64-core
+%endif
+%ifarch x86_64
+Requires: qemu-system-x86-core
+%endif
+%else
+Requires: qemu-kvm
+%endif
+Requires: qemu-img
+Requires: virtiofsd
+ExclusiveArch: x86_64 aarch64
+
+%description machine
+This subpackage installs the dependencies for %{name} machine, for more see:
+https://docs.podman.io/en/latest/markdown/podman-machine.1.html
+%endif
 
 %prep
-%autosetup -Sgit -n %{name}-%{version}
+%autosetup -Sgit -n %{name}-%{version_no_tilde}
 sed -i 's;@@PODMAN@@\;$(BINDIR);@@PODMAN@@\;%{_bindir};' Makefile
 
-# untar dnsname
-tar zxf %{SOURCE1}
+# cgroups-v1 is supported on rhel9
+%if 0%{?rhel} == 9
+sed -i '/DELETE ON RHEL9/,/DELETE ON RHEL9/d' libpod/runtime.go
+%endif
 
-# untar %%{name}-gvproxy
-tar zxf %{SOURCE2}
+# These changes are only meant for copr builds
+%if %{defined copr_build}
+# podman --version should show short sha
+sed -i "s/^const RawVersion = .*/const RawVersion = \"##VERSION##-##SHORT_SHA##\"/" version/rawversion/version.go
+# use ParseTolerant to allow short sha in version
+sed -i "s/^var Version.*/var Version, err = semver.ParseTolerant(rawversion.RawVersion)/" version/version.go
+%endif
 
 %build
 %set_build_flags
 export CGO_CFLAGS=$CFLAGS
+
 # These extra flags present in $CFLAGS have been skipped for now as they break the build
 CGO_CFLAGS=$(echo $CGO_CFLAGS | sed 's/-flto=auto//g')
 CGO_CFLAGS=$(echo $CGO_CFLAGS | sed 's/-Wp,D_GLIBCXX_ASSERTIONS//g')
@@ -263,64 +237,51 @@ CGO_CFLAGS=$(echo $CGO_CFLAGS | sed 's/-specs=\/usr\/lib\/rpm\/redhat\/redhat-an
 export CGO_CFLAGS+=" -m64 -mtune=generic -fcf-protection=full"
 %endif
 
-export GO111MODULE=off
-export GOPATH=$(pwd)/_build:$(pwd)
+export GOPROXY=direct
 
-mkdir _build
-cd _build
-mkdir -p src/%{provider}.%{provider_tld}/%{project}
-ln -s ../../../../ src/%{import_path}
-cd ..
-ln -s vendor src
-
-# build date. FIXME: Makefile uses '/v2/libpod', that doesn't work here?
-LDFLAGS="-X %{import_path}/libpod/define.buildInfo=$(date +%s)"
+LDFLAGS="-X %{ld_libpod}/define.buildInfo=${SOURCE_DATE_EPOCH:-$(date +%s)} \
+         -X \"%{ld_libpod}/define.buildOrigin=%{build_origin}\" \
+         -X %{ld_libpod}/config._installPrefix=%{_prefix} \
+         -X %{ld_libpod}/config._etcDir=%{_sysconfdir} \
+         -X %{ld_project}/pkg/systemd/quadlet._binDir=%{_bindir}"
 
 # build rootlessport first
-%gobuild -o bin/rootlessport %{import_path}/cmd/rootlessport
+%gobuild -o bin/rootlessport ./cmd/rootlessport
 
 export BASEBUILDTAGS="seccomp exclude_graphdriver_devicemapper $(hack/systemd_tag.sh) $(hack/libsubid_tag.sh)"
 
+# libtrust_openssl buildtag switches to using the FIPS-compatible func
+# `ecdsa.HashSign`.
+# Ref 1: https://github.com/golang-fips/go/blob/main/patches/015-add-hash-sign-verify.patch#L22
+# Ref 2: https://github.com/containers/libtrust/blob/main/ec_key_openssl.go#L23
+%if %{defined fips_enabled}
+export BASEBUILDTAGS="$BASEBUILDTAGS libtrust_openssl"
+%endif
+
 # build %%{name}
 export BUILDTAGS="$BASEBUILDTAGS $(hack/btrfs_installed_tag.sh) $(hack/btrfs_tag.sh) $(hack/libdm_tag.sh)"
-%gobuild -o bin/%{name} %{import_path}/cmd/%{name}
+%gobuild -o bin/%{name} ./cmd/%{name}
 
 # build %%{name}-remote
 export BUILDTAGS="$BASEBUILDTAGS exclude_graphdriver_btrfs btrfs_noversion remote"
-%gobuild -o bin/%{name}-remote %{import_path}/cmd/%{name}
+%gobuild -o bin/%{name}-remote ./cmd/%{name}
 
 # build quadlet
 export BUILDTAGS="$BASEBUILDTAGS $(hack/btrfs_installed_tag.sh) $(hack/btrfs_tag.sh)"
-%gobuild -o bin/quadlet %{import_path}/cmd/quadlet
+%gobuild -o bin/quadlet ./cmd/quadlet
 
-cd %{repo_plugins}-%{commit_plugins}
-mkdir _build
-cd _build
-mkdir -p src/%{provider}.%{provider_tld}/%{project}
-ln -s ../../../../ src/%{import_path_plugins}
-cd ..
-ln -s vendor src
-export GOPATH=$(pwd)/_build:$(pwd)
-%gobuild -o bin/dnsname %{import_path_plugins}/plugins/meta/dnsname
-cd ..
+# build %%{name}-testing
+export BUILDTAGS="$BASEBUILDTAGS $(hack/btrfs_installed_tag.sh) $(hack/btrfs_tag.sh)"
+%gobuild -o bin/podman-testing ./cmd/podman-testing
 
-cd %{repo_gvproxy}-%{commit_gvproxy}
-mkdir _build
-cd _build
-mkdir -p src/%{provider}.%{provider_tld}/%{project}
-ln -s ../../../../ src/%{import_path_gvproxy}
-cd ..
-ln -s vendor src
-export GOPATH=$(pwd)/_build:$(pwd)
-%gobuild -o bin/gvproxy %{import_path_gvproxy}/cmd/gvproxy
-%gobuild -o bin/gvforwarder %{import_path_gvproxy}/cmd/vm
-cd ..
+# reset LDFLAGS for plugins binaries
+LDFLAGS=''
 
 %{__make} docs docker-docs
 
 %install
 install -dp %{buildroot}%{_unitdir}
-PODMAN_VERSION=%{version} %{__make} PREFIX=%{buildroot}%{_prefix} ETCDIR=%{_sysconfdir} \
+PODMAN_VERSION=%{version} %{__make} DESTDIR=%{buildroot} PREFIX=%{_prefix} ETCDIR=%{_sysconfdir} \
        install.bin \
        install.man \
        install.systemd \
@@ -328,39 +289,38 @@ PODMAN_VERSION=%{version} %{__make} PREFIX=%{buildroot}%{_prefix} ETCDIR=%{_sysc
        install.docker \
        install.docker-docs \
        install.remote \
-%if %{with modules_load}
-        install.modules-load
+       install.testing
+
+# See above for the iptables.conf declaration
+%if %{defined fedora} && 0%{?fedora} < 41
+%{__make} DESTDIR=%{buildroot} MODULESLOADDIR=%{_modulesloaddir} install.modules-load
 %endif
 
 sed -i 's;%{buildroot};;g' %{buildroot}%{_bindir}/docker
 
-# install dnsname plugin
-cd %{repo_plugins}-%{commit_plugins}
-%{__make} PREFIX=%{_prefix} DESTDIR=%{buildroot} install
-cd ..
-
-# install gvproxy
-cd %{repo_gvproxy}-%{commit_gvproxy}
-install -dp %{buildroot}%{_libexecdir}/%{name}
-install -p -m0755 bin/gvproxy %{buildroot}%{_libexecdir}/%{name}
-install -p -m0755 bin/gvforwarder %{buildroot}%{_libexecdir}/%{name}
-cd ..
-
 # do not include docker and podman-remote man pages in main package
-for file in `find %{buildroot}%{_mandir}/man[15] -type f | sed "s,%{buildroot},," | grep -v -e remote -e docker`; do
-    echo "$file*" >> podman.file-list
+for file in `find %{buildroot}%{_mandir}/man[157] -type f | sed "s,%{buildroot},," | grep -v -e %{name}sh.1 -e remote -e docker`; do
+    echo "$file*" >> %{name}.file-list
 done
 
 rm -f %{buildroot}%{_mandir}/man5/docker*.5
 
-install -d -p %{buildroot}/%{_datadir}/%{name}/test/system
-cp -pav test/system %{buildroot}/%{_datadir}/%{name}/test/
+install -d -p %{buildroot}%{_datadir}/%{name}/test/system
+cp -pav test/system %{buildroot}%{_datadir}/%{name}/test/
+
+%ifarch %{machine_arches}
+# symlink virtiofsd in %%{name} libexecdir for machine subpackage
+ln -s ../virtiofsd %{buildroot}%{_libexecdir}/%{name}
+%endif
 
 #define license tag if not already defined
 %{!?_licensedir:%global license %doc}
 
+# Include empty check to silence rpmlint warning
+%check
+
 %files -f %{name}.file-list
-%license LICENSE
+%license LICENSE vendor/modules.txt
 %doc README.md CONTRIBUTING.md install.md transfer.md
 %{_bindir}/%{name}
 %dir %{_libexecdir}/%{name}
@@ -377,13 +337,17 @@ cp -pav test/system %{buildroot}/%{_datadir}/%{name}/test/
 %{_tmpfilesdir}/%{name}.conf
 %{_systemdgeneratordir}/%{name}-system-generator
 %{_systemdusergeneratordir}/%{name}-user-generator
-%if %{with modules_load}
+# iptables modules are only needed with iptables-legacy,
+# as of f41 netavark will default to nftables so do not load unessary modules
+# https://fedoraproject.org/wiki/Changes/NetavarkNftablesDefault
+%if %{defined fedora} && 0%{?fedora} < 41
 %{_modulesloaddir}/%{name}-iptables.conf
 %endif
 
 %files docker
 %{_bindir}/docker
 %{_mandir}/man1/docker*.1*
+%{_sysconfdir}/profile.d/%{name}-docker.*
 %{_tmpfilesdir}/%{name}-docker.conf
 %{_user_tmpfilesdir}/%{name}-docker.conf
 
@@ -398,26 +362,18 @@ cp -pav test/system %{buildroot}/%{_datadir}/%{name}/test/
 %{_datadir}/zsh/site-functions/_%{name}-remote
 
 %files tests
-%license LICENSE
+%{_bindir}/%{name}-testing
 %{_datadir}/%{name}/test
 
-%files plugins
-%license %{repo_plugins}-%{commit_plugins}/LICENSE
-%doc %{repo_plugins}-%{commit_plugins}/{README.md,README_PODMAN.md}
-%dir %{_libexecdir}/cni
-%{_libexecdir}/cni/dnsname
+%files -n %{name}sh
+%{_bindir}/%{name}sh
+%{_mandir}/man1/%{name}sh.1*
 
-%files gvproxy
-%license %{repo_gvproxy}-%{commit_gvproxy}/LICENSE
-%doc %{repo_gvproxy}-%{commit_gvproxy}/README.md
+%ifarch %{machine_arches}
+%files machine
 %dir %{_libexecdir}/%{name}
-%{_libexecdir}/%{name}/gvproxy
-%{_libexecdir}/%{name}/gvforwarder
+%{_libexecdir}/%{name}/virtiofsd
+%endif
 
 %changelog
-%if %{with changelog}
-* Mon May 01 2023 RH Container Bot <rhcontainerbot@fedoraproject.org>
-- Placeholder changelog for envs that are not autochangelog-ready
-%else
 %autochangelog
-%endif

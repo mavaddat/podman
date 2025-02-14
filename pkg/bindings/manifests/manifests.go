@@ -6,19 +6,25 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"mime/multipart"
 	"net/http"
+	"net/textproto"
 	"os"
+	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
+	"sync"
 
-	"github.com/containers/common/libimage"
+	"github.com/containers/common/libimage/define"
 	"github.com/containers/image/v5/manifest"
 	imageTypes "github.com/containers/image/v5/types"
-	"github.com/containers/podman/v4/pkg/auth"
-	"github.com/containers/podman/v4/pkg/bindings"
-	"github.com/containers/podman/v4/pkg/bindings/images"
-	"github.com/containers/podman/v4/pkg/domain/entities"
-	"github.com/containers/podman/v4/pkg/errorhandling"
+	"github.com/containers/podman/v5/pkg/auth"
+	"github.com/containers/podman/v5/pkg/bindings"
+	"github.com/containers/podman/v5/pkg/bindings/images"
+	entitiesTypes "github.com/containers/podman/v5/pkg/domain/entities/types"
+	"github.com/containers/podman/v5/pkg/errorhandling"
+	dockerAPI "github.com/docker/docker/api/types"
 	jsoniter "github.com/json-iterator/go"
 )
 
@@ -27,7 +33,7 @@ import (
 // of a list if the name provided is a manifest list.  The ID of the new manifest list
 // is returned as a string.
 func Create(ctx context.Context, name string, images []string, options *CreateOptions) (string, error) {
-	var idr entities.IDResponse
+	var idr dockerAPI.IDResponse
 	if options == nil {
 		options = new(CreateOptions)
 	}
@@ -92,7 +98,12 @@ func Inspect(ctx context.Context, name string, options *InspectOptions) (*manife
 		params.Set("tlsVerify", strconv.FormatBool(!options.GetSkipTLSVerify()))
 	}
 
-	response, err := conn.DoRequest(ctx, nil, http.MethodGet, "/manifests/%s/json", params, nil, name)
+	header, err := auth.MakeXRegistryAuthHeader(&imageTypes.SystemContext{AuthFilePath: options.GetAuthfile()}, "", "")
+	if err != nil {
+		return nil, err
+	}
+
+	response, err := conn.DoRequest(ctx, nil, http.MethodGet, "/manifests/%s/json", params, header, name)
 	if err != nil {
 		return nil, err
 	}
@@ -105,7 +116,7 @@ func Inspect(ctx context.Context, name string, options *InspectOptions) (*manife
 // InspectListData returns a manifest list for a given name.
 // Contains exclusive field like `annotations` which is only
 // present in OCI spec and not in docker image spec.
-func InspectListData(ctx context.Context, name string, options *InspectOptions) (*libimage.ManifestListData, error) {
+func InspectListData(ctx context.Context, name string, options *InspectOptions) (*define.ManifestListData, error) {
 	conn, err := bindings.GetClient(ctx)
 	if err != nil {
 		return nil, err
@@ -125,13 +136,18 @@ func InspectListData(ctx context.Context, name string, options *InspectOptions) 
 		params.Set("tlsVerify", strconv.FormatBool(!options.GetSkipTLSVerify()))
 	}
 
-	response, err := conn.DoRequest(ctx, nil, http.MethodGet, "/manifests/%s/json", params, nil, name)
+	header, err := auth.MakeXRegistryAuthHeader(&imageTypes.SystemContext{AuthFilePath: options.GetAuthfile()}, "", "")
+	if err != nil {
+		return nil, err
+	}
+
+	response, err := conn.DoRequest(ctx, nil, http.MethodGet, "/manifests/%s/json", params, header, name)
 	if err != nil {
 		return nil, err
 	}
 	defer response.Body.Close()
 
-	var list libimage.ManifestListData
+	var list define.ManifestListData
 	return &list, response.Process(&list)
 }
 
@@ -149,7 +165,7 @@ func Add(ctx context.Context, name string, options *AddOptions) (string, error) 
 		Features:      options.Features,
 		Images:        options.Images,
 		OS:            options.OS,
-		OSFeatures:    nil,
+		OSFeatures:    options.OSFeatures,
 		OSVersion:     options.OSVersion,
 		Variant:       options.Variant,
 		Username:      options.Username,
@@ -161,6 +177,37 @@ func Add(ctx context.Context, name string, options *AddOptions) (string, error) 
 	return Modify(ctx, name, options.Images, &optionsv4)
 }
 
+// AddArtifact creates an artifact manifest and adds it to a given manifest
+// list.  Additional options for the manifest can also be specified.  The ID of
+// the new manifest list is returned as a string
+func AddArtifact(ctx context.Context, name string, options *AddArtifactOptions) (string, error) {
+	if options == nil {
+		options = new(AddArtifactOptions)
+	}
+	optionsv4 := ModifyOptions{
+		Annotations: options.Annotation,
+		Arch:        options.Arch,
+		Features:    options.Features,
+		OS:          options.OS,
+		OSFeatures:  options.OSFeatures,
+		OSVersion:   options.OSVersion,
+		Variant:     options.Variant,
+
+		ArtifactType:          options.Type,
+		ArtifactConfigType:    options.ConfigType,
+		ArtifactLayerType:     options.LayerType,
+		ArtifactConfig:        options.Config,
+		ArtifactExcludeTitles: options.ExcludeTitles,
+		ArtifactSubject:       options.Subject,
+		ArtifactAnnotations:   options.Annotations,
+	}
+	if len(options.Files) > 0 {
+		optionsv4.WithArtifactFiles(options.Files)
+	}
+	optionsv4.WithOperation("update")
+	return Modify(ctx, name, nil, &optionsv4)
+}
+
 // Remove deletes a manifest entry from a manifest list.  Both name and the digest to be
 // removed are mandatory inputs.  The ID of the new manifest list is returned as a string.
 func Remove(ctx context.Context, name, digest string, _ *RemoveOptions) (string, error) {
@@ -169,8 +216,8 @@ func Remove(ctx context.Context, name, digest string, _ *RemoveOptions) (string,
 }
 
 // Delete removes specified manifest from local storage.
-func Delete(ctx context.Context, name string) (*entities.ManifestRemoveReport, error) {
-	var report entities.ManifestRemoveReport
+func Delete(ctx context.Context, name string) (*entitiesTypes.ManifestRemoveReport, error) {
+	var report entitiesTypes.ManifestRemoveReport
 	conn, err := bindings.GetClient(ctx)
 	if err != nil {
 		return nil, err
@@ -240,7 +287,7 @@ func Push(ctx context.Context, name, destination string, options *images.PushOpt
 
 	dec := json.NewDecoder(response.Body)
 	for {
-		var report entities.ManifestPushReport
+		var report entitiesTypes.ManifestPushReport
 		if err := dec.Decode(&report); err != nil {
 			return "", err
 		}
@@ -273,6 +320,16 @@ func Modify(ctx context.Context, name string, images []string, options *ModifyOp
 	}
 	options.WithImages(images)
 
+	var artifactFiles, artifactBaseNames []string
+	if options.ArtifactFiles != nil && len(*options.ArtifactFiles) > 0 {
+		artifactFiles = slices.Clone(*options.ArtifactFiles)
+		artifactBaseNames = make([]string, 0, len(artifactFiles))
+		for _, filename := range artifactFiles {
+			artifactBaseNames = append(artifactBaseNames, filepath.Base(filename))
+		}
+		options.ArtifactFiles = &artifactBaseNames
+	}
+
 	conn, err := bindings.GetClient(ctx)
 	if err != nil {
 		return "", err
@@ -281,11 +338,80 @@ func Modify(ctx context.Context, name string, images []string, options *ModifyOp
 	if err != nil {
 		return "", err
 	}
-	reader := strings.NewReader(opts)
+	reader := io.Reader(strings.NewReader(opts))
+	if options.Body != nil {
+		reader = io.MultiReader(reader, *options.Body)
+	}
+	var artifactContentType string
+	var artifactWriterGroup sync.WaitGroup
+	var artifactWriterError error
+	if len(artifactFiles) > 0 {
+		// get ready to upload the passed-in files
+		bodyReader, bodyWriter := io.Pipe()
+		defer bodyReader.Close()
+		requestBodyReader := reader
+		reader = bodyReader
+		// upload the files in another goroutine
+		writer := multipart.NewWriter(bodyWriter)
+		artifactContentType = writer.FormDataContentType()
+		artifactWriterGroup.Add(1)
+		go func() {
+			defer bodyWriter.Close()
+			defer writer.Close()
+			// start with the body we would have uploaded if we weren't
+			// attaching artifacts
+			headers := textproto.MIMEHeader{
+				"Content-Type": []string{"application/json"},
+			}
+			requestPartWriter, err := writer.CreatePart(headers)
+			if err != nil {
+				artifactWriterError = fmt.Errorf("creating form part for request: %v", err)
+				return
+			}
+			if _, err := io.Copy(requestPartWriter, requestBodyReader); err != nil {
+				artifactWriterError = fmt.Errorf("uploading request as form part: %v", err)
+				return
+			}
+			// now walk the list of files we're attaching
+			for _, file := range artifactFiles {
+				if err := func() error {
+					f, err := os.Open(file)
+					if err != nil {
+						return err
+					}
+					defer f.Close()
+					fileBase := filepath.Base(file)
+					formFile, err := writer.CreateFormFile(fileBase, fileBase)
+					if err != nil {
+						return err
+					}
+					st, err := f.Stat()
+					if err != nil {
+						return err
+					}
+					// upload the file contents
+					n, err := io.Copy(formFile, f)
+					if err != nil {
+						return fmt.Errorf("uploading contents of artifact file %s: %w", filepath.Base(file), err)
+					}
+					if n != st.Size() {
+						return fmt.Errorf("short write while uploading contents of artifact file %s: %d != %d", filepath.Base(file), n, st.Size())
+					}
+					return nil
+				}(); err != nil {
+					artifactWriterError = err
+					break
+				}
+			}
+		}()
+	}
 
 	header, err := auth.MakeXRegistryAuthHeader(&imageTypes.SystemContext{AuthFilePath: options.GetAuthfile()}, options.GetUsername(), options.GetPassword())
 	if err != nil {
 		return "", err
+	}
+	if artifactContentType != "" {
+		header["Content-Type"] = []string{artifactContentType}
 	}
 
 	params, err := options.ToParams()
@@ -304,13 +430,18 @@ func Modify(ctx context.Context, name string, images []string, options *ModifyOp
 	}
 	defer response.Body.Close()
 
+	artifactWriterGroup.Wait()
+	if artifactWriterError != nil {
+		return "", fmt.Errorf("uploading artifacts: %w", err)
+	}
+
 	data, err := io.ReadAll(response.Body)
 	if err != nil {
 		return "", fmt.Errorf("unable to process API response: %w", err)
 	}
 
 	if response.IsSuccess() || response.IsRedirection() {
-		var report entities.ManifestModifyReport
+		var report entitiesTypes.ManifestModifyReport
 		if err = jsoniter.Unmarshal(data, &report); err != nil {
 			return "", fmt.Errorf("unable to decode API response: %w", err)
 		}

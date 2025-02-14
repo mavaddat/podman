@@ -5,7 +5,7 @@ import (
 	"net"
 	"net/url"
 
-	"github.com/containers/podman/v4/pkg/bindings/internal/util"
+	"github.com/containers/podman/v5/pkg/bindings/internal/util"
 )
 
 // Changed returns true if named field has been set
@@ -106,6 +106,21 @@ func (o *PlayOptions) GetNetwork() []string {
 		return z
 	}
 	return *o.Network
+}
+
+// WithNoHostname set field NoHostname to given value
+func (o *PlayOptions) WithNoHostname(value bool) *PlayOptions {
+	o.NoHostname = &value
+	return o
+}
+
+// GetNoHostname returns value of field NoHostname
+func (o *PlayOptions) GetNoHostname() bool {
+	if o.NoHostname == nil {
+		var z bool
+		return z
+	}
+	return *o.NoHostname
 }
 
 // WithNoHosts set field NoHosts to given value
@@ -258,6 +273,21 @@ func (o *PlayOptions) GetLogOptions() []string {
 	return *o.LogOptions
 }
 
+// WithReplace set field Replace to given value
+func (o *PlayOptions) WithReplace(value bool) *PlayOptions {
+	o.Replace = &value
+	return o
+}
+
+// GetReplace returns value of field Replace
+func (o *PlayOptions) GetReplace() bool {
+	if o.Replace == nil {
+		var z bool
+		return z
+	}
+	return *o.Replace
+}
+
 // WithStart set field Start to given value
 func (o *PlayOptions) WithStart(value bool) *PlayOptions {
 	o.Start = &value
@@ -271,6 +301,21 @@ func (o *PlayOptions) GetStart() bool {
 		return z
 	}
 	return *o.Start
+}
+
+// WithNoTrunc set field NoTrunc to given value
+func (o *PlayOptions) WithNoTrunc(value bool) *PlayOptions {
+	o.NoTrunc = &value
+	return o
+}
+
+// GetNoTrunc returns value of field NoTrunc
+func (o *PlayOptions) GetNoTrunc() bool {
+	if o.NoTrunc == nil {
+		var z bool
+		return z
+	}
+	return *o.NoTrunc
 }
 
 // WithUserns set field Userns to given value
@@ -316,6 +361,21 @@ func (o *PlayOptions) GetPublishPorts() []string {
 		return z
 	}
 	return o.PublishPorts
+}
+
+// WithPublishAllPorts set field PublishAllPorts to given value
+func (o *PlayOptions) WithPublishAllPorts(value bool) *PlayOptions {
+	o.PublishAllPorts = &value
+	return o
+}
+
+// GetPublishAllPorts returns value of field PublishAllPorts
+func (o *PlayOptions) GetPublishAllPorts() bool {
+	if o.PublishAllPorts == nil {
+		var z bool
+		return z
+	}
+	return *o.PublishAllPorts
 }
 
 // WithWait set field Wait to given value

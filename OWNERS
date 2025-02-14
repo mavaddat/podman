@@ -1,41 +1,31 @@
 approvers:
   - Luap99
   - TomSweeneyRedHat
-  - alexlarsson
   - ashley-cui
   - baude
-  - edsantiago
-  - flouthoc
   - giuseppe
-  - jwhonce
+  - l0rd
   - lsm5
   - mheon
   - mtrmac
-  - n1hility
   - rhatdan
-  - saschagrunert
-  - umohnani8
   - vrothberg
   - ygalblum
-  - zhangguanzhang
 reviewers:
   - Luap99
-  - QiWang19
   - TomSweeneyRedHat
   - alexlarsson
   - baude
-  - cdoern
-  - edsantiago
   - flouthoc
   - giuseppe
+  - jakecorrenti
   - jwhonce
+  - l0rd
   - lsm5
   - mheon
   - mtrmac
   - n1hility
   - rhatdan
-  - saschagrunert
   - umohnani8
   - vrothberg
   - ygalblum
-  - zhangguanzhang

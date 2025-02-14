@@ -27,7 +27,7 @@ Valid placeholders for the Go template are listed below:
 | .BoundingCaps            | Bounding capability set (array of strings)         |
 | .Config ...              | Structure with config info                         |
 | .ConmonPidFile           | Path to file containing conmon pid (string)        |
-| .Created                 | Container creation time (string, ISO3601)          |
+| .Created ...             | Container creation time (string, ISO3601)          |
 | .Dependencies            | Dependencies (array of strings)                    |
 | .Driver                  | Storage driver (string)                            |
 | .EffectiveCaps           | Effective capability set (array of strings)        |
@@ -62,6 +62,10 @@ Valid placeholders for the Go template are listed below:
 | .SizeRw                  | Size of upper (R/W) container layer, in bytes [1]  |
 | .State ...               | Container state info (struct)                      |
 | .StaticDir               | Path to container metadata dir (string)            |
+| .UseImageHostname        | Use /etc/hostname from the image if it exists? (string: true/false)
+|
+| .UseImageHosts           | Use /etc/hosts from the image? (string: true/false)
+|
 
 [1] This format specifier requires the **--size** option
 
@@ -74,6 +78,7 @@ In addition to normal output, display the total file size if the type is a conta
 
 ## EXAMPLE
 
+Inspect the specified container and print its information in json format.
 ```
 $ podman container inspect foobar
 [
@@ -305,16 +310,19 @@ $ podman container inspect foobar
 ]
 ```
 
+Inspect the specified container for the Image Name it is based on.
 ```
 $ podman container inspect nervous_fermi --format "{{.ImageName}}"
 registry.access.redhat.com/ubi8:latest
 ```
 
+Inspect the specified container for the GraphDriver Name it is running with.
 ```
 $ podman container inspect foobar --format "{{.GraphDriver.Name}}"
 overlay
 ```
 
+Inspect the latest container created for its EffectiveCaps field. (This option is not available with the remote Podman client, including Mac and Windows (excluding WSL2) machines)
 ```
 $ podman container inspect --latest --format {{.EffectiveCaps}}
 [CAP_CHOWN CAP_DAC_OVERRIDE CAP_FOWNER CAP_FSETID CAP_KILL CAP_NET_BIND_SERVICE CAP_SETFCAP CAP_SETGID CAP_SETPCAP CAP_SETUID]

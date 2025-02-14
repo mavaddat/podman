@@ -1,7 +1,11 @@
+//go:build !remote
+
 package libpod
 
 import (
+	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -13,9 +17,9 @@ import (
 
 	"github.com/containers/common/pkg/cgroups"
 	"github.com/containers/common/pkg/config"
-	"github.com/containers/podman/v4/pkg/errorhandling"
-	"github.com/containers/podman/v4/pkg/rootless"
-	"github.com/containers/podman/v4/utils"
+	"github.com/containers/common/pkg/systemd"
+	"github.com/containers/podman/v5/pkg/errorhandling"
+	"github.com/containers/podman/v5/pkg/rootless"
 	pmount "github.com/containers/storage/pkg/mount"
 	spec "github.com/opencontainers/runtime-spec/specs-go"
 	"github.com/opencontainers/selinux/go-selinux/label"
@@ -23,7 +27,7 @@ import (
 	"golang.org/x/sys/unix"
 )
 
-func (r *ConmonOCIRuntime) createRootlessContainer(ctr *Container, restoreOptions *ContainerCheckpointOptions) (int64, error) {
+func (r *ConmonOCIRuntime) createRootlessContainer(ctr *Container, restoreOptions *ContainerCheckpointOptions, hideFiles bool) (int64, error) {
 	type result struct {
 		restoreDuration int64
 		err             error
@@ -38,35 +42,88 @@ func (r *ConmonOCIRuntime) createRootlessContainer(ctr *Container, restoreOption
 			}
 			defer errorhandling.CloseQuiet(fd)
 
+			rootPath, err := ctr.getRootPathForOCI()
+			if err != nil {
+				return 0, err
+			}
+
 			// create a new mountns on the current thread
 			if err = unix.Unshare(unix.CLONE_NEWNS); err != nil {
 				return 0, err
 			}
 			defer func() {
-				if err := unix.Setns(int(fd.Fd()), unix.CLONE_NEWNS); err != nil {
-					logrus.Errorf("Unable to clone new namespace: %q", err)
+				err := unix.Setns(int(fd.Fd()), unix.CLONE_NEWNS)
+				if err == nil {
+					// If we are able to reset the previous mount namespace, unlock the thread and reuse it
+					runtime.UnlockOSThread()
+				} else {
+					// otherwise, leave the thread locked and the Go runtime will terminate it
+					logrus.Errorf("Unable to reset the previous mount namespace: %q", err)
 				}
 			}()
-
-			// don't spread our mounts around.  We are setting only /sys to be slave
-			// so that the cleanup process is still able to umount the storage and the
-			// changes are propagated to the host.
-			err = unix.Mount("/sys", "/sys", "none", unix.MS_REC|unix.MS_SLAVE, "")
-			if err != nil {
-				return 0, fmt.Errorf("cannot make /sys slave: %w", err)
-			}
-
 			mounts, err := pmount.GetMounts()
 			if err != nil {
 				return 0, err
 			}
-			for _, m := range mounts {
-				if !strings.HasPrefix(m.Mountpoint, "/sys/kernel") {
-					continue
+			if rootPath != "" {
+				byMountpoint := make(map[string]*pmount.Info)
+				for _, m := range mounts {
+					byMountpoint[m.Mountpoint] = m
 				}
-				err = unix.Unmount(m.Mountpoint, 0)
-				if err != nil && !os.IsNotExist(err) {
-					return 0, fmt.Errorf("cannot unmount %s: %w", m.Mountpoint, err)
+				isShared := false
+				var parentMount string
+				for dir := filepath.Dir(rootPath); ; dir = filepath.Dir(dir) {
+					if m, found := byMountpoint[dir]; found {
+						parentMount = dir
+						for _, o := range strings.Split(m.Optional, ",") {
+							opt := strings.Split(o, ":")
+							if opt[0] == "shared" {
+								isShared = true
+								break
+							}
+						}
+						break
+					}
+					if dir == "/" {
+						return 0, fmt.Errorf("cannot find mountpoint for the root path")
+					}
+				}
+
+				// do not propagate the bind mount on the parent mount namespace
+				if err := unix.Mount("", parentMount, "", unix.MS_SLAVE, ""); err != nil {
+					return 0, fmt.Errorf("failed to make %s slave: %w", parentMount, err)
+				}
+
+				// bind mount the containers' mount path to the path where the OCI runtime expects it to be
+				if err := unix.Mount(ctr.state.Mountpoint, rootPath, "", unix.MS_BIND, ""); err != nil {
+					return 0, fmt.Errorf("failed to bind mount %s to %s: %w", ctr.state.Mountpoint, rootPath, err)
+				}
+
+				if isShared {
+					// we need to restore the shared propagation of the parent mount so that we don't break -v $SRC:$DST:shared in the container
+					// if $SRC is on the same mount as the root path
+					if err := unix.Mount("", parentMount, "", unix.MS_SHARED, ""); err != nil {
+						return 0, fmt.Errorf("failed to restore MS_SHARED propagation for %s: %w", parentMount, err)
+					}
+				}
+			}
+
+			if hideFiles {
+				// don't spread our mounts around.  We are setting only /sys to be slave
+				// so that the cleanup process is still able to umount the storage and the
+				// changes are propagated to the host.
+				err = unix.Mount("/sys", "/sys", "none", unix.MS_REC|unix.MS_SLAVE, "")
+				if err != nil {
+					return 0, fmt.Errorf("cannot make /sys slave: %w", err)
+				}
+				for _, m := range mounts {
+					if !strings.HasPrefix(m.Mountpoint, "/sys/kernel") {
+						continue
+					}
+					err = unix.Unmount(m.Mountpoint, 0)
+					if err != nil && !errors.Is(err, fs.ErrNotExist) {
+						return 0, fmt.Errorf("cannot unmount %s: %w", m.Mountpoint, err)
+					}
 				}
 			}
 			return r.createOCIContainer(ctr, restoreOptions)
@@ -146,7 +203,7 @@ func (r *ConmonOCIRuntime) moveConmonToCgroupAndSignal(ctr *Container, cmd *exec
 			}
 
 			logrus.Infof("Running conmon under slice %s and unitName %s", realCgroupParent, unitName)
-			if err := utils.RunUnderSystemdScope(cmd.Process.Pid, realCgroupParent, unitName); err != nil {
+			if err := systemd.RunUnderSystemdScope(cmd.Process.Pid, realCgroupParent, unitName); err != nil {
 				logrus.StandardLogger().Logf(logLevel, "Failed to add conmon to systemd sandbox cgroup: %v", err)
 			}
 		} else {
@@ -162,10 +219,7 @@ func (r *ConmonOCIRuntime) moveConmonToCgroupAndSignal(ctr *Container, cmd *exec
 	}
 
 	/* We set the cgroup, now the child can start creating children */
-	if err := writeConmonPipeData(startFd); err != nil {
-		return err
-	}
-	return nil
+	return writeConmonPipeData(startFd)
 }
 
 // GetLimits converts spec resource limits to cgroup consumable limits
@@ -267,49 +321,25 @@ func GetLimits(resource *spec.LinuxResources) (runcconfig.Resources, error) {
 	if resource.BlockIO != nil {
 		if len(resource.BlockIO.ThrottleReadBpsDevice) > 0 {
 			for _, entry := range resource.BlockIO.ThrottleReadBpsDevice {
-				throttle := &runcconfig.ThrottleDevice{}
-				dev := &runcconfig.BlockIODevice{
-					Major: entry.Major,
-					Minor: entry.Minor,
-				}
-				throttle.BlockIODevice = *dev
-				throttle.Rate = entry.Rate
+				throttle := runcconfig.NewThrottleDevice(entry.Major, entry.Minor, entry.Rate)
 				final.BlkioThrottleReadBpsDevice = append(final.BlkioThrottleReadBpsDevice, throttle)
 			}
 		}
 		if len(resource.BlockIO.ThrottleWriteBpsDevice) > 0 {
 			for _, entry := range resource.BlockIO.ThrottleWriteBpsDevice {
-				throttle := &runcconfig.ThrottleDevice{}
-				dev := &runcconfig.BlockIODevice{
-					Major: entry.Major,
-					Minor: entry.Minor,
-				}
-				throttle.BlockIODevice = *dev
-				throttle.Rate = entry.Rate
+				throttle := runcconfig.NewThrottleDevice(entry.Major, entry.Minor, entry.Rate)
 				final.BlkioThrottleWriteBpsDevice = append(final.BlkioThrottleWriteBpsDevice, throttle)
 			}
 		}
 		if len(resource.BlockIO.ThrottleReadIOPSDevice) > 0 {
 			for _, entry := range resource.BlockIO.ThrottleReadIOPSDevice {
-				throttle := &runcconfig.ThrottleDevice{}
-				dev := &runcconfig.BlockIODevice{
-					Major: entry.Major,
-					Minor: entry.Minor,
-				}
-				throttle.BlockIODevice = *dev
-				throttle.Rate = entry.Rate
+				throttle := runcconfig.NewThrottleDevice(entry.Major, entry.Minor, entry.Rate)
 				final.BlkioThrottleReadIOPSDevice = append(final.BlkioThrottleReadIOPSDevice, throttle)
 			}
 		}
 		if len(resource.BlockIO.ThrottleWriteIOPSDevice) > 0 {
 			for _, entry := range resource.BlockIO.ThrottleWriteIOPSDevice {
-				throttle := &runcconfig.ThrottleDevice{}
-				dev := &runcconfig.BlockIODevice{
-					Major: entry.Major,
-					Minor: entry.Minor,
-				}
-				throttle.BlockIODevice = *dev
-				throttle.Rate = entry.Rate
+				throttle := runcconfig.NewThrottleDevice(entry.Major, entry.Minor, entry.Rate)
 				final.BlkioThrottleWriteIOPSDevice = append(final.BlkioThrottleWriteIOPSDevice, throttle)
 			}
 		}
@@ -321,18 +351,14 @@ func GetLimits(resource *spec.LinuxResources) (runcconfig.Resources, error) {
 		}
 		if len(resource.BlockIO.WeightDevice) > 0 {
 			for _, entry := range resource.BlockIO.WeightDevice {
-				weight := &runcconfig.WeightDevice{}
-				dev := &runcconfig.BlockIODevice{
-					Major: entry.Major,
-					Minor: entry.Minor,
-				}
+				var w, lw uint16
 				if entry.Weight != nil {
-					weight.Weight = *entry.Weight
+					w = *entry.Weight
 				}
 				if entry.LeafWeight != nil {
-					weight.LeafWeight = *entry.LeafWeight
+					lw = *entry.LeafWeight
 				}
-				weight.BlockIODevice = *dev
+				weight := runcconfig.NewWeightDevice(entry.Major, entry.Minor, w, lw)
 				final.BlkioWeightDevice = append(final.BlkioWeightDevice, weight)
 			}
 		}
@@ -352,6 +378,9 @@ func GetLimits(resource *spec.LinuxResources) (runcconfig.Resources, error) {
 
 	// Unified state
 	final.Unified = resource.Unified
-
 	return *final, nil
+}
+
+func moveToRuntimeCgroup() error {
+	return cgroups.MoveUnderCgroupSubtree("runtime")
 }

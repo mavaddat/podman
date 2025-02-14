@@ -40,7 +40,7 @@ Installing Podman
 Installing the Windows Podman client begins by downloading the Podman Windows
 installer. The Windows installer is built with each Podman release and can be
 downloaded from the official
- [Github release page](https://github.com/containers/podman/releases).
+ [GitHub release page](https://github.com/containers/podman/releases).
 Be sure to download a 4.1 or later release for the capabilities discussed
 in this guide.
 
@@ -215,8 +215,8 @@ podman machine set --rootful
 To restore rootless execution, set rootful to false:
 
 ```
-Podman machine stop
-Podman machine set --rootful=false
+podman machine stop
+podman machine set --rootful=false
 ```
 
 Another case in which you may wish to use rootful execution is binding a port
@@ -397,7 +397,7 @@ Recovering from a failed auto-installation of WSL
 
 If auto-install fails and retrying is unsuccessful, you can attempt to reset
 your WSL system state and perform a manual WSL installation using the `wsl
---install command`. To do so, perform the following steps:
+--install` command. To do so, perform the following steps:
 
 1. Launch PowerShell as administrator
    ```
@@ -406,7 +406,7 @@ your WSL system state and perform a manual WSL installation using the `wsl
 2. Disable WSL Features
    ```
    dism.exe /online /disable-feature /featurename:Microsoft-Windows-Subsystem-Linux /norestart
-   dism.exe /online /enable-feature /featurename:VirtualMachinePlatform /norestart
+   dism.exe /online /disable-feature /featurename:VirtualMachinePlatform /norestart
    ```
 3. Reboot
 4. Run manual WSL install

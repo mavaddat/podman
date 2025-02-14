@@ -1,3 +1,5 @@
+//go:build !remote
+
 package libpod
 
 import (
@@ -5,11 +7,12 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/containers/podman/v4/libpod/define"
-	"github.com/containers/podman/v4/libpod/driver"
-	"github.com/containers/podman/v4/pkg/util"
+	"github.com/containers/podman/v5/libpod/define"
+	"github.com/containers/podman/v5/libpod/driver"
+	"github.com/containers/podman/v5/pkg/signal"
+	"github.com/containers/podman/v5/pkg/util"
 	"github.com/containers/storage/types"
-	units "github.com/docker/go-units"
+	"github.com/docker/go-units"
 	spec "github.com/opencontainers/runtime-spec/specs-go"
 	"github.com/sirupsen/logrus"
 )
@@ -51,8 +54,8 @@ func (c *Container) volumesFrom() ([]string, error) {
 	if err != nil {
 		return nil, err
 	}
-	if ctrs, ok := ctrSpec.Annotations[define.InspectAnnotationVolumesFrom]; ok {
-		return strings.Split(ctrs, ","), nil
+	if ctrs, ok := ctrSpec.Annotations[define.VolumesFromAnnotation]; ok {
+		return strings.Split(ctrs, ";"), nil
 	}
 	return nil, nil
 }
@@ -140,6 +143,7 @@ func (c *Container) getContainerInspectData(size bool, driverData *define.Driver
 			CheckpointPath: runtimeInfo.CheckpointPath,
 			CheckpointLog:  runtimeInfo.CheckpointLog,
 			RestoreLog:     runtimeInfo.RestoreLog,
+			StoppedByUser:  c.state.StoppedByUser,
 		},
 		Image:                   config.RootfsImageID,
 		ImageName:               config.RootfsImageName,
@@ -167,6 +171,8 @@ func (c *Container) getContainerInspectData(size bool, driverData *define.Driver
 		IsService:               c.IsService(),
 		KubeExitCodePropagation: config.KubeExitCodePropagation.String(),
 		LockNumber:              c.lock.ID(),
+		UseImageHosts:           c.config.UseImageHosts,
+		UseImageHostname:        c.config.UseImageHostname,
 	}
 
 	if config.RootfsImageID != "" { // May not be set if the container was created with --rootfs
@@ -186,15 +192,20 @@ func (c *Container) getContainerInspectData(size bool, driverData *define.Driver
 		data.OCIConfigPath = c.state.ConfigPath
 	}
 
-	if c.config.HealthCheckConfig != nil {
+	// Check if healthcheck is not nil and --no-healthcheck option is not set.
+	// If --no-healthcheck is set Test will be always set to `[NONE]`, so the
+	// inspect status should be set to nil.
+	if c.config.HealthCheckConfig != nil && !(len(c.config.HealthCheckConfig.Test) == 1 && c.config.HealthCheckConfig.Test[0] == "NONE") {
 		// This container has a healthcheck defined in it; we need to add its state
-		healthCheckState, err := c.getHealthCheckLog()
+		healthCheckState, err := c.readHealthCheckLog()
 		if err != nil {
 			// An error here is not considered fatal; no health state will be displayed
 			logrus.Error(err)
 		} else {
-			data.State.Health = healthCheckState
+			data.State.Health = &healthCheckState
 		}
+	} else {
+		data.State.Health = nil
 	}
 
 	networkConfig, err := c.getContainerNetworkInfo()
@@ -202,6 +213,11 @@ func (c *Container) getContainerInspectData(size bool, driverData *define.Driver
 		return nil, err
 	}
 	data.NetworkSettings = networkConfig
+	// Ports in NetworkSettings includes exposed ports for network modes that are not host,
+	// and not container.
+	if !(c.config.NetNsCtr != "" || c.NetworkMode() == "host") {
+		addInspectPortsExpose(c.config.ExposedPorts, data.NetworkSettings.Ports)
+	}
 
 	inspectConfig := c.generateInspectContainerConfig(ctrSpec)
 	data.Config = inspectConfig
@@ -244,6 +260,7 @@ func (c *Container) GetMounts(namedVolumes []*ContainerNamedVolume, imageVolumes
 		mountStruct.Type = "volume"
 		mountStruct.Destination = volume.Dest
 		mountStruct.Name = volume.Name
+		mountStruct.SubPath = volume.SubPath
 
 		// For src and driver, we need to look up the named
 		// volume.
@@ -270,6 +287,7 @@ func (c *Container) GetMounts(namedVolumes []*ContainerNamedVolume, imageVolumes
 		mountStruct.Destination = volume.Dest
 		mountStruct.Source = volume.Source
 		mountStruct.RW = volume.ReadWrite
+		mountStruct.SubPath = volume.SubPath
 
 		inspectMounts = append(inspectMounts, mountStruct)
 	}
@@ -277,12 +295,12 @@ func (c *Container) GetMounts(namedVolumes []*ContainerNamedVolume, imageVolumes
 	for _, mount := range mounts {
 		// It's a mount.
 		// Is it a tmpfs? If so, discard.
-		if mount.Type == "tmpfs" {
+		if mount.Type == define.TypeTmpfs {
 			continue
 		}
 
 		mountStruct := define.InspectMount{}
-		mountStruct.Type = "bind"
+		mountStruct.Type = define.TypeBind
 		mountStruct.Source = mount.Source
 		mountStruct.Destination = mount.Destination
 
@@ -312,6 +330,10 @@ func (c *Container) GetSecurityOptions() []string {
 	if apparmor, ok := ctrSpec.Annotations[define.InspectAnnotationApparmor]; ok {
 		SecurityOpt = append(SecurityOpt, fmt.Sprintf("apparmor=%s", apparmor))
 	}
+	if c.config.Spec != nil && c.config.Spec.Linux != nil && c.config.Spec.Linux.MaskedPaths == nil {
+		SecurityOpt = append(SecurityOpt, "unmask=all")
+	}
+
 	return SecurityOpt
 }
 
@@ -359,6 +381,20 @@ func (c *Container) generateInspectContainerConfig(spec *spec.Spec) *define.Insp
 	if spec.Process != nil {
 		ctrConfig.Tty = spec.Process.Terminal
 		ctrConfig.Env = append([]string{}, spec.Process.Env...)
+
+		// finds all secrets mounted as env variables and hides the value
+		// the inspect command should not display it
+		envSecrets := c.config.EnvSecrets
+		for envIndex, envValue := range ctrConfig.Env {
+			// env variables come in the style `name=value`
+			envName := strings.Split(envValue, "=")[0]
+
+			envSecret, ok := envSecrets[envName]
+			if ok {
+				ctrConfig.Env[envIndex] = envSecret.Name + "=*******"
+			}
+		}
+
 		ctrConfig.WorkingDir = spec.Process.Cwd
 	}
 
@@ -376,7 +412,7 @@ func (c *Container) generateInspectContainerConfig(spec *spec.Spec) *define.Insp
 
 	// Leave empty if not explicitly overwritten by user
 	if len(c.config.Entrypoint) != 0 {
-		ctrConfig.Entrypoint = strings.Join(c.config.Entrypoint, " ")
+		ctrConfig.Entrypoint = c.config.Entrypoint
 	}
 
 	if len(c.config.Labels) != 0 {
@@ -392,13 +428,20 @@ func (c *Container) generateInspectContainerConfig(spec *spec.Spec) *define.Insp
 			ctrConfig.Annotations[k] = v
 		}
 	}
-
-	ctrConfig.StopSignal = c.config.StopSignal
+	ctrConfig.StopSignal = signal.ToDockerFormat(c.config.StopSignal)
 	// TODO: should JSON deep copy this to ensure internal pointers don't
 	// leak.
+	ctrConfig.StartupHealthCheck = c.config.StartupHealthCheckConfig
+
 	ctrConfig.Healthcheck = c.config.HealthCheckConfig
 
 	ctrConfig.HealthcheckOnFailureAction = c.config.HealthCheckOnFailureAction.String()
+
+	ctrConfig.HealthLogDestination = c.config.HealthLogDestination
+
+	ctrConfig.HealthMaxLogCount = c.config.HealthMaxLogCount
+
+	ctrConfig.HealthMaxLogSize = c.config.HealthMaxLogSize
 
 	ctrConfig.CreateCommand = c.config.CreateCommand
 
@@ -426,6 +469,25 @@ func (c *Container) generateInspectContainerConfig(spec *spec.Spec) *define.Insp
 
 	ctrConfig.SdNotifyMode = c.config.SdNotifyMode
 	ctrConfig.SdNotifySocket = c.config.SdNotifySocket
+
+	// Exosed ports consists of all exposed ports and all port mappings for
+	// this container. It does *NOT* follow to another container if we share
+	// the network namespace.
+	exposedPorts := make(map[string]struct{})
+	for port, protocols := range c.config.ExposedPorts {
+		for _, proto := range protocols {
+			exposedPorts[fmt.Sprintf("%d/%s", port, proto)] = struct{}{}
+		}
+	}
+	for _, mapping := range c.config.PortMappings {
+		for i := range mapping.Range {
+			exposedPorts[fmt.Sprintf("%d/%s", mapping.ContainerPort+i, mapping.Protocol)] = struct{}{}
+		}
+	}
+	if len(exposedPorts) > 0 {
+		ctrConfig.ExposedPorts = exposedPorts
+	}
+
 	return ctrConfig
 }
 
@@ -455,6 +517,9 @@ func (c *Container) generateInspectContainerHostConfig(ctrSpec *spec.Spec, named
 
 	restartPolicy := new(define.InspectRestartPolicy)
 	restartPolicy.Name = c.config.RestartPolicy
+	if restartPolicy.Name == "" {
+		restartPolicy.Name = define.RestartPolicyNo
+	}
 	restartPolicy.MaximumRetryCount = c.config.RestartRetries
 	hostConfig.RestartPolicy = restartPolicy
 	if c.config.NoCgroups {
@@ -480,6 +545,8 @@ func (c *Container) generateInspectContainerHostConfig(ctrSpec *spec.Spec, named
 	hostConfig.GroupAdd = make([]string, 0, len(c.config.Groups))
 	hostConfig.GroupAdd = append(hostConfig.GroupAdd, c.config.Groups...)
 
+	hostConfig.HostsFile = c.config.BaseHostsFile
+
 	if ctrSpec.Process != nil {
 		if ctrSpec.Process.OOMScoreAdj != nil {
 			hostConfig.OomScoreAdj = *ctrSpec.Process.OOMScoreAdj
@@ -494,18 +561,28 @@ func (c *Container) generateInspectContainerHostConfig(ctrSpec *spec.Spec, named
 
 	// Annotations
 	if ctrSpec.Annotations != nil {
+		if len(ctrSpec.Annotations) != 0 {
+			hostConfig.Annotations = ctrSpec.Annotations
+		}
+
 		hostConfig.ContainerIDFile = ctrSpec.Annotations[define.InspectAnnotationCIDFile]
 		if ctrSpec.Annotations[define.InspectAnnotationAutoremove] == define.InspectResponseTrue {
 			hostConfig.AutoRemove = true
 		}
-		if ctrs, ok := ctrSpec.Annotations[define.InspectAnnotationVolumesFrom]; ok {
-			hostConfig.VolumesFrom = strings.Split(ctrs, ",")
+		if ctrSpec.Annotations[define.InspectAnnotationAutoremoveImage] == define.InspectResponseTrue {
+			hostConfig.AutoRemoveImage = true
+		}
+		if ctrs, ok := ctrSpec.Annotations[define.VolumesFromAnnotation]; ok {
+			hostConfig.VolumesFrom = strings.Split(ctrs, ";")
 		}
 		if ctrSpec.Annotations[define.InspectAnnotationPrivileged] == define.InspectResponseTrue {
 			hostConfig.Privileged = true
 		}
 		if ctrSpec.Annotations[define.InspectAnnotationInit] == define.InspectResponseTrue {
 			hostConfig.Init = true
+		}
+		if ctrSpec.Annotations[define.InspectAnnotationPublishAll] == define.InspectResponseTrue {
+			hostConfig.PublishAllPorts = true
 		}
 	}
 
@@ -534,7 +611,7 @@ func (c *Container) generateInspectContainerHostConfig(ctrSpec *spec.Spec, named
 		}
 	}
 	for _, mount := range mounts {
-		if mount.Type == "tmpfs" {
+		if mount.Type == define.TypeTmpfs {
 			tmpfs[mount.Destination] = strings.Join(mount.Options, ",")
 		} else {
 			// TODO - maybe we should parse for empty source/destination

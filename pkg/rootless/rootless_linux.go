@@ -1,14 +1,11 @@
 //go:build linux && cgo
-// +build linux,cgo
 
 package rootless
 
 import (
-	"bufio"
 	"bytes"
 	"errors"
 	"fmt"
-	"io"
 	"os"
 	"os/exec"
 	gosignal "os/signal"
@@ -19,12 +16,13 @@ import (
 	"sync"
 	"unsafe"
 
-	"github.com/containers/podman/v4/pkg/errorhandling"
+	"github.com/containers/podman/v5/pkg/errorhandling"
 	"github.com/containers/storage/pkg/idtools"
 	pmount "github.com/containers/storage/pkg/mount"
 	"github.com/containers/storage/pkg/unshare"
+	"github.com/moby/sys/capability"
+	"github.com/opencontainers/runtime-spec/specs-go"
 	"github.com/sirupsen/logrus"
-	"github.com/syndtr/gocapability/capability"
 	"golang.org/x/sys/unix"
 )
 
@@ -34,7 +32,7 @@ import (
 #include <sys/types.h>
 extern uid_t rootless_uid();
 extern uid_t rootless_gid();
-extern int reexec_in_user_namespace(int ready, char *pause_pid_file_path, char *file_to_read, int fd);
+extern int reexec_in_user_namespace(int ready, char *pause_pid_file_path);
 extern int reexec_in_user_namespace_wait(int pid, int options);
 extern int reexec_userns_join(int pid, char *pause_pid_file_path);
 extern int is_fd_inherited(int fd);
@@ -44,6 +42,23 @@ import "C"
 const (
 	numSig = 65 // max number of signals
 )
+
+func init() {
+	rootlessUIDInit := int(C.rootless_uid())
+	rootlessGIDInit := int(C.rootless_gid())
+	if rootlessUIDInit != 0 {
+		// we need this if we joined the user+mount namespace from the C code.
+		if err := os.Setenv("_CONTAINERS_USERNS_CONFIGURED", "done"); err != nil {
+			logrus.Errorf("Failed to set environment variable %s as %s", "_CONTAINERS_USERNS_CONFIGURED", "done")
+		}
+		if err := os.Setenv("_CONTAINERS_ROOTLESS_UID", strconv.Itoa(rootlessUIDInit)); err != nil {
+			logrus.Errorf("Failed to set environment variable %s as %d", "_CONTAINERS_ROOTLESS_UID", rootlessUIDInit)
+		}
+		if err := os.Setenv("_CONTAINERS_ROOTLESS_GID", strconv.Itoa(rootlessGIDInit)); err != nil {
+			logrus.Errorf("Failed to set environment variable %s as %d", "_CONTAINERS_ROOTLESS_GID", rootlessGIDInit)
+		}
+	}
+}
 
 func runInUser() error {
 	return os.Setenv("_CONTAINERS_USERNS_CONFIGURED", "done")
@@ -56,60 +71,21 @@ var (
 
 // IsRootless tells us if we are running in rootless mode
 func IsRootless() bool {
-	isRootlessOnce.Do(func() {
-		rootlessUIDInit := int(C.rootless_uid())
-		rootlessGIDInit := int(C.rootless_gid())
-		if rootlessUIDInit != 0 {
-			// This happens if we joined the user+mount namespace as part of
-			if err := os.Setenv("_CONTAINERS_USERNS_CONFIGURED", "done"); err != nil {
-				logrus.Errorf("Failed to set environment variable %s as %s", "_CONTAINERS_USERNS_CONFIGURED", "done")
-			}
-			if err := os.Setenv("_CONTAINERS_ROOTLESS_UID", fmt.Sprintf("%d", rootlessUIDInit)); err != nil {
-				logrus.Errorf("Failed to set environment variable %s as %d", "_CONTAINERS_ROOTLESS_UID", rootlessUIDInit)
-			}
-			if err := os.Setenv("_CONTAINERS_ROOTLESS_GID", fmt.Sprintf("%d", rootlessGIDInit)); err != nil {
-				logrus.Errorf("Failed to set environment variable %s as %d", "_CONTAINERS_ROOTLESS_GID", rootlessGIDInit)
-			}
-		}
-		isRootless = os.Geteuid() != 0 || os.Getenv("_CONTAINERS_USERNS_CONFIGURED") != ""
-		if !isRootless {
-			hasCapSysAdmin, err := unshare.HasCapSysAdmin()
-			if err != nil {
-				logrus.Warnf("Failed to read CAP_SYS_ADMIN presence for the current process")
-			}
-			if err == nil && !hasCapSysAdmin {
-				isRootless = true
-			}
-		}
-	})
-	return isRootless
+	// unshare.IsRootless() is used to check if a user namespace is required.
+	// Here we need to make sure that nested podman instances act
+	// as if they have root privileges and pick paths on the host
+	// that would normally be used for root.
+	return unshare.IsRootless() && unshare.GetRootlessUID() > 0
 }
 
 // GetRootlessUID returns the UID of the user in the parent userNS
 func GetRootlessUID() int {
-	uidEnv := os.Getenv("_CONTAINERS_ROOTLESS_UID")
-	if uidEnv != "" {
-		u, _ := strconv.Atoi(uidEnv)
-		return u
-	}
-	return os.Geteuid()
+	return unshare.GetRootlessUID()
 }
 
 // GetRootlessGID returns the GID of the user in the parent userNS
 func GetRootlessGID() int {
-	gidEnv := os.Getenv("_CONTAINERS_ROOTLESS_GID")
-	if gidEnv != "" {
-		u, _ := strconv.Atoi(gidEnv)
-		return u
-	}
-
-	/* If the _CONTAINERS_ROOTLESS_UID is set, assume the gid==uid.  */
-	uidEnv := os.Getenv("_CONTAINERS_ROOTLESS_UID")
-	if uidEnv != "" {
-		u, _ := strconv.Atoi(uidEnv)
-		return u
-	}
-	return os.Getegid()
+	return unshare.GetRootlessGID()
 }
 
 func tryMappingTool(uid bool, pid int, hostID int, mappings []idtools.IDMap) error {
@@ -132,7 +108,7 @@ func tryMappingTool(uid bool, pid int, hostID int, mappings []idtools.IDMap) err
 		return append(l, strconv.Itoa(a), strconv.Itoa(b), strconv.Itoa(c))
 	}
 
-	args := []string{path, fmt.Sprintf("%d", pid)}
+	args := []string{path, strconv.Itoa(pid)}
 	args = appendTriplet(args, 0, hostID, 1)
 	for _, i := range mappings {
 		if hostID >= i.HostID && hostID < i.HostID+i.Size {
@@ -237,7 +213,7 @@ func copyMappings(from, to string) error {
 	return os.WriteFile(to, content, 0600)
 }
 
-func becomeRootInUserNS(pausePid, fileToRead string, fileOutput *os.File) (_ bool, _ int, retErr error) {
+func becomeRootInUserNS(pausePid string) (_ bool, _ int, retErr error) {
 	hasCapSysAdmin, err := unshare.HasCapSysAdmin()
 	if err != nil {
 		return false, 0, err
@@ -273,13 +249,6 @@ func becomeRootInUserNS(pausePid, fileToRead string, fileOutput *os.File) (_ boo
 	cPausePid := C.CString(pausePid)
 	defer C.free(unsafe.Pointer(cPausePid))
 
-	cFileToRead := C.CString(fileToRead)
-	defer C.free(unsafe.Pointer(cFileToRead))
-	var fileOutputFD C.int
-	if fileOutput != nil {
-		fileOutputFD = C.int(fileOutput.Fd())
-	}
-
 	runtime.LockOSThread()
 	defer runtime.UnlockOSThread()
 
@@ -311,7 +280,7 @@ func becomeRootInUserNS(pausePid, fileToRead string, fileOutput *os.File) (_ boo
 		}
 	}()
 
-	pidC := C.reexec_in_user_namespace(C.int(r.Fd()), cPausePid, cFileToRead, fileOutputFD)
+	pidC := C.reexec_in_user_namespace(C.int(r.Fd()), cPausePid)
 	pid = int(pidC)
 	if pid < 0 {
 		return false, -1, fmt.Errorf("cannot re-exec process")
@@ -374,7 +343,7 @@ func becomeRootInUserNS(pausePid, fileToRead string, fileOutput *os.File) (_ boo
 		}
 	}
 
-	_, err = w.Write([]byte("0"))
+	_, err = w.WriteString("0")
 	if err != nil {
 		return false, -1, fmt.Errorf("write to sync pipe: %w", err)
 	}
@@ -383,14 +352,6 @@ func becomeRootInUserNS(pausePid, fileToRead string, fileOutput *os.File) (_ boo
 	_, err = w.Read(b)
 	if err != nil {
 		return false, -1, fmt.Errorf("read from sync pipe: %w", err)
-	}
-
-	if fileOutput != nil {
-		ret := C.reexec_in_user_namespace_wait(pidC, 0)
-		if ret < 0 {
-			return false, -1, errors.New("waiting for the re-exec process")
-		}
-		return true, 0, nil
 	}
 
 	if b[0] == '2' {
@@ -458,69 +419,27 @@ func waitAndProxySignalsToChild(pid C.int) (bool, int, error) {
 // If podman was re-executed the caller needs to propagate the error code returned by the child
 // process.
 func BecomeRootInUserNS(pausePid string) (bool, int, error) {
-	return becomeRootInUserNS(pausePid, "", nil)
+	return becomeRootInUserNS(pausePid)
 }
 
 // TryJoinFromFilePaths attempts to join the namespaces of the pid files in paths.
 // This is useful when there are already running containers and we
 // don't have a pause process yet.  We can use the paths to the conmon
 // processes to attempt joining their namespaces.
-// If needNewNamespace is set, the file is read from a temporary user
-// namespace, this is useful for containers that are running with a
-// different uidmap and the unprivileged user has no way to read the
-// file owned by the root in the container.
-func TryJoinFromFilePaths(pausePidPath string, needNewNamespace bool, paths []string) (bool, int, error) {
+func TryJoinFromFilePaths(pausePidPath string, paths []string) (bool, int, error) {
 	var lastErr error
-	var pausePid int
 
 	for _, path := range paths {
-		if !needNewNamespace {
-			data, err := os.ReadFile(path)
-			if err != nil {
-				lastErr = err
-				continue
-			}
+		data, err := os.ReadFile(path)
+		if err != nil {
+			lastErr = err
+			continue
+		}
 
-			pausePid, err = strconv.Atoi(string(data))
-			if err != nil {
-				lastErr = fmt.Errorf("cannot parse file %q: %w", path, err)
-				continue
-			}
-		} else {
-			r, w, err := os.Pipe()
-			if err != nil {
-				lastErr = err
-				continue
-			}
-
-			defer errorhandling.CloseQuiet(r)
-
-			if _, _, err := becomeRootInUserNS("", path, w); err != nil {
-				w.Close()
-				lastErr = err
-				continue
-			}
-
-			if err := w.Close(); err != nil {
-				return false, 0, err
-			}
-			defer func() {
-				C.reexec_in_user_namespace_wait(-1, 0)
-			}()
-
-			b := make([]byte, 32)
-
-			n, err := r.Read(b)
-			if err != nil {
-				lastErr = fmt.Errorf("cannot read %q: %w", path, err)
-				continue
-			}
-
-			pausePid, err = strconv.Atoi(string(b[:n]))
-			if err != nil {
-				lastErr = err
-				continue
-			}
+		pausePid, err := strconv.Atoi(string(data))
+		if err != nil {
+			lastErr = fmt.Errorf("cannot parse file %q: %w", path, err)
+			continue
 		}
 
 		if pausePid > 0 && unix.Kill(pausePid, 0) == nil {
@@ -537,40 +456,9 @@ func TryJoinFromFilePaths(pausePidPath string, needNewNamespace bool, paths []st
 	return false, 0, fmt.Errorf("could not find any running process: %w", unix.ESRCH)
 }
 
-// ReadMappingsProc parses and returns the ID mappings at the specified path.
-func ReadMappingsProc(path string) ([]idtools.IDMap, error) {
-	file, err := os.Open(path)
-	if err != nil {
-		return nil, err
-	}
-	defer file.Close()
-
-	mappings := []idtools.IDMap{}
-
-	buf := bufio.NewReader(file)
-	for {
-		line, _, err := buf.ReadLine()
-		if err != nil {
-			if err == io.EOF {
-				return mappings, nil
-			}
-			return nil, fmt.Errorf("cannot read line from %s: %w", path, err)
-		}
-		if line == nil {
-			return mappings, nil
-		}
-
-		containerID, hostID, size := 0, 0, 0
-		if _, err := fmt.Sscanf(string(line), "%d %d %d", &containerID, &hostID, &size); err != nil {
-			return nil, fmt.Errorf("cannot parse %s: %w", string(line), err)
-		}
-		mappings = append(mappings, idtools.IDMap{ContainerID: containerID, HostID: hostID, Size: size})
-	}
-}
-
-func matches(id int, configuredIDs []idtools.IDMap, currentIDs []idtools.IDMap) bool {
+func matches(id int, configuredIDs []idtools.IDMap, currentIDs []specs.LinuxIDMapping) bool {
 	// The first mapping is the host user, handle it separately.
-	if currentIDs[0].HostID != id || currentIDs[0].Size != 1 {
+	if currentIDs[0].HostID != uint32(id) || currentIDs[0].Size != 1 {
 		return false
 	}
 
@@ -581,10 +469,10 @@ func matches(id int, configuredIDs []idtools.IDMap, currentIDs []idtools.IDMap) 
 
 	// It is fine to iterate sequentially as both slices are sorted.
 	for i := range currentIDs {
-		if currentIDs[i].HostID != configuredIDs[i].HostID {
+		if currentIDs[i].HostID != uint32(configuredIDs[i].HostID) {
 			return false
 		}
-		if currentIDs[i].Size != configuredIDs[i].Size {
+		if currentIDs[i].Size != uint32(configuredIDs[i].Size) {
 			return false
 		}
 	}
@@ -604,17 +492,12 @@ func ConfigurationMatches() (bool, error) {
 		return false, err
 	}
 
-	currentUIDs, err := ReadMappingsProc("/proc/self/uid_map")
+	currentUIDs, currentGIDs, err := unshare.GetHostIDMappings("")
 	if err != nil {
 		return false, err
 	}
 
 	if !matches(GetRootlessUID(), uids, currentUIDs) {
-		return false, err
-	}
-
-	currentGIDs, err := ReadMappingsProc("/proc/self/gid_map")
-	if err != nil {
 		return false, err
 	}
 

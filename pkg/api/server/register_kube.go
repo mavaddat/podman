@@ -1,9 +1,11 @@
+//go:build !remote
+
 package server
 
 import (
 	"net/http"
 
-	"github.com/containers/podman/v4/pkg/api/handlers/libpod"
+	"github.com/containers/podman/v5/pkg/api/handlers/libpod"
 	"github.com/gorilla/mux"
 )
 
@@ -14,8 +16,62 @@ func (s *APIServer) registerKubeHandlers(r *mux.Router) error {
 	//  - containers
 	//  - pods
 	// summary: Play a Kubernetes YAML file.
-	// description: Create and run pods based on a Kubernetes YAML file (pod or service kind).
+	// description: |
+	//   Create and run pods based on a Kubernetes YAML file.
+	//
+	//   ### Content-Type
+	//
+	//   Then endpoint support two Content-Type
+	//    - `plain/text` for yaml format
+	//    - `application/x-tar` for sending context(s) required for building images
+	//
+	//   #### Tar format
+	//
+	//   The tar format must contain a `play.yaml` file at the root that will be used.
+	//   If the file format requires context to build an image, it uses the image name and
+	//   check for corresponding folder.
+	//
+	//   For example, the client sends a tar file with the following structure:
+	//
+	//   ```
+	//   └── content.tar
+	//    ├── play.yaml
+	//    └── foobar/
+	//        └── Containerfile
+	//   ```
+	//
+	//   The `play.yaml` is the following, the `foobar` image means we are looking for a context with this name.
+	//   ```
+	//   apiVersion: v1
+	//   kind: Pod
+	//   metadata:
+	//   name: demo-build-remote
+	//   spec:
+	//   containers:
+	//    - name: container
+	//      image: foobar
+	//   ```
+	//
 	// parameters:
+	//  - in: header
+	//    name: Content-Type
+	//    type: string
+	//    default: plain/text
+	//    enum: ["plain/text", "application/x-tar"]
+	//  - in: query
+	//    name: annotations
+	//    type: string
+	//    description: JSON encoded value of annotations (a map[string]string).
+	//  - in: query
+	//    name: logDriver
+	//    type: string
+	//    description: Logging driver for the containers in the pod.
+	//  - in: query
+	//    name: logOptions
+	//    type: array
+	//    description: logging driver options
+	//    items:
+	//         type: string
 	//  - in: query
 	//    name: network
 	//    type: array
@@ -23,24 +79,40 @@ func (s *APIServer) registerKubeHandlers(r *mux.Router) error {
 	//    items:
 	//      type: string
 	//  - in: query
-	//    name: tlsVerify
+	//    name: noHosts
 	//    type: boolean
-	//    default: true
-	//    description: Require HTTPS and verify signatures when contacting registries.
+	//    default: false
+	//    description: do not setup /etc/hosts file in container
 	//  - in: query
-	//    name: logDriver
-	//    type: string
-	//    description: Logging driver for the containers in the pod.
-	//  - in: query
-	//    name: start
+	//    name: noTrunc
 	//    type: boolean
-	//    default: true
-	//    description: Start the pod after creating it.
+	//    default: false
+	//    description: use annotations that are not truncated to the Kubernetes maximum length of 63 characters
+	//  - in: query
+	//    name: publishPorts
+	//    type: array
+	//    description: publish a container's port, or a range of ports, to the host
+	//    items:
+	//         type: string
+	//  - in: query
+	//    name: publishAllPorts
+	//    type: boolean
+	//    description: Whether to publish all ports defined in the K8S YAML file (containerPort, hostPort), if false only hostPort will be published
+	//  - in: query
+	//    name: replace
+	//    type: boolean
+	//    default: false
+	//    description: replace existing pods and containers
 	//  - in: query
 	//    name: serviceContainer
 	//    type: boolean
 	//    default: false
 	//    description: Starts a service container before all pods.
+	//  - in: query
+	//    name: start
+	//    type: boolean
+	//    default: true
+	//    description: Start the pod after creating it.
 	//  - in: query
 	//    name: staticIPs
 	//    type: array
@@ -54,10 +126,23 @@ func (s *APIServer) registerKubeHandlers(r *mux.Router) error {
 	//    items:
 	//      type: string
 	//  - in: query
+	//    name: tlsVerify
+	//    type: boolean
+	//    default: true
+	//    description: Require HTTPS and verify signatures when contacting registries.
+	//  - in: query
+	//    name: userns
+	//    type: string
+	//    description: Set the user namespace mode for the pods.
+	//  - in: query
 	//    name: wait
 	//    type: boolean
 	//    default: false
 	//    description: Clean up all objects created when a SIGTERM is received or pods exit.
+	//  - in: query
+	//    name: build
+	//    type: boolean
+	//    description: Build the images with corresponding context.
 	//  - in: body
 	//    name: request
 	//    description: Kubernetes YAML file.
@@ -77,8 +162,8 @@ func (s *APIServer) registerKubeHandlers(r *mux.Router) error {
 	// tags:
 	//  - containers
 	//  - pods
-	// summary: Remove pods from kube play
-	// description: Tears down pods defined in a YAML file
+	// summary: Remove resources created from kube play
+	// description: Tears down pods, secrets, and volumes defined in a YAML file
 	// parameters:
 	//  - in: query
 	//    name: force
@@ -125,6 +210,16 @@ func (s *APIServer) registerKubeHandlers(r *mux.Router) error {
 	//    format: int32
 	//    default: 0
 	//    description: Set the replica number for Deployment kind.
+	//  - in: query
+	//    name: noTrunc
+	//    type: boolean
+	//    default: false
+	//    description: don't truncate annotations to the Kubernetes maximum length of 63 characters
+	//  - in: query
+	//    name: podmanOnly
+	//    type: boolean
+	//    default: false
+	//    description: add podman-only reserved annotations in generated YAML file (cannot be used by Kubernetes)
 	// produces:
 	// - text/vnd.yaml
 	// - application/json

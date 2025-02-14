@@ -24,9 +24,35 @@ but can be optionally used on Linux.
 SSH keys are automatically generated to access the VM, and system connections to the root account
 and a user account inside the VM are added.
 
-By default, the VM distribution is [Fedora CoreOS](https://getfedora.org/en/coreos?stream=testing).
+By default, the VM distribution is [Fedora CoreOS](https://getfedora.org/en/coreos?stream=testing) except for
+WSL which is based on a custom Fedora image.  While Fedora CoreOS upgrades come out every 14 days, the automatic
+update mechanism Zincata is disabled by Podman machine.
+
+To check if there is an upgrade available for your machine os, you can run the following command:
+
+```
+$ podman machine ssh 'sudo rpm-ostree upgrade --check'
+
+```
+If an update is available, you can rerun the above command and remove the `--check` and your operating system will
+be updated.  After updating, you must stop and start your machine with `podman machine stop && podman machine start` for
+it to take effect.
+
+Note: Updating as described above can result in version mismatches between Podman on the host and Podman in the
+machine.  Executing `podman info` should reveal versions of both.  A configuration where the Podman host and machine
+mismatch are unsupported.
+
+For more information on updates and advanced configuration,
+see the Fedora CoreOS documentation about [auto-updates](https://docs.fedoraproject.org/en-US/fedora-coreos/auto-updates/) and [update strategies](https://coreos.github.io/zincati/usage/updates-strategy/).
+
+
+
+
 Fedora CoreOS upgrades come out every 14 days and are detected and installed automatically. The VM is rebooted during the upgrade.
-For more information on updates and advanced configuration, please see the FCOS update docs [here](https://docs.fedoraproject.org/en-US/fedora-coreos/auto-updates/) and [here](https://coreos.github.io/zincati/usage/updates-strategy/).
+For more information on updates and advanced configuration,
+see the Fedora CoreOS documentation about [auto-updates](https://docs.fedoraproject.org/en-US/fedora-coreos/auto-updates/) and [update strategies](https://coreos.github.io/zincati/usage/updates-strategy/).
+
+Default Podman machine settings can be set via the [machine] section in the containers.conf(5) file.
 
 ## OPTIONS
 
@@ -36,7 +62,7 @@ Number of CPUs.
 
 #### **--disk-size**=*number*
 
-Size of the disk for the guest VM in GB.
+Size of the disk for the guest VM in GiB.
 
 #### **--help**
 
@@ -49,19 +75,27 @@ Fully qualified path of the ignition file.
 If an ignition file is provided, the file
 is copied into the user's CONF_DIR and renamed.  Additionally, no SSH keys are generated, nor are any system connections made.  It is assumed that the user does these things manually or handled otherwise.
 
-#### **--image-path**
+#### **--image**
 
-Fully qualified path or URL to the VM image.
-Can also be set to `testing`, `next`, or `stable` to pull down default image.
-Defaults to `testing`.
+Fully qualified registry, path, or URL to a VM image.
+Registry target must be in the form of `docker://registry/repo/image:version`.
+
+Note: Only images provided by podman will be supported.
 
 #### **--memory**, **-m**=*number*
 
-Memory (in MB).
+Memory (in MiB). Note: 1024MiB = 1GiB.
 
 #### **--now**
 
 Start the virtual machine immediately after it has been initialized.
+
+#### **--playbook**
+
+Add the provided Ansible playbook to the machine and execute it after the first boot.
+
+Note: The playbook will be executed with the same privileges given to the user in the virtual machine. The playbook provided cannot include other files from the host system, as they will not be copied.
+Use of the `--playbook` flag will require the image to include Ansible. The default image provided will have Ansible included.
 
 #### **--rootful**
 
@@ -76,6 +110,23 @@ API forwarding, if available, follows this setting.
 Set the timezone for the machine and containers.  Valid values are `local` or
 a `timezone` such as `America/Chicago`.  A value of `local`, which is the default,
 means to use the timezone of the machine host.
+
+The timezone setting is not used with WSL.  WSL automatically sets the timezone to the same
+as the host Windows operating system.
+
+#### **--usb**=*bus=number,devnum=number* or *vendor=hexadecimal,product=hexadecimal*
+
+Assign a USB device from the host to the VM via USB passthrough.
+Only supported for QEMU Machines.
+
+The device needs to have proper permissions in order to be passed to the machine. This
+means the device needs to be under your user group.
+
+Note that using bus and device number are simpler but the values can change every boot
+or when the device is unplugged.
+
+When specifying a USB using vendor and product ID's, if more than one device has the
+same vendor and product ID, the first available device is assigned.
 
 @@option user-mode-networking
 
@@ -120,23 +171,55 @@ Example: `-v "$HOME/git:$HOME/git:ro,security_model=none"`
 Default volume mounts are defined in *containers.conf*.  Unless changed, the default values
 is `$HOME:$HOME`.
 
-#### **--volume-driver**
-
-Driver to use for mounting volumes from the host, such as `virtfs`.
+**Note on Windows Subsystem for Linux (WSL)**
+Since all drives are mounted at `/mnt` on startup by default in WSL, passing
+`--volume` is redundant and has no effect. The host home directory for a `C:`
+drive will be mounted at `/mnt/c/Users/<my username>`.
 
 ## EXAMPLES
 
+Initialize the default Podman machine, pulling the content from the internet.
 ```
 $ podman machine init
+```
+
+Initialize a Podman machine for the specified name pulling the content from the internet.
+```
 $ podman machine init myvm
+```
+
+Initialize the default Podman machine pulling the content from the internet defaulting to rootful mode. The default is rootless.
+```
 $ podman machine init --rootful
+```
+
+Initialize the default Podman machine overriding its disk size override, pulling the content from the internet.
+```
 $ podman machine init --disk-size 50
+```
+
+Initialize the specified Podman machine overriding its memory size, pulling the content from the internet.
+```
 $ podman machine init --memory=1024 myvm
-$ podman machine init -v /Users:/mnt/Users
+```
+
+Initialize the default Podman machine with the host directory `/Users` mounted into the VM at `/Users`.
+```
+$ podman machine init -v /Users:/Users
+```
+
+Initialize the default Podman machine with a usb device passthrough specified with options. Only supported for QEMU Machines.
+```
+$ podman machine init --usb vendor=13d3,product=5406
+```
+
+Initialize the default Podman machine with a usb device passthrough with specified with options. Only supported for QEMU Machines.
+```
+$ podman machine init --usb bus=1,devnum=3
 ```
 
 ## SEE ALSO
-**[podman(1)](podman.1.md)**, **[podman-machine(1)](podman-machine.1.md)**
+**[podman(1)](podman.1.md)**, **[podman-machine(1)](podman-machine.1.md)**, **containers.conf(5)**
 
 ## HISTORY
 March 2021, Originally compiled by Ashley Cui <acui@redhat.com>

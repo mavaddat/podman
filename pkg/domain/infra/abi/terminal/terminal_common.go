@@ -1,5 +1,4 @@
-//go:build linux || freebsd
-// +build linux freebsd
+//go:build (linux || freebsd) && !remote
 
 package terminal
 
@@ -10,8 +9,8 @@ import (
 	"os"
 
 	"github.com/containers/common/pkg/resize"
-	"github.com/containers/podman/v4/libpod"
-	"github.com/containers/podman/v4/libpod/define"
+	"github.com/containers/podman/v5/libpod"
+	"github.com/containers/podman/v5/libpod/define"
 	"github.com/sirupsen/logrus"
 	"golang.org/x/term"
 )
@@ -90,11 +89,7 @@ func StartAttachCtr(ctx context.Context, ctr *libpod.Container, stdout, stderr, 
 		ProxySignals(ctr)
 	}
 
-	if !startContainer {
-		return ctr.Attach(streams, detachKeys, resize)
-	}
-
-	attachChan, err := ctr.StartAndAttach(ctx, streams, detachKeys, resize, true)
+	attachChan, err := ctr.Attach(ctx, streams, detachKeys, resize, startContainer)
 	if err != nil {
 		return err
 	}

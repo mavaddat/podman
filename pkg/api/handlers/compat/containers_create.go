@@ -1,3 +1,5 @@
+//go:build !remote
+
 package compat
 
 import (
@@ -11,29 +13,32 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/containers/buildah/pkg/parse"
+	"github.com/containers/common/libimage"
 	"github.com/containers/common/libnetwork/types"
 	"github.com/containers/common/pkg/cgroups"
 	"github.com/containers/common/pkg/config"
-	"github.com/containers/podman/v4/libpod"
-	"github.com/containers/podman/v4/libpod/define"
-	"github.com/containers/podman/v4/pkg/api/handlers"
-	"github.com/containers/podman/v4/pkg/api/handlers/utils"
-	api "github.com/containers/podman/v4/pkg/api/types"
-	"github.com/containers/podman/v4/pkg/domain/entities"
-	"github.com/containers/podman/v4/pkg/domain/infra/abi"
-	"github.com/containers/podman/v4/pkg/rootless"
-	"github.com/containers/podman/v4/pkg/specgen"
-	"github.com/containers/podman/v4/pkg/specgenutil"
+	"github.com/containers/podman/v5/libpod"
+	"github.com/containers/podman/v5/libpod/define"
+	"github.com/containers/podman/v5/pkg/api/handlers"
+	"github.com/containers/podman/v5/pkg/api/handlers/utils"
+	api "github.com/containers/podman/v5/pkg/api/types"
+	"github.com/containers/podman/v5/pkg/domain/entities"
+	"github.com/containers/podman/v5/pkg/domain/infra/abi"
+	"github.com/containers/podman/v5/pkg/rootless"
+	"github.com/containers/podman/v5/pkg/specgen"
+	"github.com/containers/podman/v5/pkg/specgenutil"
 	"github.com/containers/storage"
+	"github.com/containers/storage/pkg/fileutils"
 	"github.com/docker/docker/api/types/mount"
-	"github.com/gorilla/schema"
 )
 
 func CreateContainer(w http.ResponseWriter, r *http.Request) {
 	runtime := r.Context().Value(api.RuntimeKey).(*libpod.Runtime)
-	decoder := r.Context().Value(api.DecoderKey).(*schema.Decoder)
+	decoder := utils.GetDecoder(r)
 	query := struct {
-		Name string `schema:"name"`
+		Name     string `schema:"name"`
+		Platform string `schema:"platform"`
 	}{
 		// override any golang type defaults
 	}
@@ -69,7 +74,16 @@ func CreateContainer(w http.ResponseWriter, r *http.Request) {
 	}
 	body.Config.Image = imageName
 
-	newImage, resolvedName, err := runtime.LibimageRuntime().LookupImage(body.Config.Image, nil)
+	lookupImageOptions := libimage.LookupImageOptions{}
+	if query.Platform != "" {
+		var err error
+		lookupImageOptions.OS, lookupImageOptions.Architecture, lookupImageOptions.Variant, err = parse.Platform(query.Platform)
+		if err != nil {
+			utils.Error(w, http.StatusBadRequest, fmt.Errorf("parsing platform: %w", err))
+			return
+		}
+	}
+	newImage, resolvedName, err := runtime.LibimageRuntime().LookupImage(body.Config.Image, &lookupImageOptions)
 	if err != nil {
 		if errors.Is(err, storage.ErrImageUnknown) {
 			utils.Error(w, http.StatusNotFound, fmt.Errorf("no such image: %w", err))
@@ -104,7 +118,10 @@ func CreateContainer(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	// moby always create the working directory
-	sg.CreateWorkingDir = true
+	localTrue := true
+	sg.CreateWorkingDir = &localTrue
+	// moby doesn't inherit /etc/hosts from host
+	sg.BaseHostsFile = "none"
 
 	ic := abi.ContainerEngine{Libpod: runtime}
 	report, err := ic.ContainerCreate(r.Context(), sg)
@@ -145,6 +162,11 @@ func cliOpts(cc handlers.CreateContainerConfig, rtc *config.Config) (*entities.C
 	devices := make([]string, 0, len(cc.HostConfig.Devices))
 	for _, dev := range cc.HostConfig.Devices {
 		devices = append(devices, fmt.Sprintf("%s:%s:%s", dev.PathOnHost, dev.PathInContainer, dev.CgroupPermissions))
+	}
+	for _, r := range cc.HostConfig.Resources.DeviceRequests {
+		if r.Driver == "cdi" {
+			devices = append(devices, r.DeviceIDs...)
+		}
 	}
 
 	// iterate blkreaddevicebps
@@ -275,7 +297,7 @@ func cliOpts(cc handlers.CreateContainerConfig, rtc *config.Config) (*entities.C
 		}
 	}
 
-	nsmode, networks, netOpts, err := specgen.ParseNetworkFlag([]string{netmode}, false)
+	nsmode, networks, netOpts, err := specgen.ParseNetworkFlag([]string{netmode})
 	if err != nil {
 		return nil, nil, err
 	}
@@ -294,8 +316,13 @@ func cliOpts(cc handlers.CreateContainerConfig, rtc *config.Config) (*entities.C
 		NoHosts:        rtc.Containers.NoHosts,
 	}
 
-	// sigh docker-compose sets the mac address on the container config instead on the per network endpoint config
-	containerMacAddress := cc.MacAddress
+	// docker-compose sets the mac address on the container config instead
+	// on the per network endpoint config
+	//
+	// This field is deprecated since API v1.44 where
+	// EndpointSettings.MacAddress is used instead (and has precedence
+	// below).  Let's still use it for backwards compat.
+	containerMacAddress := cc.MacAddress //nolint:staticcheck
 
 	// network names
 	switch {
@@ -354,7 +381,17 @@ func cliOpts(cc handlers.CreateContainerConfig, rtc *config.Config) (*entities.C
 				}
 			}
 
-			networks[netName] = netOpts
+			// Report configuration error in case bridge mode is not used.
+			if !nsmode.IsBridge() && (len(netOpts.Aliases) > 0 || len(netOpts.StaticIPs) > 0 || len(netOpts.StaticMAC) > 0) {
+				return nil, nil, fmt.Errorf("networks and static ip/mac address can only be used with Bridge mode networking")
+			} else if nsmode.IsBridge() {
+				// Docker CLI now always sends the end point config when using the default (bridge) mode
+				// however podman configuration doesn't expect this to define this at all when not in bridge
+				// mode and the podman server config might override the default network mode to something
+				// else than bridge. So adapt to the podman expectation and define custom end point config
+				// only when really using the bridge mode.
+				networks[netName] = netOpts
+			}
 		}
 
 		netInfo.Networks = networks
@@ -391,58 +428,63 @@ func cliOpts(cc handlers.CreateContainerConfig, rtc *config.Config) (*entities.C
 		CPUSetMems: cc.HostConfig.CpusetMems,
 		// Detach:            false, // don't need
 		// DetachKeys:        "",    // don't need
-		Devices:           devices,
-		DeviceCgroupRule:  cc.HostConfig.DeviceCgroupRules,
-		DeviceReadBPs:     readBps,
-		DeviceReadIOPs:    readIops,
-		DeviceWriteBPs:    writeBps,
-		DeviceWriteIOPs:   writeIops,
-		Entrypoint:        entrypoint,
-		Env:               cc.Config.Env,
-		Expose:            expose,
-		GroupAdd:          cc.HostConfig.GroupAdd,
-		Hostname:          cc.Config.Hostname,
-		ImageVolume:       "bind",
-		Init:              init,
-		Interactive:       cc.Config.OpenStdin,
-		IPC:               string(cc.HostConfig.IpcMode),
-		Label:             stringMaptoArray(cc.Config.Labels),
-		LogDriver:         cc.HostConfig.LogConfig.Type,
-		LogOptions:        stringMaptoArray(cc.HostConfig.LogConfig.Config),
-		Name:              cc.Name,
-		OOMScoreAdj:       &cc.HostConfig.OomScoreAdj,
-		Arch:              "",
-		OS:                "",
-		Variant:           "",
-		PID:               string(cc.HostConfig.PidMode),
-		PIDsLimit:         cc.HostConfig.PidsLimit,
-		Privileged:        cc.HostConfig.Privileged,
-		PublishAll:        cc.HostConfig.PublishAllPorts,
-		Quiet:             false,
-		ReadOnly:          cc.HostConfig.ReadonlyRootfs,
-		ReadWriteTmpFS:    true, // podman default
-		Rm:                cc.HostConfig.AutoRemove,
-		SecurityOpt:       cc.HostConfig.SecurityOpt,
-		StopSignal:        cc.Config.StopSignal,
-		StorageOpts:       stringMaptoArray(cc.HostConfig.StorageOpt),
-		Sysctl:            stringMaptoArray(cc.HostConfig.Sysctls),
-		Systemd:           "true", // podman default
-		TmpFS:             parsedTmp,
-		TTY:               cc.Config.Tty,
-		EnvMerge:          cc.EnvMerge,
-		UnsetEnv:          cc.UnsetEnv,
-		UnsetEnvAll:       cc.UnsetEnvAll,
-		User:              cc.Config.User,
-		UserNS:            string(cc.HostConfig.UsernsMode),
-		UTS:               string(cc.HostConfig.UTSMode),
-		Mount:             mounts,
-		VolumesFrom:       cc.HostConfig.VolumesFrom,
-		Workdir:           cc.Config.WorkingDir,
-		Net:               &netInfo,
-		HealthInterval:    define.DefaultHealthCheckInterval,
-		HealthRetries:     define.DefaultHealthCheckRetries,
-		HealthTimeout:     define.DefaultHealthCheckTimeout,
-		HealthStartPeriod: define.DefaultHealthCheckStartPeriod,
+		Devices:              devices,
+		DeviceCgroupRule:     cc.HostConfig.DeviceCgroupRules,
+		DeviceReadBPs:        readBps,
+		DeviceReadIOPs:       readIops,
+		DeviceWriteBPs:       writeBps,
+		DeviceWriteIOPs:      writeIops,
+		Entrypoint:           entrypoint,
+		Env:                  cc.Config.Env,
+		Expose:               expose,
+		GroupAdd:             cc.HostConfig.GroupAdd,
+		Hostname:             cc.Config.Hostname,
+		ImageVolume:          "anonymous",
+		Init:                 init,
+		Interactive:          cc.Config.OpenStdin,
+		IPC:                  string(cc.HostConfig.IpcMode),
+		Label:                stringMaptoArray(cc.Config.Labels),
+		LogDriver:            cc.HostConfig.LogConfig.Type,
+		LogOptions:           stringMaptoArray(cc.HostConfig.LogConfig.Config),
+		Name:                 cc.Name,
+		OOMScoreAdj:          &cc.HostConfig.OomScoreAdj,
+		Arch:                 "",
+		OS:                   "",
+		Variant:              "",
+		PID:                  string(cc.HostConfig.PidMode),
+		PIDsLimit:            cc.HostConfig.PidsLimit,
+		Privileged:           cc.HostConfig.Privileged,
+		PublishAll:           cc.HostConfig.PublishAllPorts,
+		Quiet:                false,
+		ReadOnly:             cc.HostConfig.ReadonlyRootfs,
+		ReadWriteTmpFS:       true, // podman default
+		Rm:                   cc.HostConfig.AutoRemove,
+		Annotation:           stringMaptoArray(cc.HostConfig.Annotations),
+		SecurityOpt:          cc.HostConfig.SecurityOpt,
+		StopSignal:           cc.Config.StopSignal,
+		StopTimeout:          rtc.Engine.StopTimeout, // podman default
+		StorageOpts:          stringMaptoArray(cc.HostConfig.StorageOpt),
+		Sysctl:               stringMaptoArray(cc.HostConfig.Sysctls),
+		Systemd:              "true", // podman default
+		TmpFS:                parsedTmp,
+		TTY:                  cc.Config.Tty,
+		EnvMerge:             cc.EnvMerge,
+		UnsetEnv:             cc.UnsetEnv,
+		UnsetEnvAll:          cc.UnsetEnvAll,
+		User:                 cc.Config.User,
+		UserNS:               string(cc.HostConfig.UsernsMode),
+		UTS:                  string(cc.HostConfig.UTSMode),
+		Mount:                mounts,
+		VolumesFrom:          cc.HostConfig.VolumesFrom,
+		Workdir:              cc.Config.WorkingDir,
+		Net:                  &netInfo,
+		HealthInterval:       define.DefaultHealthCheckInterval,
+		HealthRetries:        define.DefaultHealthCheckRetries,
+		HealthTimeout:        define.DefaultHealthCheckTimeout,
+		HealthStartPeriod:    define.DefaultHealthCheckStartPeriod,
+		HealthLogDestination: define.DefaultHealthCheckLocalDestination,
+		HealthMaxLogCount:    define.DefaultHealthMaxLogCount,
+		HealthMaxLogSize:     define.DefaultHealthMaxLogSize,
 	}
 	if !rootless.IsRootless() {
 		var ulimits []string
@@ -496,7 +538,7 @@ func cliOpts(cc handlers.CreateContainerConfig, rtc *config.Config) (*entities.C
 			continue
 		}
 		// If volume already exists, there is nothing to do
-		if _, err := os.Stat(vol); err == nil {
+		if err := fileutils.Exists(vol); err == nil {
 			continue
 		}
 		if err := os.MkdirAll(vol, 0o755); err != nil {
@@ -541,7 +583,7 @@ func cliOpts(cc handlers.CreateContainerConfig, rtc *config.Config) (*entities.C
 	}
 
 	if len(cc.HostConfig.RestartPolicy.Name) > 0 {
-		policy := cc.HostConfig.RestartPolicy.Name
+		policy := string(cc.HostConfig.RestartPolicy.Name)
 		// only add restart count on failure
 		if cc.HostConfig.RestartPolicy.IsOnFailure() {
 			policy += fmt.Sprintf(":%d", cc.HostConfig.RestartPolicy.MaximumRetryCount)

@@ -6,10 +6,10 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/containers/podman/v4/cmd/podman/common"
-	"github.com/containers/podman/v4/cmd/podman/registry"
-	"github.com/containers/podman/v4/cmd/podman/validate"
-	"github.com/containers/podman/v4/pkg/domain/entities"
+	"github.com/containers/podman/v5/cmd/podman/common"
+	"github.com/containers/podman/v5/cmd/podman/registry"
+	"github.com/containers/podman/v5/cmd/podman/validate"
+	"github.com/containers/podman/v5/pkg/domain/entities"
 	"github.com/spf13/cobra"
 	"github.com/spf13/pflag"
 )
@@ -27,8 +27,7 @@ var (
 		},
 		ValidArgsFunction: common.AutocompleteContainerOneArg,
 		Example: `podman port --all
-  podman port ctrID 80/tcp
-  podman port --latest 80`,
+  podman port ctrID 80/tcp`,
 	}
 
 	containerPortCommand = &cobra.Command{
@@ -41,7 +40,7 @@ var (
 		},
 		ValidArgsFunction: portCommand.ValidArgsFunction,
 		Example: `podman container port --all
-  podman container port --latest 80`,
+  podman container port CTRID 80`,
 	}
 )
 
@@ -109,7 +108,7 @@ func port(_ *cobra.Command, args []string) error {
 		userProto = fields[1]
 	}
 
-	reports, err := registry.ContainerEngine().ContainerPort(registry.GetContext(), container, portOpts)
+	reports, err := registry.ContainerEngine().ContainerPort(registry.Context(), container, portOpts)
 	if err != nil {
 		return err
 	}

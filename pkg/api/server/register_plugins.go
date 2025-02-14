@@ -1,7 +1,9 @@
+//go:build !remote
+
 package server
 
 import (
-	"github.com/containers/podman/v4/pkg/api/handlers/compat"
+	"github.com/containers/podman/v5/pkg/api/handlers/compat"
 	"github.com/gorilla/mux"
 )
 

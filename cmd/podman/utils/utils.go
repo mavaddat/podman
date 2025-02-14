@@ -2,14 +2,15 @@ package utils
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"os"
 	"strings"
 
-	"github.com/containers/podman/v4/cmd/podman/registry"
-	"github.com/containers/podman/v4/libpod/define"
-	"github.com/containers/podman/v4/pkg/domain/entities"
-	"github.com/containers/podman/v4/pkg/domain/entities/reports"
+	"github.com/containers/podman/v5/cmd/podman/registry"
+	"github.com/containers/podman/v5/libpod/define"
+	"github.com/containers/podman/v5/pkg/domain/entities"
+	"github.com/containers/podman/v5/pkg/domain/entities/reports"
 )
 
 // IsDir returns true if the specified path refers to a directory.
@@ -147,4 +148,13 @@ func RemoveSlash(input []string) []string {
 		output = append(output, strings.TrimPrefix(in, "/"))
 	}
 	return output
+}
+
+func PrintGenericJSON(data interface{}) error {
+	enc := json.NewEncoder(os.Stdout)
+	// by default, json marshallers will force utf=8 from
+	// a string.
+	enc.SetEscapeHTML(false)
+	enc.SetIndent("", "     ")
+	return enc.Encode(data)
 }

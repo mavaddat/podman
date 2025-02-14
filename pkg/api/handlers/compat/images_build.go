@@ -1,3 +1,5 @@
+//go:build !remote
+
 package compat
 
 import (
@@ -11,6 +13,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/containers/buildah"
@@ -18,19 +21,27 @@ import (
 	"github.com/containers/buildah/pkg/parse"
 	"github.com/containers/image/v5/docker/reference"
 	"github.com/containers/image/v5/types"
-	"github.com/containers/podman/v4/libpod"
-	"github.com/containers/podman/v4/pkg/api/handlers/utils"
-	api "github.com/containers/podman/v4/pkg/api/types"
-	"github.com/containers/podman/v4/pkg/auth"
-	"github.com/containers/podman/v4/pkg/channel"
-	"github.com/containers/podman/v4/pkg/rootless"
-	"github.com/containers/podman/v4/pkg/util"
+	"github.com/containers/podman/v5/libpod"
+	"github.com/containers/podman/v5/pkg/api/handlers/utils"
+	api "github.com/containers/podman/v5/pkg/api/types"
+	"github.com/containers/podman/v5/pkg/auth"
+	"github.com/containers/podman/v5/pkg/bindings/images"
+	"github.com/containers/podman/v5/pkg/channel"
+	"github.com/containers/podman/v5/pkg/rootless"
+	"github.com/containers/podman/v5/pkg/util"
 	"github.com/containers/storage/pkg/archive"
+	"github.com/containers/storage/pkg/fileutils"
 	"github.com/docker/docker/pkg/jsonmessage"
-	"github.com/gorilla/schema"
 	"github.com/opencontainers/runtime-spec/specs-go"
 	"github.com/sirupsen/logrus"
 )
+
+func genSpaceErr(err error) error {
+	if errors.Is(err, syscall.ENOSPC) {
+		return fmt.Errorf("context directory may be too large: %w", err)
+	}
+	return err
+}
 
 func BuildImage(w http.ResponseWriter, r *http.Request) {
 	if hdr, found := r.Header["Content-Type"]; found && len(hdr) > 0 {
@@ -50,7 +61,7 @@ func BuildImage(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	contextDirectory, err := extractTarFile(r)
+	anchorDir, err := os.MkdirTemp("", "libpod_builder")
 	if err != nil {
 		utils.InternalServerError(w, err)
 		return
@@ -64,11 +75,24 @@ func BuildImage(w http.ResponseWriter, r *http.Request) {
 				}
 			}
 		}
-		err := os.RemoveAll(filepath.Dir(contextDirectory))
+		err := os.RemoveAll(anchorDir)
 		if err != nil {
-			logrus.Warn(fmt.Errorf("failed to remove build scratch directory %q: %w", filepath.Dir(contextDirectory), err))
+			logrus.Warn(fmt.Errorf("failed to remove build scratch directory %q: %w", anchorDir, err))
 		}
 	}()
+
+	contextDirectory, err := extractTarFile(anchorDir, r)
+	if err != nil {
+		utils.InternalServerError(w, genSpaceErr(err))
+		return
+	}
+
+	runtime := r.Context().Value(api.RuntimeKey).(*libpod.Runtime)
+	conf, err := runtime.GetConfigNoCopy()
+	if err != nil {
+		utils.InternalServerError(w, err)
+		return
+	}
 
 	query := struct {
 		AddHosts                string   `schema:"extrahosts"`
@@ -82,6 +106,7 @@ func BuildImage(w http.ResponseWriter, r *http.Request) {
 		CacheTo                 string   `schema:"cacheto"`
 		CacheTTL                string   `schema:"cachettl"`
 		CgroupParent            string   `schema:"cgroupparent"`
+		CompatVolumes           bool     `schema:"compatvolumes"`
 		Compression             uint64   `schema:"compression"`
 		ConfigureNetwork        string   `schema:"networkmode"`
 		CPPFlags                string   `schema:"cppflags"`
@@ -109,6 +134,7 @@ func BuildImage(w http.ResponseWriter, r *http.Request) {
 		Jobs                    int      `schema:"jobs"`
 		LabelOpts               string   `schema:"labelopts"`
 		Labels                  string   `schema:"labels"`
+		LayerLabels             []string `schema:"layerLabel"`
 		Layers                  bool     `schema:"layers"`
 		LogRusage               bool     `schema:"rusage"`
 		Manifest                string   `schema:"manifest"`
@@ -116,18 +142,21 @@ func BuildImage(w http.ResponseWriter, r *http.Request) {
 		Memory                  int64    `schema:"memory"`
 		NamespaceOptions        string   `schema:"nsoptions"`
 		NoCache                 bool     `schema:"nocache"`
+		NoHosts                 bool     `schema:"nohosts"`
 		OmitHistory             bool     `schema:"omithistory"`
 		OSFeatures              []string `schema:"osfeature"`
 		OSVersion               string   `schema:"osversion"`
 		OutputFormat            string   `schema:"outputformat"`
 		Platform                []string `schema:"platform"`
-		Pull                    string   `schema:"pull"`
+		Pull                    bool     `schema:"pull"`
 		PullPolicy              string   `schema:"pullpolicy"`
 		Quiet                   bool     `schema:"q"`
 		Registry                string   `schema:"registry"`
 		Rm                      bool     `schema:"rm"`
 		RusageLogFile           string   `schema:"rusagelogfile"`
 		Remote                  string   `schema:"remote"`
+		Retry                   int      `schema:"retry"`
+		RetryDelay              string   `schema:"retry-delay"`
 		Seccomp                 string   `schema:"seccomp"`
 		Secrets                 string   `schema:"secrets"`
 		SecurityOpt             string   `schema:"securityopt"`
@@ -140,6 +169,7 @@ func BuildImage(w http.ResponseWriter, r *http.Request) {
 		Timestamp               int64    `schema:"timestamp"`
 		Ulimits                 string   `schema:"ulimits"`
 		UnsetEnvs               []string `schema:"unsetenv"`
+		UnsetLabels             []string `schema:"unsetlabel"`
 		Volumes                 []string `schema:"volume"`
 	}{
 		Dockerfile:       "Dockerfile",
@@ -149,9 +179,11 @@ func BuildImage(w http.ResponseWriter, r *http.Request) {
 		ShmSize:          64 * 1024 * 1024,
 		TLSVerify:        true,
 		SkipUnusedStages: true,
+		Retry:            int(conf.Engine.Retry),
+		RetryDelay:       conf.Engine.RetryDelay,
 	}
 
-	decoder := r.Context().Value(api.DecoderKey).(*schema.Decoder)
+	decoder := utils.GetDecoder(r)
 	if err := decoder.Decode(&query, r.URL.Query()); err != nil {
 		utils.Error(w, http.StatusBadRequest, err)
 		return
@@ -193,7 +225,7 @@ func BuildImage(w http.ResponseWriter, r *http.Request) {
 		}
 		tempDir, subDir, err := buildahDefine.TempDirForURL(anchorDir, "buildah", query.Remote)
 		if err != nil {
-			utils.InternalServerError(w, err)
+			utils.InternalServerError(w, genSpaceErr(err))
 			return
 		}
 		if tempDir != "" {
@@ -223,8 +255,14 @@ func BuildImage(w http.ResponseWriter, r *http.Request) {
 				// it's not json, assume just a string
 				m = []string{query.Dockerfile}
 			}
+
 			for _, containerfile := range m {
-				containerFiles = append(containerFiles, filepath.Join(contextDirectory, filepath.Clean(filepath.FromSlash(containerfile))))
+				// Add path to containerfile iff it is not URL
+				if !(strings.HasPrefix(containerfile, "http://") || strings.HasPrefix(containerfile, "https://")) {
+					containerfile = filepath.Join(contextDirectory,
+						filepath.Clean(filepath.FromSlash(containerfile)))
+				}
+				containerFiles = append(containerFiles, containerfile)
 			}
 			dockerFileSet = true
 		}
@@ -234,9 +272,9 @@ func BuildImage(w http.ResponseWriter, r *http.Request) {
 		containerFiles = []string{filepath.Join(contextDirectory, "Dockerfile")}
 		if utils.IsLibpodRequest(r) {
 			containerFiles = []string{filepath.Join(contextDirectory, "Containerfile")}
-			if _, err = os.Stat(containerFiles[0]); err != nil {
+			if err = fileutils.Exists(containerFiles[0]); err != nil {
 				containerFiles = []string{filepath.Join(contextDirectory, "Dockerfile")}
-				if _, err1 := os.Stat(containerFiles[0]); err1 != nil {
+				if err1 := fileutils.Exists(containerFiles[0]); err1 != nil {
 					utils.BadRequest(w, "dockerfile", query.Dockerfile, err)
 					return
 				}
@@ -322,15 +360,15 @@ func BuildImage(w http.ResponseWriter, r *http.Request) {
 			if len(secretOpt) > 0 {
 				modifiedOpt := []string{}
 				for _, token := range secretOpt {
-					arr := strings.SplitN(token, "=", 2)
-					if len(arr) > 1 {
-						if arr[0] == "src" {
+					key, val, hasVal := strings.Cut(token, "=")
+					if hasVal {
+						if key == "src" {
 							/* move secret away from contextDir */
 							/* to make sure we dont accidentally commit temporary secrets to image*/
 							builderDirectory, _ := filepath.Split(contextDirectory)
 							// following path is outside build context
-							newSecretPath := filepath.Join(builderDirectory, arr[1])
-							oldSecretPath := filepath.Join(contextDirectory, arr[1])
+							newSecretPath := filepath.Join(builderDirectory, val)
+							oldSecretPath := filepath.Join(contextDirectory, val)
 							err := os.Rename(oldSecretPath, newSecretPath)
 							if err != nil {
 								utils.BadRequest(w, "secrets", query.Secrets, err)
@@ -369,10 +407,19 @@ func BuildImage(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
-		// make sure to force rootless as rootless otherwise buildah runs code which is intended to be run only as root.
-		if isolation == buildah.IsolationOCI && rootless.IsRootless() {
-			isolation = buildah.IsolationOCIRootless
+		// Make sure to force rootless as rootless otherwise buildah runs code which is intended to be run only as root.
+		// Same the other way around: https://github.com/containers/podman/issues/22109
+		switch isolation {
+		case buildah.IsolationOCI:
+			if rootless.IsRootless() {
+				isolation = buildah.IsolationOCIRootless
+			}
+		case buildah.IsolationOCIRootless:
+			if !rootless.IsRootless() {
+				isolation = buildah.IsolationOCI
+			}
 		}
+
 		registry = ""
 		format = query.OutputFormat
 	} else {
@@ -543,19 +590,19 @@ func BuildImage(w http.ResponseWriter, r *http.Request) {
 					utils.BadRequest(w, "securityopt", query.SecurityOpt, errors.New("no-new-privileges is not supported"))
 					return
 				}
-				con := strings.SplitN(opt, "=", 2)
-				if len(con) != 2 {
+				name, value, hasValue := strings.Cut(opt, "=")
+				if !hasValue {
 					utils.BadRequest(w, "securityopt", query.SecurityOpt, fmt.Errorf("invalid --security-opt name=value pair: %q", opt))
 					return
 				}
 
-				switch con[0] {
+				switch name {
 				case "label":
-					labelOpts = append(labelOpts, con[1])
+					labelOpts = append(labelOpts, value)
 				case "apparmor":
-					apparmor = con[1]
+					apparmor = value
 				case "seccomp":
-					seccomp = con[1]
+					seccomp = value
 				default:
 					utils.BadRequest(w, "securityopt", query.SecurityOpt, fmt.Errorf("invalid --security-opt 2: %q", opt))
 					return
@@ -580,19 +627,8 @@ func BuildImage(w http.ResponseWriter, r *http.Request) {
 		pullPolicy = buildahDefine.PolicyMap[query.PullPolicy]
 	} else {
 		if _, found := r.URL.Query()["pull"]; found {
-			switch strings.ToLower(query.Pull) {
-			case "false":
-				pullPolicy = buildahDefine.PullIfMissing
-			case "true":
+			if query.Pull {
 				pullPolicy = buildahDefine.PullAlways
-			default:
-				policyFromMap, foundPolicy := buildahDefine.PolicyMap[query.Pull]
-				if foundPolicy {
-					pullPolicy = policyFromMap
-				} else {
-					utils.BadRequest(w, "pull", query.Pull, fmt.Errorf("invalid pull policy: %q", query.Pull))
-					return
-				}
 			}
 		}
 	}
@@ -619,7 +655,10 @@ func BuildImage(w http.ResponseWriter, r *http.Request) {
 		AuthFilePath:     authfile,
 		DockerAuthConfig: creds,
 	}
-	utils.PossiblyEnforceDockerHub(r, systemContext)
+	if err := utils.PossiblyEnforceDockerHub(r, systemContext); err != nil {
+		utils.Error(w, http.StatusInternalServerError, fmt.Errorf("checking to enforce DockerHub: %w", err))
+		return
+	}
 
 	if _, found := r.URL.Query()["tlsVerify"]; found {
 		systemContext.DockerInsecureSkipTLSVerify = types.NewOptionalBool(!query.TLSVerify)
@@ -645,7 +684,15 @@ func BuildImage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	runtime := r.Context().Value(api.RuntimeKey).(*libpod.Runtime)
+	retryDelay := 2 * time.Second
+	if query.RetryDelay != "" {
+		retryDelay, err = time.ParseDuration(query.RetryDelay)
+		if err != nil {
+			utils.BadRequest(w, "retry-delay", query.RetryDelay, err)
+			return
+		}
+	}
+
 	buildOptions := buildahDefine.BuildOptions{
 		AddCapabilities:         addCaps,
 		AdditionalBuildContexts: additionalBuildContexts,
@@ -674,6 +721,7 @@ func BuildImage(w http.ResponseWriter, r *http.Request) {
 			LabelOpts:          labelOpts,
 			Memory:             query.Memory,
 			MemorySwap:         query.MemSwap,
+			NoHosts:            query.NoHosts,
 			OmitHistory:        query.OmitHistory,
 			SeccompProfilePath: seccomp,
 			ShmSize:            strconv.Itoa(query.ShmSize),
@@ -681,6 +729,7 @@ func BuildImage(w http.ResponseWriter, r *http.Request) {
 			Secrets:            secrets,
 			Volumes:            query.Volumes,
 		},
+		CompatVolumes:                  types.NewOptionalBool(query.CompatVolumes),
 		Compression:                    compression,
 		ConfigureNetwork:               parseNetworkConfigurationPolicy(query.ConfigureNetwork),
 		ContextDirectory:               contextDirectory,
@@ -698,10 +747,11 @@ func BuildImage(w http.ResponseWriter, r *http.Request) {
 		Isolation:                      isolation,
 		Jobs:                           &jobs,
 		Labels:                         labels,
+		LayerLabels:                    query.LayerLabels,
 		Layers:                         query.Layers,
 		LogRusage:                      query.LogRusage,
 		Manifest:                       query.Manifest,
-		MaxPullPushRetries:             3,
+		MaxPullPushRetries:             query.Retry,
 		NamespaceOptions:               nsoptions,
 		NoCache:                        query.NoCache,
 		OSFeatures:                     query.OSFeatures,
@@ -710,7 +760,7 @@ func BuildImage(w http.ResponseWriter, r *http.Request) {
 		Output:                         output,
 		OutputFormat:                   format,
 		PullPolicy:                     pullPolicy,
-		PullPushRetryDelay:             2 * time.Second,
+		PullPushRetryDelay:             retryDelay,
 		Quiet:                          query.Quiet,
 		Registry:                       registry,
 		RemoveIntermediateCtrs:         query.Rm,
@@ -721,9 +771,15 @@ func BuildImage(w http.ResponseWriter, r *http.Request) {
 		SystemContext:                  systemContext,
 		Target:                         query.Target,
 		UnsetEnvs:                      query.UnsetEnvs,
+		UnsetLabels:                    query.UnsetLabels,
 	}
 
-	for _, platformSpec := range query.Platform {
+	platforms := query.Platform
+	if len(platforms) == 1 {
+		// Docker API uses comma separated platform arg so match this here
+		platforms = strings.Split(query.Platform[0], ",")
+	}
+	for _, platformSpec := range platforms {
 		os, arch, variant, err := parse.Platform(platformSpec)
 		if err != nil {
 			utils.BadRequest(w, "platform", platformSpec, err)
@@ -783,14 +839,7 @@ func BuildImage(w http.ResponseWriter, r *http.Request) {
 	var stepErrors []string
 
 	for {
-		type BuildResponse struct {
-			Stream string                 `json:"stream,omitempty"`
-			Error  *jsonmessage.JSONError `json:"errorDetail,omitempty"`
-			// NOTE: `error` is being deprecated check https://github.com/moby/moby/blob/master/pkg/jsonmessage/jsonmessage.go#L148
-			ErrorMessage string          `json:"error,omitempty"` // deprecate this slowly
-			Aux          json.RawMessage `json:"aux,omitempty"`
-		}
-		m := BuildResponse{}
+		m := images.BuildResponse{}
 
 		select {
 		case e := <-stdout.Chan():
@@ -820,7 +869,7 @@ func BuildImage(w http.ResponseWriter, r *http.Request) {
 			// output all step errors irrespective of quiet
 			// flag.
 			for _, stepError := range stepErrors {
-				t := BuildResponse{}
+				t := images.BuildResponse{}
 				t.Stream = stepError
 				if err := enc.Encode(t); err != nil {
 					stderr.Write([]byte(err.Error()))
@@ -829,7 +878,7 @@ func BuildImage(w http.ResponseWriter, r *http.Request) {
 			}
 			m.ErrorMessage = string(e)
 			m.Error = &jsonmessage.JSONError{
-				Message: m.ErrorMessage,
+				Message: string(e),
 			}
 			if err := enc.Encode(m); err != nil {
 				logrus.Warnf("Failed to json encode error %v", err)
@@ -892,33 +941,13 @@ func parseLibPodIsolation(isolation string) (buildah.Isolation, error) {
 	return parse.IsolationOption(isolation)
 }
 
-func extractTarFile(r *http.Request) (string, error) {
-	// build a home for the request body
-	anchorDir, err := os.MkdirTemp("", "libpod_builder")
-	if err != nil {
-		return "", err
-	}
-
-	path := filepath.Join(anchorDir, "tarBall")
-	tarBall, err := os.OpenFile(path, os.O_RDWR|os.O_CREATE|os.O_TRUNC, 0o600)
-	if err != nil {
-		return "", err
-	}
-	defer tarBall.Close()
-
-	// Content-Length not used as too many existing API clients didn't honor it
-	_, err = io.Copy(tarBall, r.Body)
-	if err != nil {
-		return "", fmt.Errorf("failed Request: Unable to copy tar file from request body %s", r.RequestURI)
-	}
-
+func extractTarFile(anchorDir string, r *http.Request) (string, error) {
 	buildDir := filepath.Join(anchorDir, "build")
-	err = os.Mkdir(buildDir, 0o700)
+	err := os.Mkdir(buildDir, 0o700)
 	if err != nil {
 		return "", err
 	}
 
-	_, _ = tarBall.Seek(0, 0)
-	err = archive.Untar(tarBall, buildDir, nil)
+	err = archive.Untar(r.Body, buildDir, nil)
 	return buildDir, err
 }

@@ -1,3 +1,5 @@
+//go:build !remote
+
 package libpod
 
 import (
@@ -5,11 +7,11 @@ import (
 	"net/http"
 
 	"github.com/containers/common/pkg/secrets"
-	"github.com/containers/podman/v4/libpod"
-	"github.com/containers/podman/v4/pkg/api/handlers/utils"
-	api "github.com/containers/podman/v4/pkg/api/types"
-	"github.com/containers/podman/v4/pkg/domain/entities"
-	"github.com/containers/podman/v4/pkg/domain/infra/abi"
+	"github.com/containers/podman/v5/libpod"
+	"github.com/containers/podman/v5/pkg/api/handlers/utils"
+	api "github.com/containers/podman/v5/pkg/api/types"
+	"github.com/containers/podman/v5/pkg/domain/entities"
+	"github.com/containers/podman/v5/pkg/domain/infra/abi"
 	"github.com/gorilla/schema"
 )
 
@@ -24,6 +26,7 @@ func CreateSecret(w http.ResponseWriter, r *http.Request) {
 		Driver     string            `schema:"driver"`
 		DriverOpts map[string]string `schema:"driveropts"`
 		Labels     map[string]string `schema:"labels"`
+		Replace    bool              `schema:"replace"`
 	}{
 		// override any golang type defaults
 	}
@@ -36,6 +39,7 @@ func CreateSecret(w http.ResponseWriter, r *http.Request) {
 	opts.Driver = query.Driver
 	opts.DriverOpts = query.DriverOpts
 	opts.Labels = query.Labels
+	opts.Replace = query.Replace
 
 	ic := abi.ContainerEngine{Libpod: runtime}
 	report, err := ic.SecretCreate(r.Context(), query.Name, r.Body, opts)

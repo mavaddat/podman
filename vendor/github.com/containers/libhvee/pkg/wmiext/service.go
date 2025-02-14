@@ -62,11 +62,17 @@ func connectService(namespace string) (*Service, error) {
 	var err error
 	var res uintptr
 	var strResource *uint16
+	var strLocale *uint16
 	var service *ole.IUnknown
 
 	loc := fmt.Sprintf(`\\.\%s`, namespace)
 
 	if strResource, err = syscall.UTF16PtrFromString(loc); err != nil {
+		return nil, err
+	}
+
+	// Connect with en_US LCID since we do pattern matching against English key values
+	if strLocale, err = syscall.UTF16PtrFromString("MS_409"); err != nil {
 		return nil, err
 	}
 
@@ -77,14 +83,14 @@ func connectService(namespace string) (*Service, error) {
 		uintptr(unsafe.Pointer(strResource)),    // [in]  const BSTR    strNetworkResource,
 		uintptr(0),                              // [in]  const BSTR    strUser,
 		uintptr(0),                              // [in]  const BSTR    strPassword,
-		uintptr(0),                              // [in]  const BSTR    strLocale,
+		uintptr(unsafe.Pointer(strLocale)),      // [in]  const BSTR    strLocale,
 		uintptr(WBEM_FLAG_CONNECT_USE_MAX_WAIT), // [in]  long          lSecurityFlags,
 		uintptr(0),                              // [in]  const BSTR    strAuthority,
 		uintptr(0),                              // [in]  IWbemContext  *pCtx,
 		uintptr(unsafe.Pointer(&service)))       // [out] IWbemServices **ppNamespace)
 
 	if res != 0 {
-		return nil, ole.NewError(res)
+		return nil, NewWmiError(res)
 	}
 
 	if err = CoSetProxyBlanket(service); err != nil {
@@ -117,7 +123,7 @@ func CoSetProxyBlanket(service *ole.IUnknown) (err error) {
 		uintptr(EOAC_NONE))                   // [in]      DWORD                    dwCapabilities)
 
 	if res != 0 {
-		return ole.NewError(res)
+		return NewWmiError(res)
 	}
 
 	return nil
@@ -163,7 +169,7 @@ func (s *Service) ExecQuery(wqlQuery string) (*Enum, error) {
 		uintptr(0),                         // [in] IWbemContext         *pCtx,
 		uintptr(unsafe.Pointer(&pEnum)))    // [out] IEnumWbemClassObject **ppEnum)
 	if hres != 0 {
-		return nil, ole.NewError(hres)
+		return nil, NewWmiError(hres)
 	}
 
 	if err = CoSetProxyBlanket(pEnum); err != nil {
@@ -193,9 +199,9 @@ func (s *Service) GetObject(objectPath string) (instance *Instance, err error) {
 		uintptr(0),                             // [in]  IWbemContext     *pCtx,
 		uintptr(unsafe.Pointer(&pObject)),      // [out] IWbemClassObject **ppObject,
 		uintptr(0))                             // [out] IWbemCallResult  **ppCallResult)
-	if res < 0 {
+	if int(res) < 0 {
 		// returns WBEM_E_PROVIDER_NOT_FOUND when no entry found
-		return nil, ole.NewError(res)
+		return nil, NewWmiError(res)
 	}
 
 	return newInstance(pObject, s), nil
@@ -233,8 +239,8 @@ func (s *Service) CreateInstanceEnum(className string) (*Enum, error) {
 		uintptr(flags),                     // [in]  long                 lFlags,
 		uintptr(0),                         // [in]  IWbemContext         *pCtx,
 		uintptr(unsafe.Pointer(&pEnum)))    // [out] IEnumWbemClassObject **ppEnum)
-	if res < 0 {
-		return nil, ole.NewError(res)
+	if int(res) < 0 {
+		return nil, NewWmiError(res)
 	}
 
 	if err = CoSetProxyBlanket(pEnum); err != nil {
@@ -271,8 +277,8 @@ func (s *Service) ExecMethod(className string, methodName string, inParams *Inst
 		uintptr(unsafe.Pointer(inParams.object)), // [in]  IWbemClassObject *pInParams,
 		uintptr(unsafe.Pointer(&outParams)),      // [out] IWbemClassObject **ppOutParams,
 		uintptr(0))                               // [out] IWbemCallResult  **ppCallResult)
-	if res < 0 {
-		return nil, ole.NewError(res)
+	if int(res) < 0 {
+		return nil, NewWmiError(res)
 	}
 
 	return newInstance(outParams, s), nil
@@ -293,7 +299,7 @@ func (s *Service) FindFirstInstance(wql string) (*Instance, error) {
 	}
 
 	if instance == nil {
-		return nil, errors.New("no results found")
+		return nil, ErrNoResults
 	}
 
 	return instance, nil

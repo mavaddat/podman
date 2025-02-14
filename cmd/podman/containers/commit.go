@@ -7,9 +7,9 @@ import (
 	"strings"
 
 	"github.com/containers/common/pkg/completion"
-	"github.com/containers/podman/v4/cmd/podman/common"
-	"github.com/containers/podman/v4/cmd/podman/registry"
-	"github.com/containers/podman/v4/pkg/domain/entities"
+	"github.com/containers/podman/v5/cmd/podman/common"
+	"github.com/containers/podman/v5/cmd/podman/registry"
+	"github.com/containers/podman/v5/pkg/domain/entities"
 	"github.com/spf13/cobra"
 )
 
@@ -47,7 +47,7 @@ var (
 	commitOptions = entities.CommitOptions{
 		ImageName: "",
 	}
-	iidFile string
+	configFile, iidFile string
 )
 
 func commitFlags(cmd *cobra.Command) {
@@ -56,6 +56,10 @@ func commitFlags(cmd *cobra.Command) {
 	changeFlagName := "change"
 	flags.StringArrayVarP(&commitOptions.Changes, changeFlagName, "c", []string{}, "Apply the following possible instructions to the created image (default []): "+strings.Join(common.ChangeCmds, " | "))
 	_ = cmd.RegisterFlagCompletionFunc(changeFlagName, common.AutocompleteChangeInstructions)
+
+	configFileFlagName := "config"
+	flags.StringVar(&configFile, configFileFlagName, "", "`file` containing a container configuration to merge into the image")
+	_ = cmd.RegisterFlagCompletionFunc(configFileFlagName, completion.AutocompleteDefault)
 
 	formatFlagName := "format"
 	flags.StringVarP(&commitOptions.Format, formatFlagName, "f", "oci", "`Format` of the image manifest and metadata")
@@ -100,7 +104,13 @@ func commit(cmd *cobra.Command, args []string) error {
 	if !commitOptions.Quiet {
 		commitOptions.Writer = os.Stderr
 	}
-
+	if len(configFile) > 0 {
+		cfg, err := os.ReadFile(configFile)
+		if err != nil {
+			return fmt.Errorf("--config: %w", err)
+		}
+		commitOptions.Config = cfg
+	}
 	response, err := registry.ContainerEngine().ContainerCommit(context.Background(), container, commitOptions)
 	if err != nil {
 		return err

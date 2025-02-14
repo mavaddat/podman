@@ -1,12 +1,14 @@
+//go:build !remote
+
 package libpod
 
 import (
 	"context"
 	"errors"
 
-	"github.com/containers/podman/v4/libpod/define"
-	"github.com/containers/podman/v4/libpod/events"
-	"github.com/containers/podman/v4/pkg/domain/entities/reports"
+	"github.com/containers/podman/v5/libpod/define"
+	"github.com/containers/podman/v5/libpod/events"
+	"github.com/containers/podman/v5/pkg/domain/entities/reports"
 )
 
 // Contains the public Runtime API for volumes
@@ -26,13 +28,6 @@ func (r *Runtime) RemoveVolume(ctx context.Context, v *Volume, force bool, timeo
 		return define.ErrRuntimeStopped
 	}
 
-	if !v.valid {
-		if ok, _ := r.state.HasVolume(v.Name()); !ok {
-			// Volume probably already removed
-			// Or was never in the runtime to begin with
-			return nil
-		}
-	}
 	return r.removeVolume(ctx, v, force, timeout, false)
 }
 

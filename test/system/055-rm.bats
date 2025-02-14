@@ -5,32 +5,30 @@
 
 load helpers
 
+# bats test_tags=ci:parallel
 @test "podman rm" {
-    rand=$(random_string 30)
-    run_podman run --name $rand $IMAGE /bin/true
+    cname=c-$(safename)
+    run_podman run --name $cname $IMAGE /bin/true
 
     # Don't care about output, just check exit status (it should exist)
-    run_podman 0 inspect $rand
+    run_podman 0 inspect $cname
 
     # container should be in output of 'ps -a'
     run_podman ps -a
-    is "$output" ".* $IMAGE .*/true .* $rand" "Container present in 'ps -a'"
+    is "$output" ".* $IMAGE .*/true .* $cname" "Container present in 'ps -a'"
 
     # Remove container; now 'inspect' should fail
-    run_podman rm $rand
-    is "$output" "$rand" "display raw input"
-    run_podman 125 inspect $rand
-    run_podman 125 wait $rand
-    run_podman wait --ignore $rand
+    run_podman rm $cname
+    is "$output" "$cname" "display raw input"
+    run_podman 125 inspect $cname
+    is "$output" "\[\].Error: no such object: \"$cname\""
+    run_podman 125 wait $cname
+    is "$output" "Error: no container with name or ID \"$cname\" found: no such container"
+    run_podman wait --ignore $cname
     is "$output" "-1" "wait --ignore will mark missing containers with -1"
-
-    if !is_remote; then
-        # remote does not support the --latest flag
-        run_podman wait --ignore --latest
-        is "$output" "-1" "wait --ignore will mark missing containers with -1"
-    fi
 }
 
+# bats test_tags=ci:parallel
 @test "podman rm - running container, w/o and w/ force" {
     run_podman run -d $IMAGE sleep 5
     cid="$output"
@@ -43,12 +41,13 @@ load helpers
     run_podman rm -t 0 -f $cid
 }
 
+# bats test_tags=ci:parallel
 @test "podman rm container from storage" {
     if is_remote; then
         skip "only applicable for local podman"
     fi
-    rand=$(random_string 30)
-    run_podman create --name $rand $IMAGE /bin/true
+    cname=c-$(safename)
+    run_podman create --name $cname $IMAGE /bin/true
 
     # Create a container that podman does not know about
     external_cid=$(buildah from $IMAGE)
@@ -58,9 +57,10 @@ load helpers
     run_podman container exists --external $external_cid
 
     # rm should succeed
-    run_podman rm $rand $external_cid
+    run_podman rm $cname $external_cid
 }
 
+# bats test_tags=ci:parallel
 @test "podman rm <-> run --rm race" {
     OCIDir=/run/$(podman_runtime)
 
@@ -72,12 +72,13 @@ load helpers
     # the window for race conditions that led to #9479.
     run_podman run --rm -d $IMAGE sleep infinity
     local cid="$output"
-    run_podman rm -af
+    run_podman rm -f -t0 $cid
 
     # Check the OCI runtime directory has removed.
     is "$(ls $OCIDir | grep $cid)" "" "The OCI runtime directory should have been removed"
 }
 
+# bats test_tags=ci:parallel
 @test "podman rm --depend" {
     run_podman create $IMAGE
     dependCid=$output
@@ -100,19 +101,30 @@ load helpers
 # of the 'sleep' container.
 #
 # See https://github.com/containers/podman/issues/3795
+# bats test_tags=ci:parallel
 @test "podman rm -f" {
-    rand=$(random_string 30)
-    ( sleep 3; run_podman rm -t 0 -f $rand ) &
-    run_podman 137 run --name $rand $IMAGE sleep 30
+    cname=c-$(safename)
+    ( sleep 3; run_podman rm -t 0 -f $cname ) &
+    run_podman 137 run --name $cname $IMAGE sleep 30
 }
 
+# bats test_tags=ci:parallel
 @test "podman container rm --force bogus" {
-    run_podman 1 container rm bogus
-    is "$output" "Error: no container with ID or name \"bogus\" found: no such container" "Should print error"
-    run_podman container rm --force bogus
+    run_podman 1 container rm bogus-$(safename)
+    is "$output" "Error: no container with ID or name \"bogus-$(safename)\" found: no such container" "Should print error"
+    run_podman container rm --force bogus-$(safename)
     is "$output" "" "Should print no output"
+
+    run_podman create --name testctr-$(safename) $IMAGE
+    run_podman container rm --force bogus-$(safename) testctr-$(safename)
+    assert "$output" = "testctr-$(safename)" "should delete test"
+
+    run_podman ps -a -q
+    assert "$output" !~ "$(safename)" "container should be removed"
 }
 
+# DO NOT CHANGE "sleep infinity"! This is how we get a container to
+# remain in state "stopping" for long enough to check it.
 function __run_healthcheck_container() {
     run_podman run -d --name $1 \
                --health-cmd /bin/false \
@@ -126,8 +138,9 @@ function __run_healthcheck_container() {
                $IMAGE sleep infinity
 }
 
+# bats test_tags=ci:parallel
 @test "podman container rm doesn't affect stopping containers" {
-    local cname=c$(random_string 30)
+    local cname=c-$(safename)
     __run_healthcheck_container $cname
     local cid=$output
 
@@ -139,7 +152,7 @@ function __run_healthcheck_container() {
     # We have no way to guarantee that we see 'stopping', but at a very
     # minimum we need to check at least one rm failure
     local rm_failures=0
-    for i in {1..10}; do
+    for i in {1..20}; do
         run_podman '?' rm $cname
         if [[ $status -eq 0 ]]; then
             break
@@ -149,7 +162,7 @@ function __run_healthcheck_container() {
         assert "$output" =~ "Error: cannot remove container $cid as it is .* - running or paused containers cannot be removed without force: container state improper" \
                "Expected error message from podman rm"
         rm_failures=$((rm_failures + 1))
-        sleep 1
+        sleep 0.5
     done
 
     # At this point, container should be gone
@@ -163,8 +176,9 @@ function __run_healthcheck_container() {
     fi
 }
 
+# bats test_tags=ci:parallel
 @test "podman container rm --force doesn't leave running processes" {
-    local cname=c$(random_string 30)
+    local cname=c-$(safename)
     __run_healthcheck_container $cname
     local cid=$output
 
@@ -175,17 +189,17 @@ function __run_healthcheck_container() {
     for i in {1..10}; do
         run_podman inspect $cname --format '{{.State.Status}}'
         if [ "$output" = "stopping" ]; then
-            break
+            run_podman rm -f $cname
+            if kill -0 $pid; then
+                die "Container $cname process is still running (pid $pid)"
+            fi
+            return
         fi
 
         sleep 0.5
     done
 
-    run_podman rm -f $cname
-
-    if kill -0 $pid; then
-        die "Container $cname process is still running (pid $pid)"
-    fi
+    die "Container never entered 'stopping' state"
 }
 
 # vim: filetype=sh

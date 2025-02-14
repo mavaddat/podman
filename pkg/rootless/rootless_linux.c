@@ -364,15 +364,12 @@ get_cmd_line_args (int *argc_out)
 static bool
 can_use_shortcut (char **argv)
 {
-  cleanup_free char *argv0 = NULL;
   bool ret = true;
   int argc;
 
 #ifdef DISABLE_JOIN_SHORTCUT
   return false;
 #endif
-
-  argv0 = argv[0];
 
   if (strstr (argv[0], "podman") == NULL)
     return false;
@@ -387,6 +384,7 @@ can_use_shortcut (char **argv)
           || strcmp (argv[argc], "version") == 0
           || strcmp (argv[argc], "context") == 0
           || strcmp (argv[argc], "search") == 0
+          || strcmp (argv[argc], "compose") == 0
           || (strcmp (argv[argc], "system") == 0 && argv[argc+1] && strcmp (argv[argc+1], "service") != 0))
         {
           ret = false;
@@ -438,6 +436,7 @@ static void __attribute__((constructor)) init()
   const char *listen_fds;
   const char *listen_fdnames;
   cleanup_free char **argv = NULL;
+  cleanup_free char *argv0 = NULL;
   cleanup_dir DIR *d = NULL;
   int argc;
 
@@ -495,6 +494,8 @@ static void __attribute__((constructor)) init()
       fprintf(stderr, "cannot retrieve cmd line");
       _exit (EXIT_FAILURE);
     }
+  // Even if unused, this is needed to ensure we properly free the memory
+  argv0 = argv[0];
 
   if (geteuid () != 0 || getenv ("_CONTAINERS_USERNS_CONFIGURED") == NULL)
     do_preexec_hooks(argv, argc);
@@ -657,7 +658,7 @@ create_pause_process (const char *pause_pid_file_path, char **argv)
   if (pipe (p) < 0)
     return -1;
 
-  pid = fork ();
+  pid = syscall_clone (SIGCHLD, NULL);
   if (pid < 0)
     {
       close (p[0]);
@@ -688,7 +689,7 @@ create_pause_process (const char *pause_pid_file_path, char **argv)
       close (p[0]);
 
       setsid ();
-      pid = fork ();
+      pid = syscall_clone (SIGCHLD, NULL);
       if (pid < 0)
         _exit (EXIT_FAILURE);
 
@@ -879,7 +880,7 @@ reexec_userns_join (int pid_to_join, char *pause_pid_file_path)
         setenv ("LISTEN_FDNAMES", saved_systemd_listen_fdnames, true);
     }
 
-  setenv ("_CONTAINERS_USERNS_CONFIGURED", "init", 1);
+  setenv ("_CONTAINERS_USERNS_CONFIGURED", "done", 1);
   setenv ("_CONTAINERS_ROOTLESS_UID", uid, 1);
   setenv ("_CONTAINERS_ROOTLESS_GID", gid, 1);
 
@@ -921,8 +922,8 @@ reexec_userns_join (int pid_to_join, char *pause_pid_file_path)
       _exit (EXIT_FAILURE);
     }
 
-  execvp (argv[0], argv);
-  fprintf (stderr, "failed to execvp %s: %m\n", argv[0]);
+  execvp ("/proc/self/exe", argv);
+  fprintf (stderr, "failed to reexec: %m\n");
 
   _exit (EXIT_FAILURE);
 }
@@ -946,49 +947,8 @@ check_proc_sys_userns_file (const char *path)
     }
 }
 
-static int
-copy_file_to_fd (const char *file_to_read, int outfd)
-{
-  char buf[512];
-  cleanup_close int fd = -1;
-
-  fd = open (file_to_read, O_RDONLY);
-  if (fd < 0)
-    {
-      fprintf (stderr, "open `%s`: %m\n", file_to_read);
-      return fd;
-    }
-
-  for (;;)
-    {
-      ssize_t r, w, t = 0;
-
-      r = TEMP_FAILURE_RETRY (read (fd, buf, sizeof buf));
-      if (r < 0)
-        {
-          fprintf (stderr, "read from `%s`: %m\n", file_to_read);
-          return r;
-        }
-
-      if (r == 0)
-        break;
-
-      while (t < r)
-        {
-          w = TEMP_FAILURE_RETRY (write (outfd, &buf[t], r - t));
-          if (w < 0)
-            {
-              fprintf (stderr, "write file to output fd `%s`: %m\n", file_to_read);
-              return w;
-            }
-          t += w;
-        }
-    }
-  return 0;
-}
-
 int
-reexec_in_user_namespace (int ready, char *pause_pid_file_path, char *file_to_read, int outputfd)
+reexec_in_user_namespace (int ready, char *pause_pid_file_path)
 {
   cleanup_free char **argv = NULL;
   cleanup_free char *argv0 = NULL;
@@ -1080,7 +1040,7 @@ reexec_in_user_namespace (int ready, char *pause_pid_file_path, char *file_to_re
         setenv ("LISTEN_FDNAMES", saved_systemd_listen_fdnames, true);
     }
 
-  setenv ("_CONTAINERS_USERNS_CONFIGURED", "init", 1);
+  setenv ("_CONTAINERS_USERNS_CONFIGURED", "done", 1);
   setenv ("_CONTAINERS_ROOTLESS_UID", uid, 1);
   setenv ("_CONTAINERS_ROOTLESS_GID", gid, 1);
 
@@ -1137,14 +1097,8 @@ reexec_in_user_namespace (int ready, char *pause_pid_file_path, char *file_to_re
       _exit (EXIT_FAILURE);
     }
 
-  if (file_to_read && file_to_read[0])
-    {
-      ret = copy_file_to_fd (file_to_read, outputfd);
-      close (outputfd);
-      _exit (ret == 0 ? EXIT_SUCCESS : EXIT_FAILURE);
-    }
-
-  execvp (argv[0], argv);
+  execvp ("/proc/self/exe", argv);
+  fprintf (stderr, "failed to reexec: %m\n");
 
   _exit (EXIT_FAILURE);
 }

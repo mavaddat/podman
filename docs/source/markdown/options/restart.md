@@ -1,5 +1,5 @@
 ####> This option file is used in:
-####>   podman create, pod clone, pod create, run
+####>   podman create, pod clone, pod create, run, update
 ####> If file is edited, make sure the changes
 ####> are applicable to all of those.
 #### **--restart**=*policy*
@@ -17,4 +17,6 @@ Valid _policy_ values are:
 
 Podman provides a systemd unit file, podman-restart.service, which restarts containers after a system reboot.
 
-If container runs as a system service, generate a systemd unit file to manage it. See **podman generate systemd**.
+When running containers in systemd services, use the restart functionality provided by systemd.
+In other words, do not use this option in a container unit, instead set the `Restart=` systemd directive in the `[Service]` section.
+See **podman-systemd.unit**(5) and **systemd.service**(5).

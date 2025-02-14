@@ -1,3 +1,5 @@
+//go:build !remote
+
 package abi
 
 import (
@@ -8,20 +10,16 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 
-	"github.com/containers/common/pkg/cgroups"
-	"github.com/containers/common/pkg/config"
-	"github.com/containers/podman/v4/libpod/define"
-	"github.com/containers/podman/v4/pkg/domain/entities"
-	"github.com/containers/podman/v4/pkg/domain/entities/reports"
-	"github.com/containers/podman/v4/pkg/rootless"
-	"github.com/containers/podman/v4/pkg/util"
-	"github.com/containers/podman/v4/utils"
+	"github.com/containers/podman/v5/libpod/define"
+	"github.com/containers/podman/v5/pkg/domain/entities"
+	"github.com/containers/podman/v5/pkg/domain/entities/reports"
+	"github.com/containers/podman/v5/pkg/util"
 	"github.com/containers/storage"
 	"github.com/containers/storage/pkg/directory"
-	"github.com/containers/storage/pkg/unshare"
+	"github.com/containers/storage/pkg/fileutils"
 	"github.com/sirupsen/logrus"
-	"github.com/spf13/pflag"
 )
 
 func (ic *ContainerEngine) Info(ctx context.Context) (*define.Info, error) {
@@ -35,8 +33,8 @@ func (ic *ContainerEngine) Info(ctx context.Context) (*define.Info, error) {
 	// we are reporting the default systemd activation socket path as we cannot know if a future
 	// service may be run with another URI.
 	if ic.Libpod.RemoteURI() == "" {
-		xdg := "/run"
-		if path, err := util.GetRuntimeDir(); err != nil {
+		xdg := defaultRunPath
+		if path, err := util.GetRootlessRuntimeDir(); err != nil {
 			// Info is as good as we can guess...
 			return info, err
 		} else if path != "" {
@@ -51,119 +49,28 @@ func (ic *ContainerEngine) Info(ctx context.Context) (*define.Info, error) {
 		info.Host.RemoteSocket.Path = uri.Path
 	}
 
-	uri, err := url.Parse(ic.Libpod.RemoteURI())
-	if err != nil {
-		return nil, err
-	}
-
-	if uri.Scheme == "unix" {
-		_, err := os.Stat(uri.Path)
+	// check if the unix path exits, if not unix socket we always we assume it exists, i.e. tcp socket
+	path, found := strings.CutPrefix(info.Host.RemoteSocket.Path, "unix://")
+	if found {
+		err := fileutils.Exists(path)
 		info.Host.RemoteSocket.Exists = err == nil
 	} else {
 		info.Host.RemoteSocket.Exists = true
 	}
 
-	return info, err
+	return info, nil
 }
 
-func (ic *ContainerEngine) SetupRootless(_ context.Context, noMoveProcess bool) error {
-	runsUnderSystemd := utils.RunsOnSystemd()
-	if !runsUnderSystemd {
-		isPid1 := os.Getpid() == 1
-		if _, found := os.LookupEnv("container"); isPid1 || found {
-			if err := utils.MaybeMoveToSubCgroup(); err != nil {
-				// it is a best effort operation, so just print the
-				// error for debugging purposes.
-				logrus.Debugf("Could not move to subcgroup: %v", err)
-			}
-		}
-	}
-
-	if !rootless.IsRootless() {
-		return nil
-	}
-
-	// do it only after podman has already re-execed and running with uid==0.
-	hasCapSysAdmin, err := unshare.HasCapSysAdmin()
-	if err != nil {
-		return err
-	}
-	if hasCapSysAdmin {
-		ownsCgroup, err := cgroups.UserOwnsCurrentSystemdCgroup()
-		if err != nil {
-			logrus.Infof("Failed to detect the owner for the current cgroup: %v", err)
-		}
-		if !ownsCgroup {
-			conf, err := ic.Config(context.Background())
-			if err != nil {
-				return err
-			}
-			unitName := fmt.Sprintf("podman-%d.scope", os.Getpid())
-			if runsUnderSystemd || conf.Engine.CgroupManager == config.SystemdCgroupsManager {
-				if err := utils.RunUnderSystemdScope(os.Getpid(), "user.slice", unitName); err != nil {
-					logrus.Debugf("Failed to add podman to systemd sandbox cgroup: %v", err)
-				}
-			}
-		}
-		return nil
-	}
-
-	pausePidPath, err := util.GetRootlessPauseProcessPidPath()
-	if err != nil {
-		return fmt.Errorf("could not get pause process pid file path: %w", err)
-	}
-
-	became, ret, err := rootless.TryJoinPauseProcess(pausePidPath)
-	if err != nil {
-		return err
-	}
-	if became {
-		os.Exit(ret)
-	}
-	if noMoveProcess {
-		return nil
-	}
-
-	// if there is no pid file, try to join existing containers, and create a pause process.
-	ctrs, err := ic.Libpod.GetRunningContainers()
-	if err != nil {
-		logrus.Error(err.Error())
-		os.Exit(1)
-	}
-
-	paths := []string{}
-	for _, ctr := range ctrs {
-		paths = append(paths, ctr.ConfigNoCopy().ConmonPidFile)
-	}
-
-	if len(paths) > 0 {
-		became, ret, err = rootless.TryJoinFromFilePaths(pausePidPath, true, paths)
-	} else {
-		became, ret, err = rootless.BecomeRootInUserNS(pausePidPath)
-		if err == nil {
-			utils.MovePauseProcessToScope(pausePidPath)
-		}
-	}
-	if err != nil {
-		logrus.Error(fmt.Errorf("invalid internal status, try resetting the pause process with %q: %w", os.Args[0]+" system migrate", err))
-		os.Exit(1)
-	}
-	if became {
-		os.Exit(ret)
-	}
-	return nil
-}
-
-// SystemPrune removes unused data from the system. Pruning pods, containers, networks, volumes and images.
+// SystemPrune removes unused data from the system. Pruning pods, containers, build container, networks, volumes and images.
 func (ic *ContainerEngine) SystemPrune(ctx context.Context, options entities.SystemPruneOptions) (*entities.SystemPruneReport, error) {
 	var systemPruneReport = new(entities.SystemPruneReport)
 
 	if options.External {
-		if options.All || options.Volume || len(options.Filters) > 0 {
+		if options.All || options.Volume || len(options.Filters) > 0 || options.Build {
 			return nil, fmt.Errorf("system prune --external cannot be combined with other options")
 		}
-		err := ic.Libpod.GarbageCollect()
-		if err != nil {
+
+		if err := ic.Libpod.GarbageCollect(); err != nil {
 			return nil, err
 		}
 		return systemPruneReport, nil
@@ -174,6 +81,17 @@ func (ic *ContainerEngine) SystemPrune(ctx context.Context, options entities.Sys
 		filters = append(filters, fmt.Sprintf("%s=%s", k, v[0]))
 	}
 	reclaimedSpace := (uint64)(0)
+
+	// Prune Build Containers
+	if options.Build {
+		stageContainersPruneReports, err := ic.Libpod.PruneBuildContainers()
+		if err != nil {
+			return nil, err
+		}
+		reclaimedSpace += reports.PruneReportsSize(stageContainersPruneReports)
+		systemPruneReport.ContainerPruneReports = append(systemPruneReport.ContainerPruneReports, stageContainersPruneReports...)
+	}
+
 	found := true
 	for found {
 		found = false
@@ -291,23 +209,24 @@ func (ic *ContainerEngine) SystemDf(ctx context.Context, options entities.System
 		iid, _ := c.Image()
 		state, err := c.State()
 		if err != nil {
+			if errors.Is(err, define.ErrNoSuchCtr) {
+				continue
+			}
 			return nil, fmt.Errorf("failed to get state of container %s: %w", c.ID(), err)
 		}
 		conSize, err := c.RootFsSize()
 		if err != nil {
-			if errors.Is(err, storage.ErrContainerUnknown) {
-				logrus.Error(fmt.Errorf("failed to get root file system size of container %s: %w", c.ID(), err))
-			} else {
-				return nil, fmt.Errorf("failed to get root file system size of container %s: %w", c.ID(), err)
+			if errors.Is(err, storage.ErrContainerUnknown) || errors.Is(err, define.ErrNoSuchCtr) {
+				continue
 			}
+			return nil, fmt.Errorf("failed to get root file system size of container %s: %w", c.ID(), err)
 		}
 		rwsize, err := c.RWSize()
 		if err != nil {
-			if errors.Is(err, storage.ErrContainerUnknown) {
-				logrus.Error(fmt.Errorf("failed to get read/write size of container %s: %w", c.ID(), err))
-			} else {
-				return nil, fmt.Errorf("failed to get read/write size of container %s: %w", c.ID(), err)
+			if errors.Is(err, storage.ErrContainerUnknown) || errors.Is(err, define.ErrNoSuchCtr) {
+				continue
 			}
+			return nil, fmt.Errorf("failed to get read/write size of container %s: %w", c.ID(), err)
 		}
 		report := entities.SystemDfContainerReport{
 			ContainerID:  c.ID(),
@@ -334,6 +253,9 @@ func (ic *ContainerEngine) SystemDf(ctx context.Context, options entities.System
 		var reclaimableSize int64
 		mountPoint, err := v.MountPoint()
 		if err != nil {
+			if errors.Is(err, define.ErrNoSuchVolume) {
+				continue
+			}
 			return nil, err
 		}
 		if mountPoint == "" {
@@ -348,6 +270,9 @@ func (ic *ContainerEngine) SystemDf(ctx context.Context, options entities.System
 		}
 		inUse, err := v.VolumeInUse()
 		if err != nil {
+			if errors.Is(err, define.ErrNoSuchVolume) {
+				continue
+			}
 			return nil, err
 		}
 		if len(inUse) == 0 {
@@ -370,16 +295,16 @@ func (ic *ContainerEngine) SystemDf(ctx context.Context, options entities.System
 	}, nil
 }
 
-func (se *SystemEngine) Reset(ctx context.Context) error {
-	return nil
+func (ic *ContainerEngine) Reset(ctx context.Context) error {
+	return ic.Libpod.Reset(ctx)
 }
 
-func (se *SystemEngine) Renumber(ctx context.Context, flags *pflag.FlagSet, config *entities.PodmanConfig) error {
-	return nil
+func (ic *ContainerEngine) Renumber(ctx context.Context) error {
+	return ic.Libpod.RenumberLocks()
 }
 
-func (se SystemEngine) Migrate(ctx context.Context, flags *pflag.FlagSet, config *entities.PodmanConfig, options entities.SystemMigrateOptions) error {
-	return nil
+func (ic *ContainerEngine) Migrate(ctx context.Context, options entities.SystemMigrateOptions) error {
+	return ic.Libpod.Migrate(options.NewRuntime)
 }
 
 func (se SystemEngine) Shutdown(ctx context.Context) {
@@ -405,22 +330,12 @@ func (ic *ContainerEngine) Unshare(ctx context.Context, args []string, options e
 	}
 
 	if options.RootlessNetNS {
-		rootlessNetNS, err := ic.Libpod.GetRootlessNetNs(true)
-		if err != nil {
-			return err
-		}
-		// Make sure to unlock, unshare can run for a long time.
-		rootlessNetNS.Lock.Unlock()
-		// We do not want to clean up the netns after unshare.
-		// The problem is that we cannot know if we need to clean up and
-		// secondly unshare should allow user to set up the namespace with
-		// special things, e.g. potentially macvlan or something like that.
-		return rootlessNetNS.Do(unshare)
+		return ic.Libpod.Network().RunInRootlessNetns(unshare)
 	}
 	return unshare()
 }
 
-func (ic ContainerEngine) Version(ctx context.Context) (*entities.SystemVersionReport, error) {
+func (ic *ContainerEngine) Version(ctx context.Context) (*entities.SystemVersionReport, error) {
 	var report entities.SystemVersionReport
 	v, err := define.GetVersion()
 	if err != nil {
@@ -430,7 +345,7 @@ func (ic ContainerEngine) Version(ctx context.Context) (*entities.SystemVersionR
 	return &report, err
 }
 
-func (ic ContainerEngine) Locks(ctx context.Context) (*entities.LocksReport, error) {
+func (ic *ContainerEngine) Locks(ctx context.Context) (*entities.LocksReport, error) {
 	var report entities.LocksReport
 	conflicts, held, err := ic.Libpod.LockConflicts()
 	if err != nil {
@@ -438,5 +353,13 @@ func (ic ContainerEngine) Locks(ctx context.Context) (*entities.LocksReport, err
 	}
 	report.LockConflicts = conflicts
 	report.LocksHeld = held
+	return &report, nil
+}
+
+func (ic *ContainerEngine) SystemCheck(ctx context.Context, options entities.SystemCheckOptions) (*entities.SystemCheckReport, error) {
+	report, err := ic.Libpod.SystemCheck(ctx, options)
+	if err != nil {
+		return nil, err
+	}
 	return &report, nil
 }

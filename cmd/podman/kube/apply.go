@@ -7,10 +7,10 @@ import (
 	"os"
 
 	"github.com/containers/common/pkg/completion"
-	"github.com/containers/podman/v4/cmd/podman/common"
-	"github.com/containers/podman/v4/cmd/podman/registry"
-	"github.com/containers/podman/v4/cmd/podman/utils"
-	"github.com/containers/podman/v4/pkg/domain/entities"
+	"github.com/containers/podman/v5/cmd/podman/common"
+	"github.com/containers/podman/v5/cmd/podman/registry"
+	"github.com/containers/podman/v5/cmd/podman/utils"
+	"github.com/containers/podman/v5/pkg/domain/entities"
 	"github.com/spf13/cobra"
 )
 
@@ -89,7 +89,7 @@ func apply(cmd *cobra.Command, args []string) error {
 		reader = f
 	} else {
 		generateOptions.Service = applyOptions.Service
-		report, err := registry.ContainerEngine().GenerateKube(registry.GetContext(), args, generateOptions)
+		report, err := registry.ContainerEngine().GenerateKube(registry.Context(), args, generateOptions)
 		if err != nil {
 			return err
 		}
@@ -101,7 +101,7 @@ func apply(cmd *cobra.Command, args []string) error {
 
 	fmt.Println("Deploying to cluster...")
 
-	if err = registry.ContainerEngine().KubeApply(registry.GetContext(), reader, applyOptions); err != nil {
+	if err = registry.ContainerEngine().KubeApply(registry.Context(), reader, applyOptions); err != nil {
 		return err
 	}
 

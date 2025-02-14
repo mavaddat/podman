@@ -8,11 +8,12 @@ import (
 	"path/filepath"
 	"time"
 
-	podmanRegistry "github.com/containers/podman/v4/hack/podman-registry-go"
-	"github.com/containers/podman/v4/pkg/bindings"
-	"github.com/containers/podman/v4/pkg/bindings/containers"
-	"github.com/containers/podman/v4/pkg/bindings/images"
-	"github.com/containers/podman/v4/pkg/domain/entities"
+	podmanRegistry "github.com/containers/podman/v5/hack/podman-registry-go"
+	"github.com/containers/podman/v5/libpod/define"
+	"github.com/containers/podman/v5/pkg/bindings"
+	"github.com/containers/podman/v5/pkg/bindings/containers"
+	"github.com/containers/podman/v5/pkg/bindings/images"
+	"github.com/containers/podman/v5/pkg/domain/entities"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 	. "github.com/onsi/gomega/gexec"
@@ -111,7 +112,7 @@ var _ = Describe("Podman images", func() {
 		Expect(code).To(BeNumerically("==", http.StatusNotFound))
 
 		// Start a container with alpine image
-		var top string = "top"
+		var top = "top"
 		_, err = bt.RunTopContainer(&top, nil)
 		Expect(err).ToNot(HaveOccurred())
 		// we should now have a container called "top" running
@@ -176,7 +177,7 @@ var _ = Describe("Podman images", func() {
 
 		// Adding one more image. There Should be no errors in the response.
 		// And the count should be three now.
-		bt.Pull("testimage:20200929")
+		bt.Pull("testimage:20221018")
 		imageSummary, err = images.List(bt.conn, nil)
 		Expect(err).ToNot(HaveOccurred())
 		Expect(len(imageSummary)).To(BeNumerically(">=", 2))
@@ -349,7 +350,7 @@ var _ = Describe("Podman images", func() {
 		}
 
 		//	Search with a fqdn
-		reports, err = images.Search(bt.conn, "quay.io/libpod/alpine_nginx", nil)
+		reports, err = images.Search(bt.conn, "quay.io/podman/stable", nil)
 		Expect(err).ToNot(HaveOccurred(), "Error in images.Search()")
 		Expect(reports).ToNot(BeEmpty())
 	})
@@ -388,7 +389,10 @@ var _ = Describe("Podman images", func() {
 	})
 
 	It("Image Push", func() {
-		registry, err := podmanRegistry.Start()
+		registryOptions := &podmanRegistry.Options{
+			PodmanPath: getPodmanBinary(),
+		}
+		registry, err := podmanRegistry.StartWithOptions(registryOptions)
 		Expect(err).ToNot(HaveOccurred())
 
 		var writer bytes.Buffer
@@ -400,14 +404,14 @@ var _ = Describe("Podman images", func() {
 		Expect(output).To(ContainSubstring("Copying blob "))
 		Expect(output).To(ContainSubstring("Copying config "))
 		Expect(output).To(ContainSubstring("Writing manifest to image destination"))
-		Expect(output).To(ContainSubstring("Storing signatures"))
 	})
 
 	It("Build no options", func() {
 		results, err := images.Build(bt.conn, []string{"fixture/Containerfile"}, entities.BuildOptions{})
 		Expect(err).ToNot(HaveOccurred())
 		Expect(*results).To(MatchFields(IgnoreMissing, Fields{
-			"ID": Not(BeEmpty()),
+			"ID":         Not(BeEmpty()),
+			"SaveFormat": ContainSubstring(define.OCIArchive),
 		}))
 	})
 })

@@ -1,11 +1,14 @@
 package e2e_test
 
 import (
+	"os"
+	"slices"
+	"strconv"
 	"strings"
 	"time"
 
-	"github.com/containers/common/pkg/util"
-	"github.com/containers/podman/v4/pkg/domain/entities"
+	"github.com/containers/podman/v5/pkg/domain/entities"
+	"github.com/containers/podman/v5/pkg/machine/define"
 	jsoniter "github.com/json-iterator/go"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
@@ -13,17 +16,6 @@ import (
 )
 
 var _ = Describe("podman machine list", func() {
-	var (
-		mb      *machineTestBuilder
-		testDir string
-	)
-
-	BeforeEach(func() {
-		testDir, mb = setup()
-	})
-	AfterEach(func() {
-		teardown(originalHomeDir, testDir, mb)
-	})
 
 	It("list machine", func() {
 		list := new(listMachine)
@@ -33,7 +25,7 @@ var _ = Describe("podman machine list", func() {
 		Expect(firstList.outputToStringSlice()).To(HaveLen(1)) // just the header
 
 		i := new(initMachine)
-		session, err := mb.setCmd(i.withImagePath(mb.imagePath)).run()
+		session, err := mb.setCmd(i.withImage(mb.imagePath)).run()
 		Expect(err).ToNot(HaveOccurred())
 		Expect(session).To(Exit(0))
 
@@ -52,19 +44,19 @@ var _ = Describe("podman machine list", func() {
 		firstList, err := mb.setCmd(list.withQuiet()).run()
 		Expect(err).NotTo(HaveOccurred())
 		Expect(firstList).Should(Exit(0))
-		Expect(firstList.outputToStringSlice()).To(HaveLen(0)) // No header with quiet
+		Expect(firstList.outputToStringSlice()).To(BeEmpty()) // No header with quiet
 
 		noheaderSession, err := mb.setCmd(list.withNoHeading()).run() // noheader
 		Expect(err).NotTo(HaveOccurred())
 		Expect(noheaderSession).Should(Exit(0))
-		Expect(noheaderSession.outputToStringSlice()).To(HaveLen(0))
+		Expect(noheaderSession.outputToStringSlice()).To(BeEmpty())
 
 		i := new(initMachine)
-		session, err := mb.setName(name1).setCmd(i.withImagePath(mb.imagePath)).run()
+		session, err := mb.setName(name1).setCmd(i.withImage(mb.imagePath)).run()
 		Expect(err).ToNot(HaveOccurred())
 		Expect(session).To(Exit(0))
 
-		session2, err := mb.setName(name2).setCmd(i.withImagePath(mb.imagePath)).run()
+		session2, err := mb.setName(name2).setCmd(i.withImage(mb.imagePath)).run()
 		Expect(err).ToNot(HaveOccurred())
 		Expect(session2).To(Exit(0))
 
@@ -75,20 +67,31 @@ var _ = Describe("podman machine list", func() {
 
 		listNames := secondList.outputToStringSlice()
 		stripAsterisk(listNames)
-		Expect(util.StringInSlice(name1, listNames)).To(BeTrue())
-		Expect(util.StringInSlice(name2, listNames)).To(BeTrue())
+		Expect(slices.Contains(listNames, name1)).To(BeTrue())
+		Expect(slices.Contains(listNames, name2)).To(BeTrue())
 	})
 
 	It("list machine: check if running while starting", func() {
+		skipIfWSL("the below logic does not work on WSL.  #20978")
 		i := new(initMachine)
-		session, err := mb.setCmd(i.withImagePath(mb.imagePath)).run()
+		session, err := mb.setCmd(i.withImage(mb.imagePath)).run()
 		Expect(err).ToNot(HaveOccurred())
 		Expect(session).To(Exit(0))
+
+		l := new(listMachine)
+		listSession, err := mb.setCmd(l.withFormat("{{.LastUp}}")).run()
+		Expect(err).NotTo(HaveOccurred())
+		Expect(listSession).To(Exit(0))
+		Expect(listSession.outputToString()).To(Equal("Never"))
+
+		// The logic in this test stanza is seemingly invalid on WSL.
+		// issue #20978 reflects this change
 		s := new(startMachine)
 		startSession, err := mb.setCmd(s).runWithoutWait()
 		Expect(err).ToNot(HaveOccurred())
-		l := new(listMachine)
-		for i := 0; i < 30; i++ {
+		wait := 3
+		retries := (int)(mb.timeout/time.Second) / wait
+		for i := 0; i < retries; i++ {
 			listSession, err := mb.setCmd(l).run()
 			Expect(listSession).To(Exit(0))
 			Expect(err).ToNot(HaveOccurred())
@@ -97,10 +100,10 @@ var _ = Describe("podman machine list", func() {
 			} else {
 				break
 			}
-			time.Sleep(3 * time.Second)
+			time.Sleep(time.Duration(wait) * time.Second)
 		}
 		Expect(startSession).To(Exit(0))
-		listSession, err := mb.setCmd(l).run()
+		listSession, err = mb.setCmd(l).run()
 		Expect(listSession).To(Exit(0))
 		Expect(err).ToNot(HaveOccurred())
 		Expect(listSession.outputToString()).To(ContainSubstring("Currently running"))
@@ -112,7 +115,7 @@ var _ = Describe("podman machine list", func() {
 		name1 := randomString()
 
 		i := new(initMachine)
-		session, err := mb.setName(name1).setCmd(i.withImagePath(mb.imagePath)).run()
+		session, err := mb.setName(name1).setCmd(i.withImage(mb.imagePath)).run()
 		Expect(err).ToNot(HaveOccurred())
 		Expect(session).To(Exit(0))
 
@@ -125,7 +128,7 @@ var _ = Describe("podman machine list", func() {
 
 		listNames := listSession.outputToStringSlice()
 		stripAsterisk(listNames)
-		Expect(util.StringInSlice(name1, listNames)).To(BeTrue())
+		Expect(slices.Contains(listNames, name1)).To(BeTrue())
 
 		// --format json
 		list2 := new(listMachine)
@@ -133,6 +136,7 @@ var _ = Describe("podman machine list", func() {
 		listSession2, err := mb.setCmd(list2).run()
 		Expect(err).ToNot(HaveOccurred())
 		Expect(listSession2).To(Exit(0))
+		Expect(listSession2.outputToString()).To(BeValidJSON())
 
 		var listResponse []*entities.ListReporter
 		err = jsoniter.Unmarshal(listSession2.Bytes(), &listResponse)
@@ -145,6 +149,85 @@ var _ = Describe("podman machine list", func() {
 		Expect(listSession3).To(Exit(0))
 		listNames3 := listSession3.outputToStringSlice()
 		Expect(listNames3).To(HaveLen(2))
+	})
+	It("list machine in machine-readable byte format", func() {
+		i := new(initMachine)
+		session, err := mb.setCmd(i.withImage(mb.imagePath)).run()
+		Expect(err).ToNot(HaveOccurred())
+		Expect(session).To(Exit(0))
+
+		list := new(listMachine)
+		list = list.withFormat(("json"))
+		listSession, err := mb.setCmd(list).run()
+		Expect(err).NotTo(HaveOccurred())
+		var listResponse []*entities.ListReporter
+		err = jsoniter.Unmarshal(listSession.Bytes(), &listResponse)
+		Expect(err).NotTo(HaveOccurred())
+		for _, reporter := range listResponse {
+			memory, err := strconv.Atoi(reporter.Memory)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(memory).To(BeNumerically(">", 2000000000)) // 2GiB
+			diskSize, err := strconv.Atoi(reporter.DiskSize)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(diskSize).To(BeNumerically(">", 11000000000)) // 11GiB
+		}
+	})
+	It("list machine in human-readable format", func() {
+		i := new(initMachine)
+		session, err := mb.setCmd(i.withImage(mb.imagePath)).run()
+		Expect(err).ToNot(HaveOccurred())
+		Expect(session).To(Exit(0))
+
+		list := new(listMachine)
+		listSession, err := mb.setCmd(list.withFormat("{{.Memory}} {{.DiskSize}}")).run()
+		Expect(err).NotTo(HaveOccurred())
+		Expect(listSession).To(Exit(0))
+		Expect(listSession.outputToString()).To(Equal("2GiB 11GiB"))
+	})
+	It("list machine from all providers", func() {
+		skipIfVmtype(define.QemuVirt, "linux only has one provider")
+
+		// create machine on other provider
+		currprovider := os.Getenv("CONTAINERS_MACHINE_PROVIDER")
+		os.Setenv("CONTAINERS_MACHINE_PROVIDER", getOtherProvider())
+		defer os.Setenv("CONTAINERS_MACHINE_PROVIDER", currprovider)
+
+		othermach := new(initMachine)
+		if !isWSL() && !isVmtype(define.HyperVVirt) {
+			// This would need to fetch a new image as we cannot use the image from the other provider,
+			// to avoid big pulls which are slow and flaky use /dev/null which works on macos and qemu
+			// as we never run the image if we do not start it.
+			othermach.withImage(os.DevNull)
+		}
+		session, err := mb.setName("otherprovider").setCmd(othermach).run()
+		// make sure to remove machine from other provider later
+		defer func() {
+			os.Setenv("CONTAINERS_MACHINE_PROVIDER", getOtherProvider())
+			defer os.Setenv("CONTAINERS_MACHINE_PROVIDER", currprovider)
+			rm := new(rmMachine)
+			removed, err := mb.setName("otherprovider").setCmd(rm.withForce()).run()
+			Expect(err).ToNot(HaveOccurred())
+			Expect(removed).To(Exit(0))
+		}()
+		Expect(err).ToNot(HaveOccurred())
+		Expect(session).To(Exit(0))
+
+		// change back to current provider
+		os.Setenv("CONTAINERS_MACHINE_PROVIDER", currprovider)
+		name := randomString()
+		i := new(initMachine)
+		session, err = mb.setName(name).setCmd(i.withImage(mb.imagePath)).run()
+		Expect(err).ToNot(HaveOccurred())
+		Expect(session).To(Exit(0))
+
+		list := new(listMachine)
+		listSession, err := mb.setCmd(list.withAllProviders().withFormat("{{.Name}}")).run()
+		Expect(err).NotTo(HaveOccurred())
+		Expect(listSession).To(Exit(0))
+		listNames := listSession.outputToStringSlice()
+		stripAsterisk(listNames)
+		Expect(listNames).To(HaveLen(2))
+		Expect(listNames).To(ContainElements("otherprovider", name))
 	})
 })
 

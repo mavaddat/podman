@@ -1,5 +1,4 @@
-//go:build linux && systemd
-// +build linux,systemd
+//go:build !remote && linux && systemd
 
 package libpod
 
@@ -11,10 +10,10 @@ import (
 	"strings"
 	"time"
 
-	"github.com/containers/podman/v4/libpod/define"
-	"github.com/containers/podman/v4/libpod/events"
-	"github.com/containers/podman/v4/libpod/logs"
-	"github.com/containers/podman/v4/pkg/rootless"
+	"github.com/containers/podman/v5/libpod/define"
+	"github.com/containers/podman/v5/libpod/events"
+	"github.com/containers/podman/v5/libpod/logs"
+	"github.com/containers/podman/v5/pkg/rootless"
 	"github.com/coreos/go-systemd/v22/sdjournal"
 	"github.com/sirupsen/logrus"
 )

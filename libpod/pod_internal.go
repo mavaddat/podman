@@ -1,10 +1,12 @@
+//go:build !remote
+
 package libpod
 
 import (
 	"fmt"
 	"time"
 
-	"github.com/containers/podman/v4/libpod/define"
+	"github.com/containers/podman/v5/libpod/define"
 	"github.com/containers/storage/pkg/stringid"
 )
 

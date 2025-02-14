@@ -1,3 +1,5 @@
+//go:build !remote
+
 package compat
 
 import (
@@ -8,14 +10,15 @@ import (
 	"strings"
 
 	"github.com/containers/common/pkg/resize"
-	"github.com/containers/podman/v4/libpod"
-	"github.com/containers/podman/v4/libpod/define"
-	"github.com/containers/podman/v4/pkg/api/handlers"
-	"github.com/containers/podman/v4/pkg/api/handlers/utils"
-	"github.com/containers/podman/v4/pkg/api/server/idle"
-	api "github.com/containers/podman/v4/pkg/api/types"
-	"github.com/containers/podman/v4/pkg/domain/entities"
-	"github.com/containers/podman/v4/pkg/specgenutil"
+	"github.com/containers/podman/v5/libpod"
+	"github.com/containers/podman/v5/libpod/define"
+	"github.com/containers/podman/v5/pkg/api/handlers"
+	"github.com/containers/podman/v5/pkg/api/handlers/utils"
+	"github.com/containers/podman/v5/pkg/api/server/idle"
+	api "github.com/containers/podman/v5/pkg/api/types"
+	"github.com/containers/podman/v5/pkg/domain/entities"
+	"github.com/containers/podman/v5/pkg/specgenutil"
+	"github.com/containers/podman/v5/pkg/util"
 	"github.com/gorilla/mux"
 	"github.com/sirupsen/logrus"
 )
@@ -48,16 +51,20 @@ func ExecCreateHandler(w http.ResponseWriter, r *http.Request) {
 	}
 	libpodConfig.Environment = make(map[string]string)
 	for _, envStr := range input.Env {
-		split := strings.SplitN(envStr, "=", 2)
-		if len(split) != 2 {
+		key, val, hasVal := strings.Cut(envStr, "=")
+		if !hasVal {
 			utils.Error(w, http.StatusBadRequest, fmt.Errorf("environment variable %q badly formed, must be key=value", envStr))
 			return
 		}
-		libpodConfig.Environment[split[0]] = split[1]
+		libpodConfig.Environment[key] = val
 	}
 	libpodConfig.WorkDir = input.WorkingDir
 	libpodConfig.Privileged = input.Privileged
 	libpodConfig.User = input.User
+
+	if input.Tty {
+		util.ExecAddTERM(ctr.Env(), libpodConfig.Environment)
+	}
 
 	// Make our exit command
 	storageConfig := runtime.StorageConfig()
@@ -67,7 +74,7 @@ func ExecCreateHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	// Automatically log to syslog if the server has log-level=debug set
-	exitCommandArgs, err := specgenutil.CreateExitCommandArgs(storageConfig, runtimeConfig, logrus.IsLevelEnabled(logrus.DebugLevel), true, true)
+	exitCommandArgs, err := specgenutil.CreateExitCommandArgs(storageConfig, runtimeConfig, logrus.IsLevelEnabled(logrus.DebugLevel), true, false, true)
 	if err != nil {
 		utils.InternalServerError(w, err)
 		return
@@ -193,7 +200,7 @@ func ExecStartHandler(w http.ResponseWriter, r *http.Request) {
 		t := r.Context().Value(api.IdleTrackerKey).(*idle.Tracker)
 		defer t.Close()
 
-		if err != nil {
+		if err != nil && !errors.Is(err, define.ErrDetach) {
 			// Cannot report error to client as a 500 as the Upgrade set status to 101
 			logErr(err)
 		}
@@ -203,4 +210,31 @@ func ExecStartHandler(w http.ResponseWriter, r *http.Request) {
 		logErr(err)
 	}
 	logrus.Debugf("Attach for container %s exec session %s completed successfully", sessionCtr.ID(), sessionID)
+}
+
+// ExecRemoveHandler removes a exec session.
+func ExecRemoveHandler(w http.ResponseWriter, r *http.Request) {
+	runtime := r.Context().Value(api.RuntimeKey).(*libpod.Runtime)
+
+	sessionID := mux.Vars(r)["id"]
+
+	bodyParams := new(handlers.ExecRemoveConfig)
+
+	if err := json.NewDecoder(r.Body).Decode(&bodyParams); err != nil {
+		utils.Error(w, http.StatusBadRequest, fmt.Errorf("failed to decode parameters for %s: %w", r.URL.String(), err))
+		return
+	}
+
+	sessionCtr, err := runtime.GetExecSessionContainer(sessionID)
+	if err != nil {
+		utils.Error(w, http.StatusNotFound, err)
+		return
+	}
+
+	logrus.Debugf("Removing exec session %s of container %s", sessionID, sessionCtr.ID())
+	if err := sessionCtr.ExecRemove(sessionID, bodyParams.Force); err != nil {
+		utils.InternalServerError(w, err)
+		return
+	}
+	logrus.Debugf("Removing exec session %s for container %s completed successfully", sessionID, sessionCtr.ID())
 }

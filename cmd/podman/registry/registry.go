@@ -4,19 +4,16 @@ import (
 	"context"
 	"path/filepath"
 
-	"github.com/containers/podman/v4/pkg/domain/entities"
-	"github.com/containers/podman/v4/pkg/domain/infra"
-	"github.com/containers/podman/v4/pkg/rootless"
-	"github.com/containers/podman/v4/pkg/util"
+	"github.com/containers/podman/v5/pkg/domain/entities"
+	"github.com/containers/podman/v5/pkg/domain/infra"
+	"github.com/containers/podman/v5/pkg/rootless"
+	"github.com/containers/podman/v5/pkg/util"
 	"github.com/sirupsen/logrus"
 	"github.com/spf13/cobra"
 )
 
-// DefaultRootAPIPath is the default path of the REST socket
-const DefaultRootAPIPath = "/run/podman/podman.sock"
-
-// DefaultRootAPIAddress is the default address of the REST socket with unix: prefix
-const DefaultRootAPIAddress = "unix:" + DefaultRootAPIPath
+// DefaultRootAPIAddress is the default path of the REST socket with unix:// prefix
+const DefaultRootAPIAddress = "unix://" + DefaultRootAPIPath
 
 type CliCommand struct {
 	Command *cobra.Command
@@ -24,7 +21,7 @@ type CliCommand struct {
 }
 
 var (
-	cliCtx          context.Context
+	cliCtx          = context.Background()
 	containerEngine entities.ContainerEngine
 	exitCode        = 0
 	imageEngine     entities.ImageEngine
@@ -67,6 +64,14 @@ func ContainerEngine() entities.ContainerEngine {
 func NewContainerEngine(cmd *cobra.Command, args []string) (entities.ContainerEngine, error) {
 	if containerEngine == nil {
 		podmanOptions.FlagSet = cmd.Flags()
+		if cmd.Name() == "reset" && cmd.Parent().Name() == "system" {
+			logrus.Debugf("Performing system reset, runtime validation checks will be relaxed")
+			podmanOptions.IsReset = true
+		}
+		if cmd.Name() == "renumber" && cmd.Parent().Name() == "system" {
+			logrus.Debugf("Performing system renumber, runtime validation checks will be relaxed")
+			podmanOptions.IsRenumber = true
+		}
 		engine, err := infra.NewContainerEngine(&podmanOptions)
 		if err != nil {
 			return nil, err
@@ -76,38 +81,18 @@ func NewContainerEngine(cmd *cobra.Command, args []string) (entities.ContainerEn
 	return containerEngine, nil
 }
 
-type PodmanOptionsKey struct{}
-
 func Context() context.Context {
-	if cliCtx == nil {
-		cliCtx = ContextWithOptions(context.Background())
-	}
 	return cliCtx
-}
-
-func ContextWithOptions(ctx context.Context) context.Context {
-	cliCtx = context.WithValue(ctx, PodmanOptionsKey{}, podmanOptions)
-	return cliCtx
-}
-
-// GetContextWithOptions deprecated, use  NewContextWithOptions()
-func GetContextWithOptions() context.Context {
-	return ContextWithOptions(context.Background())
-}
-
-// GetContext deprecated, use  Context()
-func GetContext() context.Context {
-	return Context()
 }
 
 func DefaultAPIAddress() string {
 	if rootless.IsRootless() {
-		xdg, err := util.GetRuntimeDir()
+		xdg, err := util.GetRootlessRuntimeDir()
 		if err != nil {
 			logrus.Warnf("Failed to get rootless runtime dir for DefaultAPIAddress: %s", err)
 			return DefaultRootAPIAddress
 		}
-		return "unix:" + filepath.Join(xdg, "podman", "podman.sock")
+		return "unix://" + filepath.Join(xdg, "podman", "podman.sock")
 	}
 	return DefaultRootAPIAddress
 }

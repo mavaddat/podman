@@ -1,3 +1,5 @@
+//go:build !remote
+
 package libpod
 
 import (
@@ -6,10 +8,10 @@ import (
 	"fmt"
 
 	"github.com/containers/common/pkg/cgroups"
-	"github.com/containers/podman/v4/libpod/define"
-	"github.com/containers/podman/v4/libpod/events"
-	"github.com/containers/podman/v4/pkg/parallel"
-	"github.com/containers/podman/v4/pkg/rootless"
+	"github.com/containers/podman/v5/libpod/define"
+	"github.com/containers/podman/v5/libpod/events"
+	"github.com/containers/podman/v5/pkg/parallel"
+	"github.com/containers/podman/v5/pkg/rootless"
 	"github.com/opencontainers/runtime-spec/specs-go"
 	"github.com/sirupsen/logrus"
 )
@@ -22,7 +24,7 @@ func (p *Pod) startInitContainers(ctx context.Context) error {
 	}
 	// Now iterate init containers
 	for _, initCon := range initCtrs {
-		if err := initCon.Start(ctx, true); err != nil {
+		if err := initCon.startNoPodLock(ctx, true); err != nil {
 			return err
 		}
 		// Check that the init container waited correctly and the exit
@@ -40,7 +42,12 @@ func (p *Pod) startInitContainers(ctx context.Context) error {
 			icLock := initCon.lock
 			icLock.Lock()
 			var time *uint
-			if err := p.runtime.removeContainer(ctx, initCon, false, false, true, false, time); err != nil {
+			opts := ctrRmOpts{
+				RemovePod: true,
+				Timeout:   time,
+			}
+
+			if _, _, err := p.runtime.removeContainer(ctx, initCon, opts); err != nil {
 				icLock.Unlock()
 				return fmt.Errorf("failed to remove once init container %s: %w", initCon.ID(), err)
 			}
@@ -149,50 +156,43 @@ func (p *Pod) stopWithTimeout(ctx context.Context, cleanup bool, timeout int) (m
 		return nil, err
 	}
 
-	// Stopping pods is not ordered by dependency. We haven't seen any case
-	// where this would actually matter.
-
-	ctrErrChan := make(map[string]<-chan error)
-
-	// Enqueue a function for each container with the parallel executor.
-	for _, ctr := range allCtrs {
-		c := ctr
-		logrus.Debugf("Adding parallel job to stop container %s", c.ID())
-		retChan := parallel.Enqueue(ctx, func() error {
-			// Can't batch these without forcing Stop() to hold the
-			// lock for the full duration of the timeout.
-			// We probably don't want to do that.
-			if timeout > -1 {
-				if err := c.StopWithTimeout(uint(timeout)); err != nil {
-					return err
-				}
-			} else {
-				if err := c.Stop(); err != nil {
-					return err
-				}
-			}
-
-			if cleanup {
-				return c.Cleanup(ctx)
-			}
-
-			return nil
-		})
-
-		ctrErrChan[c.ID()] = retChan
-	}
-
 	p.newPodEvent(events.Stop)
 
-	ctrErrors := make(map[string]error)
+	var ctrErrors map[string]error
 
-	// Get returned error for every container we worked on
-	for id, channel := range ctrErrChan {
-		if err := <-channel; err != nil {
-			if errors.Is(err, define.ErrCtrStateInvalid) || errors.Is(err, define.ErrCtrStopped) {
-				continue
+	// Try and generate a graph of the pod for ordered stop.
+	graph, err := BuildContainerGraph(allCtrs)
+	if err != nil {
+		// Can't do an ordered stop, do it the old fashioned way.
+		logrus.Warnf("Unable to build graph for pod %s, switching to unordered stop: %v", p.ID(), err)
+
+		ctrErrors = make(map[string]error)
+		for _, ctr := range allCtrs {
+			var err error
+			if timeout > -1 {
+				err = ctr.StopWithTimeout(uint(timeout))
+			} else {
+				err = ctr.Stop()
 			}
-			ctrErrors[id] = err
+			if err != nil && !errors.Is(err, define.ErrCtrStateInvalid) && !errors.Is(err, define.ErrCtrStopped) {
+				ctrErrors[ctr.ID()] = err
+			} else if cleanup {
+				err := ctr.Cleanup(ctx, false)
+				if err != nil && !errors.Is(err, define.ErrCtrStateInvalid) && !errors.Is(err, define.ErrCtrStopped) {
+					ctrErrors[ctr.ID()] = err
+				}
+			}
+		}
+	} else {
+		var realTimeout *uint
+		if timeout > -1 {
+			innerTimeout := uint(timeout)
+			realTimeout = &innerTimeout
+		}
+
+		ctrErrors, err = stopContainerGraph(ctx, graph, p, realTimeout, cleanup)
+		if err != nil {
+			return nil, err
 		}
 	}
 
@@ -201,6 +201,13 @@ func (p *Pod) stopWithTimeout(ctx context.Context, cleanup bool, timeout int) (m
 	}
 
 	if err := p.maybeStopServiceContainer(); err != nil {
+		return nil, err
+	}
+
+	if err := p.updatePod(); err != nil {
+		return nil, err
+	}
+	if err := p.removePodCgroup(); err != nil {
 		return nil, err
 	}
 
@@ -248,7 +255,10 @@ func (p *Pod) stopIfOnlyInfraRemains(ctx context.Context, ignoreID string) error
 		}
 	}
 
-	_, err = p.stopWithTimeout(ctx, true, -1)
+	errs, err := p.stopWithTimeout(ctx, true, -1)
+	for ctr, e := range errs {
+		logrus.Errorf("Failed to stop container %s: %v", ctr, e)
+	}
 	return err
 }
 
@@ -282,7 +292,7 @@ func (p *Pod) Cleanup(ctx context.Context) (map[string]error, error) {
 		c := ctr
 		logrus.Debugf("Adding parallel job to clean up container %s", c.ID())
 		retChan := parallel.Enqueue(ctx, func() error {
-			return c.Cleanup(ctx)
+			return c.Cleanup(ctx, false)
 		})
 
 		ctrErrChan[c.ID()] = retChan
@@ -660,6 +670,7 @@ func (p *Pod) Inspect() (*define.InspectPodData, error) {
 		infraConfig.HostNetwork = p.NetworkMode() == "host"
 		infraConfig.StaticIP = infra.config.ContainerNetworkConfig.StaticIP
 		infraConfig.NoManageResolvConf = infra.config.UseImageResolvConf
+		infraConfig.NoManageHostname = infra.config.UseImageHostname
 		infraConfig.NoManageHosts = infra.config.UseImageHosts
 		infraConfig.CPUPeriod = p.CPUPeriod()
 		infraConfig.CPUQuota = p.CPUQuota()
@@ -691,6 +702,9 @@ func (p *Pod) Inspect() (*define.InspectPodData, error) {
 		if len(infra.config.HostAdd) > 0 {
 			infraConfig.HostAdd = make([]string, 0, len(infra.config.HostAdd))
 			infraConfig.HostAdd = append(infraConfig.HostAdd, infra.config.HostAdd...)
+		}
+		if len(infra.config.BaseHostsFile) > 0 {
+			infraConfig.HostsFile = infra.config.BaseHostsFile
 		}
 
 		networks, err := infra.networks()

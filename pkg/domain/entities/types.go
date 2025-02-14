@@ -3,11 +3,11 @@ package entities
 import (
 	"net"
 
-	buildahDefine "github.com/containers/buildah/define"
 	"github.com/containers/common/libnetwork/types"
-	"github.com/containers/podman/v4/libpod/define"
-	"github.com/containers/podman/v4/libpod/events"
-	"github.com/containers/podman/v4/pkg/specgen"
+	"github.com/containers/podman/v5/libpod/define"
+	"github.com/containers/podman/v5/libpod/events"
+	entitiesTypes "github.com/containers/podman/v5/pkg/domain/entities/types"
+	"github.com/containers/podman/v5/pkg/specgen"
 	"github.com/containers/storage/pkg/archive"
 	dockerAPI "github.com/docker/docker/api/types"
 )
@@ -40,6 +40,7 @@ type NetFlags struct {
 	MacAddr      string   `json:"mac-address,omitempty"`
 	Publish      []string `json:"publish,omitempty"`
 	IP           string   `json:"ip,omitempty"`
+	NoHostname   bool     `json:"no-hostname,omitempty"`
 	NoHosts      bool     `json:"no-hosts,omitempty"`
 	Network      string   `json:"network,omitempty"`
 	NetworkAlias []string `json:"network-alias,omitempty"`
@@ -55,7 +56,9 @@ type NetOptions struct {
 	DNSOptions         []string                           `json:"dns_option,omitempty"`
 	DNSSearch          []string                           `json:"dns_search,omitempty"`
 	DNSServers         []net.IP                           `json:"dns_server,omitempty"`
+	HostsFile          string                             `json:"hosts_file,omitempty"`
 	Network            specgen.Namespace                  `json:"netns,omitempty"`
+	NoHostname         bool                               `json:"no_manage_hostname,omitempty"`
 	NoHosts            bool                               `json:"no_manage_hosts,omitempty"`
 	PublishPorts       []types.PortMapping                `json:"portmappings,omitempty"`
 	// NetworkOptions are additional options for each network
@@ -90,7 +93,7 @@ type DiffReport struct {
 
 type EventsOptions struct {
 	FromStart bool
-	EventChan chan *events.Event
+	EventChan chan events.ReadResult
 	Filter    []string
 	Stream    bool
 	Since     string
@@ -98,25 +101,16 @@ type EventsOptions struct {
 }
 
 // ContainerCreateResponse is the response struct for creating a container
-type ContainerCreateResponse struct {
-	// ID of the container created
-	// required: true
-	ID string `json:"Id"`
-	// Warnings during container creation
-	// required: true
-	Warnings []string `json:"Warnings"`
-}
+type ContainerCreateResponse = entitiesTypes.ContainerCreateResponse
 
 // BuildOptions describe the options for building container images.
-type BuildOptions struct {
-	buildahDefine.BuildOptions
-}
+type BuildOptions = entitiesTypes.BuildOptions
 
 // BuildReport is the image-build report.
-type BuildReport struct {
-	// ID of the image.
-	ID string
-}
+type BuildReport = entitiesTypes.BuildReport
+
+// FarmBuildOptions describes the options for building container images on farm nodes
+type FarmBuildOptions = entitiesTypes.FarmBuildOptions
 
 type IDOrNameResponse struct {
 	// The Id or Name of an object

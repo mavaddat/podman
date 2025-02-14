@@ -1,5 +1,7 @@
 # -*- bash -*-
 
+_cached_has_pasta=
+_cached_has_slirp4netns=
 
 ### Feature Checks #############################################################
 
@@ -31,9 +33,28 @@ function skip_if_no_ipv6() {
     fi
 }
 
+# has_slirp4netns - Check if the slirp4netns(1) command is available
+function has_slirp4netns() {
+    if [[ -z "$_cached_has_slirp4netns" ]]; then
+        _cached_has_slirp4netns=n
+        run_podman info --format '{{.Host.Slirp4NetNS.Executable}}'
+        if [[ -n "$output" ]]; then
+            _cached_has_slirp4netns=y
+        fi
+    fi
+    test "$_cached_has_slirp4netns" = "y"
+}
+
 # has_pasta() - Check if the pasta(1) command is available
 function has_pasta() {
-    command -v pasta >/dev/null
+    if [[ -z "$_cached_has_pasta" ]]; then
+        _cached_has_pasta=n
+        run_podman info --format '{{.Host.Pasta.Executable}}'
+        if [[ -n "$output" ]]; then
+            _cached_has_pasta=y
+        fi
+    fi
+    test "$_cached_has_pasta" = "y"
 }
 
 # skip_if_no_pasta() - Skip current test if pasta(1) is not available
@@ -126,11 +147,13 @@ function random_rfc1918_subnet() {
     local retries=1024
 
     while [ "$retries" -gt 0 ];do
-        local cidr=172.$(( 16 + $RANDOM % 16 )).$(( $RANDOM & 255 ))
+        # 172.16.0.0 -> 172.31.255.255
+        local n1=172
+        local n2=$(( 16 + $RANDOM & 15 ))
+        local n3=$(( $RANDOM & 255 ))
 
-        in_use=$(ip route list | grep -F $cidr)
-        if [ -z "$in_use" ]; then
-            echo "$cidr"
+        if ! subnet_in_use $n1 $n2 $n3; then
+            echo "$n1.$n2.$n3"
             return
         fi
 
@@ -140,18 +163,97 @@ function random_rfc1918_subnet() {
     die "Could not find a random not-in-use rfc1918 subnet"
 }
 
+# subnet_in_use() - true if subnet already routed on host
+function subnet_in_use() {
+    local subnet_script=${PODMAN_TMPDIR-/var/tmp}/subnet-in-use
+    rm -f $subnet_script
+
+    # This would be a nightmare to do in bash. ipcalc, ipcalc-ng, sipcalc
+    # would be nice but are unavailable some environments (cough RHEL).
+    # Likewise python/perl netmask modules. So, use bare-bones perl.
+    cat >$subnet_script <<"EOF"
+#!/usr/bin/env perl
+
+use strict;
+use warnings;
+
+# 3 octets, in binary: 172.16.x -> 1010 1100 0000 1000 xxxx xxxx ...
+my $subnet_to_check = sprintf("%08b%08b%08b", @ARGV);
+
+my $found = 0;
+
+# Input is "ip route list", one or more lines like '10.0.0.0/8 via ...'
+while (<STDIN>) {
+    # Only interested in x.x.x.x/n lines
+    if (m!^([\d.]+)/(\d+)!) {
+        my ($ip, $bits) = ($1, $2);
+
+        # Our caller has /24 granularity, so treat /30 on host as /24.
+        $bits = 24 if $bits > 24;
+
+        # Temporary: entire subnet as binary string. 4 octets, split,
+        # then represented as a 32-bit binary string.
+        my $net = sprintf("%08b%08b%08b%08b", split(/\./, $ip));
+
+        # Now truncate those 32 bits down to the route's netmask size.
+        # This is the actual subnet range in use on the host.
+        my $net_truncated = sprintf("%.*s", $bits, $net);
+
+        # Desired subnet is in use if it matches a host route prefix
+#        print STDERR "--- $subnet_to_check in $net_truncated (@ARGV in $ip/$bits)\n";
+        $found = 1 if $subnet_to_check =~ /^$net_truncated/;
+    }
+}
+
+# Convert to shell exit status (0 = success)
+exit !$found;
+EOF
+
+    chmod 755 $subnet_script
+
+    # This runs 'ip route list', converts x.x.x.x/n to its binary prefix,
+    # then checks if our desired subnet matches that prefix (i.e. is in
+    # that range). Existing routes with size greater than 24 are
+    # normalized to /24 because that's the granularity of our
+    # random_rfc1918_subnet code.
+    #
+    # Contrived examples:
+    #    127.0.0.0/1   -> 0
+    #    128.0.0.0/1   -> 1
+    #    10.0.0.0/8    -> 00001010
+    #
+    # I'm so sorry for the ugliness.
+    ip route list | $subnet_script $*
+}
+
 # ipv4_get_route_default() - Print first default IPv4 route reported by netlink
 # $1:	Optional output of 'ip -j -4 route show' from a different context
 function ipv4_get_route_default() {
-    local jq_expr='[.[] | select(.dst == "default").gateway] | .[0]'
-    echo "${1:-$(ip -j -4 route show)}" | jq -rM "${jq_expr}"
+    local jq_gw='[.[] | select(.dst == "default").gateway] | .[0]'
+    local jq_nh='[.[] | select(.dst == "default").nexthops[0].gateway] | .[0]'
+    local out
+
+    out="$(echo "${1:-$(ip -j -4 route show)}" | jq -rM "${jq_gw}")"
+    if [ "${out}" = "null" ]; then
+        out="$(echo "${1:-$(ip -j -4 route show)}" | jq -rM "${jq_nh}")"
+    fi
+
+    echo "${out}"
 }
 
 # ipv6_get_route_default() - Print first default IPv6 route reported by netlink
 # $1:	Optional output of 'ip -j -6 route show' from a different context
 function ipv6_get_route_default() {
-    local jq_expr='[.[] | select(.dst == "default").gateway] | .[0]'
-    echo "${1:-$(ip -j -6 route show)}" | jq -rM "${jq_expr}"
+    local jq_gw='[.[] | select(.dst == "default").gateway] | .[0]'
+    local jq_nh='[.[] | select(.dst == "default").nexthops[0].gateway] | .[0]'
+    local out
+
+    out="$(echo "${1:-$(ip -j -6 route show)}" | jq -rM "${jq_gw}")"
+    if [ "${out}" = "null" ]; then
+        out="$(echo "${1:-$(ip -j -6 route show)}" | jq -rM "${jq_nh}")"
+    fi
+
+    echo "${out}"
 }
 
 # ether_get_mtu() - Get MTU of first Ethernet-like link
@@ -171,6 +273,36 @@ function ether_get_name() {
 
 ### Ports and Ranges ###########################################################
 
+# reserve_port() - create a lock file reserving a port, or return false
+function reserve_port() {
+    local port=$1
+
+    mkdir -p $PORT_LOCK_DIR
+    local lockfile=$PORT_LOCK_DIR/$port
+    local locktmp=$PORT_LOCK_DIR/.$port.$$
+    echo $BATS_SUITE_TEST_NUMBER >$locktmp
+
+    if ln $locktmp $lockfile; then
+        rm -f $locktmp
+        return
+    fi
+    # Port already reserved
+    rm -f $locktmp
+    false
+}
+
+# unreserve_port() - free a temporarily-reserved port
+function unreserve_port() {
+    local port=$1
+
+    local lockfile=$PORT_LOCK_DIR/$port
+    -e $lockfile || die "Cannot unreserve non-reserved port $port"
+    assert "$(< $lockfile)" = "$BATS_SUITE_TEST_NUMBER" \
+           "Port $port is not reserved by this test"
+    rm -f $lockfile
+}
+
+
 # random_free_port() - Get unbound port with pseudorandom number
 # $1:	Optional, dash-separated interval, [5000, 5999] by default
 # $2:	Optional binding address, any IPv4 address by default
@@ -182,9 +314,14 @@ function random_free_port() {
 
     local port
     for port in $(shuf -i ${range}); do
-        if port_is_free $port $address $protocol; then
-            echo $port
-            return
+        # First make sure no other tests are using it
+        if reserve_port $port; then
+            if port_is_free $port $address $protocol; then
+                echo $port
+                return
+            fi
+
+            unreserve_port $port
         fi
     done
 
@@ -206,8 +343,13 @@ function random_free_port_range() {
         local lastport=
         for i in $(seq 1 $((size - 1))); do
             lastport=$((firstport + i))
+            if ! reserve_port $lastport; then
+                lastport=
+                break
+            fi
             if ! port_is_free $lastport $address $protocol; then
                 echo "# port $lastport is in use; trying another." >&3
+                unreserve_port $lastport
                 lastport=
                 break
             fi
@@ -216,6 +358,8 @@ function random_free_port_range() {
             echo "$firstport-$lastport"
             return
         fi
+
+        unreserve_port $firstport
 
         maxtries=$((maxtries - 1))
     done
@@ -241,6 +385,13 @@ function port_is_bound() {
         local proto="tcp"
     fi
 
+    # /proc/net/tcp is insufficient: it does not show some rootless ports.
+    # ss does, so check it first.
+    run ss -${proto:0:1}nlH sport = $port
+    if [[ -n "$output" ]]; then
+        return
+    fi
+
     port=$(printf %04X ${port})
     case "${address}" in
     *":"*)
@@ -251,6 +402,7 @@ function port_is_bound() {
     *"."*)
         grep -e "^[^:]*: $(ipv4_to_procfs "${address}"):${port}"    \
              -e "^[^:]*: $(ipv4_to_procfs "0.0.0.0"):${port}"       \
+             -e "^[^:]*: $(ipv4_to_procfs "127.0.0.1"):${port}"     \
              -q "/proc/net/${proto}"
         ;;
     *)
@@ -295,4 +447,28 @@ function tcp_port_probe() {
     local address="${2:-0.0.0.0}"
 
     : | nc "${address}" "${1}"
+}
+
+### Pasta Helpers ##############################################################
+
+function default_ifname() {
+    local jq_expr='[.[] | select(.dst == "default").dev] | .[0]'
+    local jq_expr_nh='[.[] | select(.dst == "default").nexthops[0].dev] | .[0]'
+    local ip_ver="${1}"
+    local out
+
+    out="$(ip -j -"${ip_ver}" route show | jq -rM "${jq_expr}")"
+    if [ "${out}" = "null" ]; then
+        out="$(ip -j -"${ip_ver}" route show | jq -rM "${jq_expr_nh}")"
+    fi
+
+    echo "${out}"
+}
+
+function default_addr() {
+    local ip_ver="${1}"
+    local ifname="${2:-$(default_ifname "${ip_ver}")}"
+
+    local expr='[.[0].addr_info[] | select(.deprecated != true)][0].local'
+    ip -j -"${ip_ver}" addr show "${ifname}" | jq -rM "${expr}"
 }

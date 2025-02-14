@@ -1,18 +1,19 @@
+//go:build !remote
+
 package generate
 
 import (
 	"fmt"
 	"net"
+	"slices"
 	"sort"
 	"strings"
 
 	"github.com/containers/common/libimage"
 	"github.com/containers/common/libnetwork/types"
-	"github.com/containers/podman/v4/utils"
-
-	"github.com/containers/common/pkg/util"
-	"github.com/containers/podman/v4/pkg/specgen"
-	"github.com/containers/podman/v4/pkg/specgenutil"
+	"github.com/containers/podman/v5/pkg/specgen"
+	"github.com/containers/podman/v5/pkg/specgenutil"
+	"github.com/containers/podman/v5/utils"
 	"github.com/sirupsen/logrus"
 )
 
@@ -157,7 +158,7 @@ func ParsePortMapping(portMappings []types.PortMapping, exposePorts map[uint16][
 	// First, we need to validate the ports passed in the specgen
 	for _, port := range portMappings {
 		// First, check proto
-		protocols, err := checkProtocol(port.Protocol, true)
+		protocols, err := checkProtocol(port.Protocol)
 		if err != nil {
 			return nil, err
 		}
@@ -211,7 +212,6 @@ func ParsePortMapping(portMappings []types.PortMapping, exposePorts map[uint16][
 
 	for hostIP, protoMap := range portMap {
 		for protocol, ports := range protoMap {
-			ports := ports
 			if len(ports) == 0 {
 				continue
 			}
@@ -330,7 +330,7 @@ func ParsePortMapping(portMappings []types.PortMapping, exposePorts map[uint16][
 
 func appendProtocolsNoDuplicates(slice []string, protocols []string) []string {
 	for _, proto := range protocols {
-		if util.StringInSlice(proto, slice) {
+		if slices.Contains(slice, proto) {
 			continue
 		}
 		slice = append(slice, proto)
@@ -355,7 +355,7 @@ func createPortMappings(s *specgen.SpecGenerator, imageData *libimage.ImageData)
 			if port == 0 {
 				return nil, nil, fmt.Errorf("cannot expose 0 as it is not a valid port number")
 			}
-			protocols, err := checkProtocol(proto, false)
+			protocols, err := checkProtocol(proto)
 			if err != nil {
 				return nil, nil, fmt.Errorf("validating protocols for exposed port %d: %w", port, err)
 			}
@@ -364,7 +364,7 @@ func createPortMappings(s *specgen.SpecGenerator, imageData *libimage.ImageData)
 	}
 
 	publishPorts := toExpose
-	if !s.PublishExposedPorts {
+	if s.PublishExposedPorts == nil || !*s.PublishExposedPorts {
 		publishPorts = nil
 	}
 
@@ -376,7 +376,7 @@ func createPortMappings(s *specgen.SpecGenerator, imageData *libimage.ImageData)
 }
 
 // Check a string to ensure it is a comma-separated set of valid protocols
-func checkProtocol(protocol string, allowSCTP bool) ([]string, error) {
+func checkProtocol(protocol string) ([]string, error) {
 	protocols := make(map[string]struct{})
 	splitProto := strings.Split(protocol, ",")
 	// Don't error on duplicates - just deduplicate
@@ -388,9 +388,6 @@ func checkProtocol(protocol string, allowSCTP bool) ([]string, error) {
 		case protoUDP:
 			protocols[protoUDP] = struct{}{}
 		case protoSCTP:
-			if !allowSCTP {
-				return nil, fmt.Errorf("protocol SCTP is not allowed for exposed ports")
-			}
 			protocols[protoSCTP] = struct{}{}
 		default:
 			return nil, fmt.Errorf("unrecognized protocol %q in port mapping", p)

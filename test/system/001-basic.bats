@@ -8,11 +8,13 @@ load helpers.network
 
 # Override standard setup! We don't yet trust podman-images or podman-rm
 function setup() {
-    :
+    # Makes test logs easier to read
+    BATS_TEST_NAME_PREFIX="[001] "
 }
 
 #### DO NOT ADD ANY TESTS HERE! ADD NEW TESTS AT BOTTOM!
 
+# bats test_tags=distro-integration
 @test "podman version emits reasonable output" {
     run_podman version
 
@@ -33,11 +35,9 @@ function setup() {
 
     run_podman -v
     is "$output" "podman.*version \+"               "'Version line' in output"
-
-    run_podman --config foobar version
-    is "$output" ".*The --config flag is ignored by Podman. Exists for Docker compatibility\+"		  "verify warning for --config option"
 }
 
+# bats test_tags=distro-integration
 @test "podman info" {
     # These will be displayed on the test output stream, offering an
     # at-a-glance overview of important system configuration details
@@ -51,6 +51,7 @@ function setup() {
         'Cgroups:{{.Host.CgroupsVersion}}+{{.Host.CgroupManager}}'
         'Net:{{.Host.NetworkBackend}}'
         'DB:{{.Host.DatabaseBackend}}'
+        'Store:{{.Store.GraphDriverName}}'
     )
     run_podman info --format "$(IFS='/' echo ${want[@]})"
     echo "# $output" >&3
@@ -65,14 +66,17 @@ function setup() {
     run_podman --context=default version
 
     # This one must fail
-    run_podman 125 --context=swarm version
+    PODMAN=${PODMAN%%--url*} run_podman 125 --context=swarm version
     is "$output" \
-       "Error: failed to resolve active destination: \"swarm\" service destination not found" \
+       "Error: read cli flags: connection \"swarm\" not found" \
        "--context=swarm should fail"
 }
 
+# bats test_tags=distro-integration
 @test "podman can pull an image" {
-    run_podman rmi -a
+    run_podman rmi -a -f
+
+    # This is a risk point: it will fail if the registry or network are flaky
     run_podman pull $IMAGE
 
     # Regression test for https://github.com/containers/image/pull/1615
@@ -191,10 +195,10 @@ See 'podman version --help'" "podman version --remote"
 }
 
 @test "podman --log-level recognizes log levels" {
-    run_podman 1 --log-level=telepathic info
+    run_podman 1 --log-level=telepathic version
     is "$output" 'Log Level "telepathic" is not supported.*'
 
-    run_podman --log-level=trace   info
+    run_podman --log-level=trace   version
     if ! is_remote; then
         # podman-remote does not do any trace logging
         assert "$output" =~ " level=trace " "log-level=trace"
@@ -203,33 +207,33 @@ See 'podman version --help'" "podman version --remote"
     assert "$output" =~ " level=info "  "log-level=trace includes info"
     assert "$output" !~ " level=warn"   "log-level=trace does not show warn"
 
-    run_podman --log-level=debug   info
+    run_podman --log-level=debug   version
     assert "$output" !~ " level=trace " "log-level=debug does not show trace"
     assert "$output" =~ " level=debug " "log-level=debug"
     assert "$output" =~ " level=info "  "log-level=debug includes info"
     assert "$output" !~ " level=warn"   "log-level=debug does not show warn"
 
-    run_podman --log-level=info    info
+    run_podman --log-level=info    version
     assert "$output" !~ " level=trace " "log-level=info does not show trace"
     assert "$output" !~ " level=debug " "log-level=info does not show debug"
     assert "$output" =~ " level=info "  "log-level=info"
 
-    run_podman --log-level=warn    info
+    run_podman --log-level=warn    version
     assert "$output" !~ " level=" "log-level=warn shows no logs at all"
 
-    run_podman --log-level=warning info
+    run_podman --log-level=warning version
     assert "$output" !~ " level=" "log-level=warning shows no logs at all"
 
-    run_podman --log-level=error   info
+    run_podman --log-level=error   version
     assert "$output" !~ " level=" "log-level=error shows no logs at all"
 
     # docker compat
-    run_podman --debug   info
+    run_podman --debug   version
     assert "$output" =~ " level=debug " "podman --debug gives debug output"
-    run_podman -D        info
+    run_podman -D        version
     assert "$output" =~ " level=debug " "podman -D gives debug output"
 
-    run_podman 1 --debug --log-level=panic info
+    run_podman 1 --debug --log-level=panic version
     is "$output" "Setting --log-level and --debug is not allowed"
 }
 
@@ -273,7 +277,7 @@ run_podman --noout system connection ls
     run_podman --log-level=debug run --rm $IMAGE true
     is "$output" ".*Shutting down engines.*"
     run_podman 125 --log-level=debug run dockah://rien.de/rien:latest
-    is "${lines[-1]}" ".*Shutting down engines"
+    is "$output" ".*Shutting down engines.*"
 }
 
 # vim: filetype=sh

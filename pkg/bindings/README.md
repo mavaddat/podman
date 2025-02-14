@@ -43,11 +43,11 @@ import (
 	"fmt"
 	"os"
 
-	"github.com/containers/podman/v4/pkg/bindings"
+	"github.com/containers/podman/v5/pkg/bindings"
 )
 
 func main() {
-	conn, err := bindings.NewConnection(context.Background(), "unix://run/podman/podman.sock")
+	conn, err := bindings.NewConnection(context.Background(), "unix:///run/podman/podman.sock")
 	if err != nil {
 		fmt.Println(err)
 		os.Exit(1)
@@ -74,12 +74,12 @@ import (
 	"fmt"
 	"os"
 
-	"github.com/containers/podman/v4/pkg/bindings"
-	"github.com/containers/podman/v4/pkg/bindings/containers"
+	"github.com/containers/podman/v5/pkg/bindings"
+	"github.com/containers/podman/v5/pkg/bindings/containers"
 )
 
 func main() {
-	conn, err := bindings.NewConnection(context.Background(), "unix://run/podman/podman.sock")
+	conn, err := bindings.NewConnection(context.Background(), "unix:///run/podman/podman.sock")
 	if err != nil {
 		fmt.Println(err)
 		os.Exit(1)
@@ -102,12 +102,12 @@ import (
 	"fmt"
 	"os"
 
-	"github.com/containers/podman/v4/pkg/bindings"
-	"github.com/containers/podman/v4/pkg/bindings/images"
+	"github.com/containers/podman/v5/pkg/bindings"
+	"github.com/containers/podman/v5/pkg/bindings/images"
 )
 
 func main() {
-	conn, err := bindings.NewConnection(context.Background(), "unix://run/podman/podman.sock")
+	conn, err := bindings.NewConnection(context.Background(), "unix:///run/podman/podman.sock")
 	if err != nil {
 		fmt.Println(err)
 		os.Exit(1)
@@ -130,14 +130,14 @@ import (
 	"fmt"
 	"os"
 
-	"github.com/containers/podman/v4/pkg/bindings"
-	"github.com/containers/podman/v4/pkg/bindings/containers"
-	"github.com/containers/podman/v4/pkg/bindings/images"
-	"github.com/containers/podman/v4/pkg/specgen"
+	"github.com/containers/podman/v5/pkg/bindings"
+	"github.com/containers/podman/v5/pkg/bindings/containers"
+	"github.com/containers/podman/v5/pkg/bindings/images"
+	"github.com/containers/podman/v5/pkg/specgen"
 )
 
 func main() {
-	conn, err := bindings.NewConnection(context.Background(), "unix://run/podman/podman.sock")
+	conn, err := bindings.NewConnection(context.Background(), "unix:///run/podman/podman.sock")
 	if err != nil {
 		fmt.Println(err)
 		os.Exit(1)
@@ -239,3 +239,6 @@ $
 
 You can also verify that the information being passed back and forth is correct by putting
 with a tool like `socat`, which can dump what the socket is seeing.
+
+## Reducing Binary Size with "remote" Build Tag
+When building a program that uses the Podman Go bindings, you can reduce the binary size by passing the "remote" build tag to the go build command.  This tag excludes code related to local Podman operations, which is not needed for applications that only interact with Podman over a network.

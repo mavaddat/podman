@@ -1,12 +1,13 @@
+//go:build linux || freebsd
+
 package integration
 
 import (
 	"path/filepath"
 
-	. "github.com/containers/podman/v4/test/utils"
+	. "github.com/containers/podman/v5/test/utils"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
-	. "github.com/onsi/gomega/gexec"
 )
 
 var _ = Describe("Podman run with volumes", func() {
@@ -21,13 +22,13 @@ var _ = Describe("Podman run with volumes", func() {
 		containerStorageDir = filepath.Join(podmanTest.Root, podmanTest.ImageCacheFS+"-containers")
 		dbDir = filepath.Join(podmanTest.Root, "libpod")
 		runContainerStorageDir = filepath.Join(podmanTest.RunRoot, podmanTest.ImageCacheFS+"-containers")
-		runDBDir = tempdir
+		runDBDir = podmanTest.TempDir
 	})
 
 	It("podman run with no transient-store", func() {
 		session := podmanTest.Podman([]string{"run", ALPINE, "true"})
 		session.WaitWithDefaultTimeout()
-		Expect(session).Should(Exit(0))
+		Expect(session).Should(ExitCleanly())
 
 		_ = SystemExec("ls", []string{"-l", containerStorageDir})
 
@@ -49,7 +50,7 @@ var _ = Describe("Podman run with volumes", func() {
 	It("podman run --rm with no transient-store", func() {
 		session := podmanTest.Podman([]string{"run", "--rm", ALPINE, "true"})
 		session.WaitWithDefaultTimeout()
-		Expect(session).Should(Exit(0))
+		Expect(session).Should(ExitCleanly())
 
 		// All files should not be in permanent store, not volatile
 		Expect(filepath.Join(containerStorageDir, "containers.json")).Should(Not(BeAnExistingFile()))
@@ -70,7 +71,7 @@ var _ = Describe("Podman run with volumes", func() {
 		SkipIfRemote("Can't change store options remotely")
 		session := podmanTest.Podman([]string{"run", "--transient-store", ALPINE, "true"})
 		session.WaitWithDefaultTimeout()
-		Expect(session).Should(Exit(0))
+		Expect(session).Should(ExitCleanly())
 
 		// All files should be in runroot store, volatile
 		Expect(filepath.Join(containerStorageDir, "containers.json")).Should(Not(BeAnExistingFile()))

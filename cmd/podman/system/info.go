@@ -6,10 +6,10 @@ import (
 
 	"github.com/containers/common/pkg/completion"
 	"github.com/containers/common/pkg/report"
-	"github.com/containers/podman/v4/cmd/podman/common"
-	"github.com/containers/podman/v4/cmd/podman/registry"
-	"github.com/containers/podman/v4/cmd/podman/validate"
-	"github.com/containers/podman/v4/libpod/define"
+	"github.com/containers/podman/v5/cmd/podman/common"
+	"github.com/containers/podman/v5/cmd/podman/registry"
+	"github.com/containers/podman/v5/cmd/podman/validate"
+	"github.com/containers/podman/v5/libpod/define"
 	"github.com/spf13/cobra"
 	"sigs.k8s.io/yaml"
 )
@@ -45,6 +45,11 @@ var (
 	debug    bool
 )
 
+type infoReport struct {
+	define.Info
+	Client *define.Version `json:",omitempty" yaml:",omitempty"`
+}
+
 func init() {
 	registry.Commands = append(registry.Commands, registry.CliCommand{
 		Command: infoCommand,
@@ -70,16 +75,25 @@ func infoFlags(cmd *cobra.Command) {
 }
 
 func info(cmd *cobra.Command, args []string) error {
-	info, err := registry.ContainerEngine().Info(registry.GetContext())
+	info, err := registry.ContainerEngine().Info(registry.Context())
 	if err != nil {
 		return err
 	}
+	remote := registry.IsRemote()
+	info.Host.ServiceIsRemote = remote
 
-	info.Host.ServiceIsRemote = registry.IsRemote()
+	infoReport := infoReport{
+		Info: *info,
+	}
+
+	if remote {
+		clientVers, _ := define.GetVersion()
+		infoReport.Client = &clientVers
+	}
 
 	switch {
 	case report.IsJSON(inFormat):
-		b, err := json.MarshalIndent(info, "", "  ")
+		b, err := json.MarshalIndent(infoReport, "", "  ")
 		if err != nil {
 			return err
 		}
@@ -94,9 +108,9 @@ func info(cmd *cobra.Command, args []string) error {
 		if err != nil {
 			return err
 		}
-		return rpt.Execute(info)
+		return rpt.Execute(infoReport)
 	default:
-		b, err := yaml.Marshal(info)
+		b, err := yaml.Marshal(infoReport)
 		if err != nil {
 			return err
 		}

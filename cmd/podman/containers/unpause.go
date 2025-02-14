@@ -9,12 +9,12 @@ import (
 
 	"github.com/containers/common/pkg/cgroups"
 	"github.com/containers/common/pkg/completion"
-	"github.com/containers/podman/v4/cmd/podman/common"
-	"github.com/containers/podman/v4/cmd/podman/registry"
-	"github.com/containers/podman/v4/cmd/podman/utils"
-	"github.com/containers/podman/v4/cmd/podman/validate"
-	"github.com/containers/podman/v4/pkg/domain/entities"
-	"github.com/containers/podman/v4/pkg/rootless"
+	"github.com/containers/podman/v5/cmd/podman/common"
+	"github.com/containers/podman/v5/cmd/podman/registry"
+	"github.com/containers/podman/v5/cmd/podman/utils"
+	"github.com/containers/podman/v5/cmd/podman/validate"
+	"github.com/containers/podman/v5/pkg/domain/entities"
+	"github.com/containers/podman/v5/pkg/rootless"
 	"github.com/spf13/cobra"
 )
 
@@ -110,11 +110,11 @@ func unpause(cmd *cobra.Command, args []string) error {
 	}
 
 	for _, f := range filters {
-		split := strings.SplitN(f, "=", 2)
-		if len(split) < 2 {
+		fname, filter, hasFilter := strings.Cut(f, "=")
+		if !hasFilter {
 			return fmt.Errorf("invalid filter %q", f)
 		}
-		unpauseOpts.Filters[split[0]] = append(unpauseOpts.Filters[split[0]], split[1])
+		unpauseOpts.Filters[fname] = append(unpauseOpts.Filters[fname], filter)
 	}
 
 	responses, err := registry.ContainerEngine().ContainerUnpause(context.Background(), args, unpauseOpts)

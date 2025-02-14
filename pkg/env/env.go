@@ -6,6 +6,7 @@ package env
 import (
 	"bufio"
 	"fmt"
+	"maps"
 	"os"
 	"strings"
 )
@@ -16,7 +17,6 @@ const whiteSpaces = " \t"
 func DefaultEnvVariables() map[string]string {
 	return map[string]string{
 		"PATH":      "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
-		"TERM":      "xterm",
 		"container": "podman",
 	}
 }
@@ -41,14 +41,9 @@ func Slice(m map[string]string) []string {
 // map.
 func Map(slice []string) map[string]string {
 	envmap := make(map[string]string, len(slice))
-	for _, val := range slice {
-		data := strings.SplitN(val, "=", 2)
-
-		if len(data) > 1 {
-			envmap[data[0]] = data[1]
-		} else {
-			envmap[data[0]] = ""
-		}
+	for _, line := range slice {
+		key, val, _ := strings.Cut(line, "=")
+		envmap[key] = val
 	}
 	return envmap
 }
@@ -56,8 +51,9 @@ func Map(slice []string) map[string]string {
 // Join joins the two environment maps with override overriding base.
 func Join(base map[string]string, override map[string]string) map[string]string {
 	if len(base) == 0 {
-		return override
+		return maps.Clone(override)
 	}
+	base = maps.Clone(base)
 	for k, v := range override {
 		base[k] = v
 	}
@@ -95,26 +91,25 @@ func ParseFile(path string) (_ map[string]string, err error) {
 }
 
 func parseEnv(env map[string]string, line string) error {
-	data := strings.SplitN(line, "=", 2)
+	key, val, hasVal := strings.Cut(line, "=")
 
 	// catch invalid variables such as "=" or "=A"
-	if data[0] == "" {
+	if key == "" {
 		return fmt.Errorf("invalid variable: %q", line)
 	}
 	// trim the front of a variable, but nothing else
-	name := strings.TrimLeft(data[0], whiteSpaces)
-	if len(data) > 1 {
-		env[name] = data[1]
+	name := strings.TrimLeft(key, whiteSpaces)
+	if hasVal {
+		env[name] = val
 	} else {
-		if strings.HasSuffix(name, "*") {
-			name = strings.TrimSuffix(name, "*")
+		if name, hasStar := strings.CutSuffix(name, "*"); hasStar {
 			for _, e := range os.Environ() {
-				part := strings.SplitN(e, "=", 2)
-				if len(part) < 2 {
+				envKey, envVal, hasEq := strings.Cut(e, "=")
+				if !hasEq {
 					continue
 				}
-				if strings.HasPrefix(part[0], name) {
-					env[part[0]] = part[1]
+				if strings.HasPrefix(envKey, name) {
+					env[envKey] = envVal
 				}
 			}
 		} else if val, ok := os.LookupEnv(name); ok {

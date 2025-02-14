@@ -5,11 +5,11 @@ import (
 	"errors"
 	"fmt"
 
-	"github.com/containers/podman/v4/libpod/define"
-	"github.com/containers/podman/v4/pkg/bindings/pods"
-	"github.com/containers/podman/v4/pkg/domain/entities"
-	"github.com/containers/podman/v4/pkg/errorhandling"
-	"github.com/containers/podman/v4/pkg/util"
+	"github.com/containers/podman/v5/libpod/define"
+	"github.com/containers/podman/v5/pkg/bindings/pods"
+	"github.com/containers/podman/v5/pkg/domain/entities"
+	"github.com/containers/podman/v5/pkg/errorhandling"
+	"github.com/containers/podman/v5/pkg/util"
 )
 
 func (ic *ContainerEngine) PodExists(ctx context.Context, nameOrID string) (*entities.BoolReport, error) {
@@ -23,7 +23,7 @@ func (ic *ContainerEngine) PodKill(ctx context.Context, namesOrIds []string, opt
 		return nil, err
 	}
 
-	foundPods, err := getPodsByContext(ic.ClientCtx, opts.All, namesOrIds)
+	foundPods, err := getPodsByContext(ic.ClientCtx, opts.All, false, namesOrIds)
 	if err != nil {
 		return nil, err
 	}
@@ -46,7 +46,7 @@ func (ic *ContainerEngine) PodKill(ctx context.Context, namesOrIds []string, opt
 
 func (ic *ContainerEngine) PodLogs(ctx context.Context, nameOrIDs string, options entities.PodLogsOptions) error {
 	// PodLogsOptions are similar but contains few extra fields like ctrName
-	// So cast other values as is so we can re-use the code
+	// So cast other values as is so we can reuse the code
 	containerLogsOpts := entities.PodLogsOptionsToContainerLogsOptions(options)
 
 	// interface only accepts slice, keep everything consistent
@@ -55,7 +55,7 @@ func (ic *ContainerEngine) PodLogs(ctx context.Context, nameOrIDs string, option
 }
 
 func (ic *ContainerEngine) PodPause(ctx context.Context, namesOrIds []string, options entities.PodPauseOptions) ([]*entities.PodPauseReport, error) {
-	foundPods, err := getPodsByContext(ic.ClientCtx, options.All, namesOrIds)
+	foundPods, err := getPodsByContext(ic.ClientCtx, options.All, false, namesOrIds)
 	if err != nil {
 		return nil, err
 	}
@@ -76,7 +76,7 @@ func (ic *ContainerEngine) PodPause(ctx context.Context, namesOrIds []string, op
 }
 
 func (ic *ContainerEngine) PodUnpause(ctx context.Context, namesOrIds []string, options entities.PodunpauseOptions) ([]*entities.PodUnpauseReport, error) {
-	foundPods, err := getPodsByContext(ic.ClientCtx, options.All, namesOrIds)
+	foundPods, err := getPodsByContext(ic.ClientCtx, options.All, false, namesOrIds)
 	if err != nil {
 		return nil, err
 	}
@@ -102,8 +102,8 @@ func (ic *ContainerEngine) PodUnpause(ctx context.Context, namesOrIds []string, 
 
 func (ic *ContainerEngine) PodStop(ctx context.Context, namesOrIds []string, opts entities.PodStopOptions) ([]*entities.PodStopReport, error) {
 	timeout := -1
-	foundPods, err := getPodsByContext(ic.ClientCtx, opts.All, namesOrIds)
-	if err != nil && !(opts.Ignore && errors.Is(err, define.ErrNoSuchPod)) {
+	foundPods, err := getPodsByContext(ic.ClientCtx, opts.All, opts.Ignore, namesOrIds)
+	if err != nil {
 		return nil, err
 	}
 	if opts.Timeout != -1 {
@@ -115,8 +115,9 @@ func (ic *ContainerEngine) PodStop(ctx context.Context, namesOrIds []string, opt
 		response, err := pods.Stop(ic.ClientCtx, p.Id, options)
 		if err != nil {
 			report := entities.PodStopReport{
-				Errs: []error{err},
-				Id:   p.Id,
+				Errs:     []error{err},
+				Id:       p.Id,
+				RawInput: p.Name,
 			}
 			reports = append(reports, &report)
 			continue
@@ -127,7 +128,7 @@ func (ic *ContainerEngine) PodStop(ctx context.Context, namesOrIds []string, opt
 }
 
 func (ic *ContainerEngine) PodRestart(ctx context.Context, namesOrIds []string, options entities.PodRestartOptions) ([]*entities.PodRestartReport, error) {
-	foundPods, err := getPodsByContext(ic.ClientCtx, options.All, namesOrIds)
+	foundPods, err := getPodsByContext(ic.ClientCtx, options.All, false, namesOrIds)
 	if err != nil {
 		return nil, err
 	}
@@ -148,7 +149,7 @@ func (ic *ContainerEngine) PodRestart(ctx context.Context, namesOrIds []string, 
 }
 
 func (ic *ContainerEngine) PodStart(ctx context.Context, namesOrIds []string, options entities.PodStartOptions) ([]*entities.PodStartReport, error) {
-	foundPods, err := getPodsByContext(ic.ClientCtx, options.All, namesOrIds)
+	foundPods, err := getPodsByContext(ic.ClientCtx, options.All, false, namesOrIds)
 	if err != nil {
 		return nil, err
 	}
@@ -157,8 +158,9 @@ func (ic *ContainerEngine) PodStart(ctx context.Context, namesOrIds []string, op
 		response, err := pods.Start(ic.ClientCtx, p.Id, nil)
 		if err != nil {
 			report := entities.PodStartReport{
-				Errs: []error{err},
-				Id:   p.Id,
+				Errs:     []error{err},
+				Id:       p.Id,
+				RawInput: p.Name,
 			}
 			reports = append(reports, &report)
 			continue
@@ -169,8 +171,8 @@ func (ic *ContainerEngine) PodStart(ctx context.Context, namesOrIds []string, op
 }
 
 func (ic *ContainerEngine) PodRm(ctx context.Context, namesOrIds []string, opts entities.PodRmOptions) ([]*entities.PodRmReport, error) {
-	foundPods, err := getPodsByContext(ic.ClientCtx, opts.All, namesOrIds)
-	if err != nil && !(opts.Ignore && errors.Is(err, define.ErrNoSuchPod)) {
+	foundPods, err := getPodsByContext(ic.ClientCtx, opts.All, opts.Ignore, namesOrIds)
+	if err != nil {
 		return nil, err
 	}
 	reports := make([]*entities.PodRmReport, 0, len(foundPods))

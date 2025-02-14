@@ -30,15 +30,22 @@ Print usage statement
 
 #### **--time**, **-t**=*seconds*
 
-Seconds to wait before forcibly stopping running containers that are using the specified volume. The --force option must be specified to use the --time option.
+Seconds to wait before forcibly stopping running containers that are using the specified volume. The --force option must be specified to use the --time option. Use -1 for infinite wait.
 
 ## EXAMPLES
 
+Remove multiple specified volumes.
 ```
 $ podman volume rm myvol1 myvol2
+```
 
+Remove all volumes.
+```
 $ podman volume rm --all
+```
 
+Remove the specified volume even if it is in use. Note, this removes all containers using the volume.
+```
 $ podman volume rm --force myvol
 ```
 

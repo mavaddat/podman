@@ -48,7 +48,7 @@ type namedHook struct {
 // those specified in the OCI Runtime Specification and to control
 // OCI-defined stages instead of delegating to the OCI runtime.  See
 // Hooks() for more information.
-func New(ctx context.Context, directories []string, extensionStages []string) (manager *Manager, err error) {
+func New(_ context.Context, directories []string, extensionStages []string) (manager *Manager, err error) {
 	manager = &Manager{
 		hooks:           map[string]*current.Hook{},
 		directories:     directories,
@@ -122,10 +122,8 @@ func (m *Manager) Hooks(config *rspec.Spec, annotations map[string]string, hasBi
 					switch stage {
 					case "createContainer":
 						config.Hooks.CreateContainer = append(config.Hooks.CreateContainer, namedHook.hook.Hook)
-					case "createRuntime":
+					case "createRuntime", "prestart":
 						config.Hooks.CreateRuntime = append(config.Hooks.CreateRuntime, namedHook.hook.Hook)
-					case "prestart":
-						config.Hooks.Prestart = append(config.Hooks.Prestart, namedHook.hook.Hook)
 					case "poststart":
 						config.Hooks.Poststart = append(config.Hooks.Poststart, namedHook.hook.Hook)
 					case "poststop":

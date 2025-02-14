@@ -1,3 +1,5 @@
+//go:build !remote
+
 package libpod
 
 import (
@@ -9,8 +11,8 @@ import (
 
 	"github.com/containers/common/libnetwork/types"
 	"github.com/containers/common/pkg/config"
-	"github.com/containers/podman/v4/libpod/define"
-	"github.com/containers/podman/v4/libpod/lock"
+	"github.com/containers/podman/v5/libpod/define"
+	"github.com/containers/podman/v5/libpod/lock"
 	"github.com/containers/storage"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -43,6 +45,10 @@ func getEmptyBoltState() (_ State, _ string, _ lock.Manager, retErr error) {
 			os.RemoveAll(tmpDir)
 		}
 	}()
+
+	if err := os.Setenv("CI_DESIRED_DATABASE", "boltdb"); err != nil {
+		return nil, "", nil, err
+	}
 
 	dbPath := filepath.Join(tmpDir, "db.sql")
 

@@ -12,11 +12,11 @@ import (
 
 	"github.com/containers/common/pkg/completion"
 	"github.com/containers/common/pkg/report"
-	"github.com/containers/podman/v4/cmd/podman/common"
-	"github.com/containers/podman/v4/cmd/podman/registry"
-	"github.com/containers/podman/v4/cmd/podman/utils"
-	"github.com/containers/podman/v4/cmd/podman/validate"
-	"github.com/containers/podman/v4/pkg/domain/entities"
+	"github.com/containers/podman/v5/cmd/podman/common"
+	"github.com/containers/podman/v5/cmd/podman/registry"
+	"github.com/containers/podman/v5/cmd/podman/utils"
+	"github.com/containers/podman/v5/cmd/podman/validate"
+	"github.com/containers/podman/v5/pkg/domain/entities"
 	"github.com/docker/go-units"
 	"github.com/spf13/cobra"
 )
@@ -81,11 +81,11 @@ func pods(cmd *cobra.Command, _ []string) error {
 	if cmd.Flag("filter").Changed {
 		psInput.Filters = make(map[string][]string)
 		for _, f := range inputFilters {
-			split := strings.SplitN(f, "=", 2)
-			if len(split) < 2 {
+			fname, filter, hasFilter := strings.Cut(f, "=")
+			if !hasFilter {
 				return fmt.Errorf("filter input must be in the form of filter=value: %s is invalid", f)
 			}
-			psInput.Filters[split[0]] = append(psInput.Filters[split[0]], split[1])
+			psInput.Filters[fname] = append(psInput.Filters[fname], filter)
 		}
 	}
 	responses, err := registry.ContainerEngine().PodPs(context.Background(), psInput)
@@ -197,6 +197,11 @@ func (l ListPodReporter) Created() string {
 // Labels returns a map of the pod's labels
 func (l ListPodReporter) Labels() map[string]string {
 	return l.ListPodsReport.Labels
+}
+
+// Label returns a map of the pod's labels
+func (l ListPodReporter) Label(name string) string {
+	return l.ListPodsReport.Labels[name]
 }
 
 // Networks returns the infra container network names in string format

@@ -1,9 +1,13 @@
 package define
 
 import (
+	"encoding/json"
+	"fmt"
+	"strings"
 	"time"
 
 	"github.com/containers/image/v5/manifest"
+	"github.com/containers/podman/v5/pkg/signal"
 )
 
 type InspectIDMappings struct {
@@ -44,7 +48,7 @@ type InspectContainerConfig struct {
 	// Container working directory
 	WorkingDir string `json:"WorkingDir"`
 	// Container entrypoint
-	Entrypoint string `json:"Entrypoint"`
+	Entrypoint []string `json:"Entrypoint"`
 	// On-build arguments - presently unused. More of Buildah's domain.
 	OnBuild *string `json:"OnBuild"`
 	// Container labels
@@ -52,11 +56,21 @@ type InspectContainerConfig struct {
 	// Container annotations
 	Annotations map[string]string `json:"Annotations"`
 	// Container stop signal
-	StopSignal uint `json:"StopSignal"`
+	StopSignal string `json:"StopSignal"`
+	// Configured startup healthcheck for the container
+	StartupHealthCheck *StartupHealthCheck `json:"StartupHealthCheck,omitempty"`
 	// Configured healthcheck for the container
 	Healthcheck *manifest.Schema2HealthConfig `json:"Healthcheck,omitempty"`
 	// HealthcheckOnFailureAction defines an action to take once the container turns unhealthy.
 	HealthcheckOnFailureAction string `json:"HealthcheckOnFailureAction,omitempty"`
+	// HealthLogDestination defines the destination where the log is stored
+	HealthLogDestination string `json:"HealthLogDestination,omitempty"`
+	// HealthMaxLogCount is maximum number of attempts in the HealthCheck log file.
+	// ('0' value means an infinite number of attempts in the log file)
+	HealthMaxLogCount uint `json:"HealthcheckMaxLogCount,omitempty"`
+	// HealthMaxLogSize is the maximum length in characters of stored HealthCheck log
+	// ("0" value means an infinite log length)
+	HealthMaxLogSize uint `json:"HealthcheckMaxLogSize,omitempty"`
 	// CreateCommand is the full command plus arguments of the process the
 	// container has been created with.
 	CreateCommand []string `json:"CreateCommand,omitempty"`
@@ -85,6 +99,79 @@ type InspectContainerConfig struct {
 	SdNotifyMode string `json:"sdNotifyMode,omitempty"`
 	// SdNotifySocket is the NOTIFY_SOCKET in use by/configured for the container.
 	SdNotifySocket string `json:"sdNotifySocket,omitempty"`
+	// ExposedPorts includes ports the container has exposed.
+	ExposedPorts map[string]struct{} `json:"ExposedPorts,omitempty"`
+
+	// V4PodmanCompatMarshal indicates that the json marshaller should
+	// use the old v4 inspect format to keep API compatibility.
+	V4PodmanCompatMarshal bool `json:"-"`
+}
+
+// UnmarshalJSON allow compatibility with podman V4 API
+func (insp *InspectContainerConfig) UnmarshalJSON(data []byte) error {
+	type Alias InspectContainerConfig
+	aux := &struct {
+		Entrypoint interface{} `json:"Entrypoint"`
+		StopSignal interface{} `json:"StopSignal"`
+		*Alias
+	}{
+		Alias: (*Alias)(insp),
+	}
+	if err := json.Unmarshal(data, &aux); err != nil {
+		return err
+	}
+
+	switch entrypoint := aux.Entrypoint.(type) {
+	case string:
+		insp.Entrypoint = strings.Split(entrypoint, " ")
+	case []string:
+		insp.Entrypoint = entrypoint
+	case []interface{}:
+		insp.Entrypoint = []string{}
+		for _, entry := range entrypoint {
+			if str, ok := entry.(string); ok {
+				insp.Entrypoint = append(insp.Entrypoint, str)
+			}
+		}
+	case nil:
+		insp.Entrypoint = []string{}
+	default:
+		return fmt.Errorf("cannot unmarshal Config.Entrypoint of type  %T", entrypoint)
+	}
+
+	switch stopsignal := aux.StopSignal.(type) {
+	case string:
+		insp.StopSignal = stopsignal
+	case float64:
+		insp.StopSignal = signal.ToDockerFormat(uint(stopsignal))
+	case nil:
+		break
+	default:
+		return fmt.Errorf("cannot unmarshal Config.StopSignal of type  %T", stopsignal)
+	}
+	return nil
+}
+
+func (insp *InspectContainerConfig) MarshalJSON() ([]byte, error) {
+	// the alias is needed otherwise MarshalJSON will
+	type Alias InspectContainerConfig
+	conf := (*Alias)(insp)
+	if !insp.V4PodmanCompatMarshal {
+		return json.Marshal(conf)
+	}
+
+	type v4InspectContainerConfig struct {
+		Entrypoint string `json:"Entrypoint"`
+		StopSignal uint   `json:"StopSignal"`
+		*Alias
+	}
+	stopSignal, _ := signal.ParseSignal(insp.StopSignal)
+	newConf := &v4InspectContainerConfig{
+		Entrypoint: strings.Join(insp.Entrypoint, " "),
+		StopSignal: uint(stopSignal),
+		Alias:      conf,
+	}
+	return json.Marshal(newConf)
 }
 
 // InspectRestartPolicy holds information about the container's restart policy.
@@ -198,6 +285,9 @@ type InspectMount struct {
 	// Mount propagation for the mount. Can be empty if not specified, but
 	// is always printed - no omitempty.
 	Propagation string `json:"Propagation"`
+	// SubPath object from the volume. Specified as a path within
+	// the source volume to be mounted at the Destination.
+	SubPath string `json:"SubPath,omitempty"`
 }
 
 // InspectContainerState provides a detailed record of a container's current
@@ -206,33 +296,34 @@ type InspectMount struct {
 // Docker, but here we see more fields that are unused (nonsensical in the
 // context of Libpod).
 type InspectContainerState struct {
-	OciVersion     string             `json:"OciVersion"`
-	Status         string             `json:"Status"`
-	Running        bool               `json:"Running"`
-	Paused         bool               `json:"Paused"`
-	Restarting     bool               `json:"Restarting"` // TODO
-	OOMKilled      bool               `json:"OOMKilled"`
-	Dead           bool               `json:"Dead"`
-	Pid            int                `json:"Pid"`
-	ConmonPid      int                `json:"ConmonPid,omitempty"`
-	ExitCode       int32              `json:"ExitCode"`
-	Error          string             `json:"Error"` // TODO
-	StartedAt      time.Time          `json:"StartedAt"`
-	FinishedAt     time.Time          `json:"FinishedAt"`
-	Health         HealthCheckResults `json:"Health,omitempty"`
-	Checkpointed   bool               `json:"Checkpointed,omitempty"`
-	CgroupPath     string             `json:"CgroupPath,omitempty"`
-	CheckpointedAt time.Time          `json:"CheckpointedAt,omitempty"`
-	RestoredAt     time.Time          `json:"RestoredAt,omitempty"`
-	CheckpointLog  string             `json:"CheckpointLog,omitempty"`
-	CheckpointPath string             `json:"CheckpointPath,omitempty"`
-	RestoreLog     string             `json:"RestoreLog,omitempty"`
-	Restored       bool               `json:"Restored,omitempty"`
+	OciVersion     string              `json:"OciVersion"`
+	Status         string              `json:"Status"`
+	Running        bool                `json:"Running"`
+	Paused         bool                `json:"Paused"`
+	Restarting     bool                `json:"Restarting"` // TODO
+	OOMKilled      bool                `json:"OOMKilled"`
+	Dead           bool                `json:"Dead"`
+	Pid            int                 `json:"Pid"`
+	ConmonPid      int                 `json:"ConmonPid,omitempty"`
+	ExitCode       int32               `json:"ExitCode"`
+	Error          string              `json:"Error"` // TODO
+	StartedAt      time.Time           `json:"StartedAt"`
+	FinishedAt     time.Time           `json:"FinishedAt"`
+	Health         *HealthCheckResults `json:"Health,omitempty"`
+	Checkpointed   bool                `json:"Checkpointed,omitempty"`
+	CgroupPath     string              `json:"CgroupPath,omitempty"`
+	CheckpointedAt time.Time           `json:"CheckpointedAt,omitempty"`
+	RestoredAt     time.Time           `json:"RestoredAt,omitempty"`
+	CheckpointLog  string              `json:"CheckpointLog,omitempty"`
+	CheckpointPath string              `json:"CheckpointPath,omitempty"`
+	RestoreLog     string              `json:"RestoreLog,omitempty"`
+	Restored       bool                `json:"Restored,omitempty"`
+	StoppedByUser  bool                `json:"StoppedByUser,omitempty"`
 }
 
 // Healthcheck returns the HealthCheckResults. This is used for old podman compat
 // to make the "Healthcheck" key available in the go template.
-func (s *InspectContainerState) Healthcheck() HealthCheckResults {
+func (s *InspectContainerState) Healthcheck() *HealthCheckResults {
 	return s.Health
 }
 
@@ -314,6 +405,14 @@ type InspectContainerHostConfig struct {
 	// It is not handled directly within libpod and is stored in an
 	// annotation.
 	AutoRemove bool `json:"AutoRemove"`
+	// AutoRemoveImage is whether the container's image will be
+	// automatically removed on exiting.
+	// It is not handled directly within libpod and is stored in an
+	// annotation.
+	AutoRemoveImage bool `json:"AutoRemoveImage"`
+	// Annotations are provided to the runtime when the container is
+	// started.
+	Annotations map[string]string `json:"Annotations"`
 	// VolumeDriver is presently unused and is retained for Docker
 	// compatibility.
 	VolumeDriver string `json:"VolumeDriver"`
@@ -344,6 +443,8 @@ type InspectContainerHostConfig struct {
 	// ExtraHosts contains hosts that will be added to the container's
 	// /etc/hosts.
 	ExtraHosts []string `json:"ExtraHosts"`
+	// HostsFile is the base file to create the `/etc/hosts` file inside the container.
+	HostsFile string `json:"HostsFile"`
 	// GroupAdd contains groups that the user inside the container will be
 	// added to.
 	GroupAdd []string `json:"GroupAdd"`
@@ -566,6 +667,9 @@ type InspectContainerHostConfig struct {
 	IOMaximumBandwidth uint64 `json:"IOMaximumBandwidth"`
 	// CgroupConf is the configuration for cgroup v2.
 	CgroupConf map[string]string `json:"CgroupConf"`
+	// IntelRdtClosID defines the Intel RDT CAT Class Of Service (COS) that
+	// all processes of the container should run in.
+	IntelRdtClosID string `json:"IntelRdtClosID,omitempty"`
 }
 
 // Address represents an IP address.
@@ -694,6 +798,8 @@ type InspectContainerData struct {
 	LockNumber              uint32                      `json:"lockNumber"`
 	Config                  *InspectContainerConfig     `json:"Config"`
 	HostConfig              *InspectContainerHostConfig `json:"HostConfig"`
+	UseImageHosts           bool                        `json:"UseImageHosts"`
+	UseImageHostname        bool                        `json:"UseImageHostname"`
 }
 
 // InspectExecSession contains information about a given exec session.

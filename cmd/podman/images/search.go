@@ -10,10 +10,10 @@ import (
 	"github.com/containers/common/pkg/completion"
 	"github.com/containers/common/pkg/report"
 	"github.com/containers/image/v5/types"
-	"github.com/containers/podman/v4/cmd/podman/common"
-	"github.com/containers/podman/v4/cmd/podman/registry"
-	"github.com/containers/podman/v4/pkg/domain/entities"
-	"github.com/containers/podman/v4/pkg/util"
+	"github.com/containers/podman/v5/cmd/podman/common"
+	"github.com/containers/podman/v5/cmd/podman/registry"
+	"github.com/containers/podman/v5/pkg/domain/entities"
+	"github.com/containers/podman/v5/pkg/util"
 	"github.com/spf13/cobra"
 )
 
@@ -138,8 +138,8 @@ func imageSearch(cmd *cobra.Command, args []string) error {
 		searchOptions.SkipTLSVerify = types.NewOptionalBool(!searchOptions.TLSVerifyCLI)
 	}
 
-	if searchOptions.Authfile != "" {
-		if _, err := os.Stat(searchOptions.Authfile); err != nil {
+	if cmd.Flags().Changed("authfile") {
+		if err := auth.CheckAuthFile(searchOptions.Authfile); err != nil {
 			return err
 		}
 	}
@@ -153,7 +153,7 @@ func imageSearch(cmd *cobra.Command, args []string) error {
 		searchOptions.Password = creds.Password
 	}
 
-	searchReport, err := registry.ImageEngine().Search(registry.GetContext(), searchTerm, searchOptions.ImageSearchOptions)
+	searchReport, err := registry.ImageEngine().Search(registry.Context(), searchTerm, searchOptions.ImageSearchOptions)
 	if err != nil {
 		return err
 	}
@@ -182,7 +182,11 @@ func imageSearch(cmd *cobra.Command, args []string) error {
 			listTagsEntries := buildListTagsJSON(searchReport)
 			return printArbitraryJSON(listTagsEntries)
 		}
-		rpt, err = rpt.Parse(report.OriginPodman, "{{range .}}{{.Name}}\t{{.Tag}}\n{{end -}}")
+		if cmd.Flags().Changed("format") {
+			rpt, err = rpt.Parse(report.OriginUser, searchOptions.Format)
+		} else {
+			rpt, err = rpt.Parse(report.OriginPodman, "{{range .}}{{.Name}}\t{{.Tag}}\n{{end -}}")
+		}
 	case isJSON:
 		return printArbitraryJSON(searchReport)
 	case cmd.Flags().Changed("format"):

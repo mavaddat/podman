@@ -3,14 +3,11 @@ package images
 import (
 	"errors"
 	"fmt"
-	"strings"
 
-	"github.com/containers/podman/v4/cmd/podman/common"
-	"github.com/containers/podman/v4/cmd/podman/registry"
-	"github.com/containers/podman/v4/cmd/podman/utils"
-	"github.com/containers/podman/v4/pkg/domain/entities"
-	"github.com/containers/podman/v4/pkg/errorhandling"
-	"github.com/containers/storage/types"
+	"github.com/containers/podman/v5/cmd/podman/common"
+	"github.com/containers/podman/v5/cmd/podman/registry"
+	"github.com/containers/podman/v5/pkg/domain/entities"
+	"github.com/containers/podman/v5/pkg/errorhandling"
 	"github.com/spf13/cobra"
 	"github.com/spf13/pflag"
 )
@@ -72,9 +69,13 @@ func rm(cmd *cobra.Command, args []string) error {
 		return errors.New("when using the --all switch, you may not pass any images names or IDs")
 	}
 
+	if imageOpts.Force {
+		imageOpts.Ignore = true
+	}
+
 	// Note: certain image-removal errors are non-fatal.  Hence, the report
 	// might be set even if err != nil.
-	report, rmErrors := registry.ImageEngine().Remove(registry.GetContext(), args, imageOpts)
+	report, rmErrors := registry.ImageEngine().Remove(registry.Context(), args, imageOpts)
 	if report != nil {
 		for _, u := range report.Untagged {
 			fmt.Println("Untagged: " + u)
@@ -85,19 +86,10 @@ func rm(cmd *cobra.Command, args []string) error {
 				fmt.Println("Deleted: " + d)
 			}
 		}
-		for _, err := range rmErrors {
-			if !imageOpts.Force || !strings.Contains(err.Error(), types.ErrImageUnknown.Error()) {
-				registry.SetExitCode(report.ExitCode)
-			}
-		}
+	}
+	if len(rmErrors) > 0 {
+		registry.SetExitCode(report.ExitCode)
 	}
 
-	var errs utils.OutputErrors
-	for _, err := range rmErrors {
-		if imageOpts.Force && strings.Contains(err.Error(), types.ErrImageUnknown.Error()) {
-			continue
-		}
-		errs = append(errs, err)
-	}
-	return errorhandling.JoinErrors(errs)
+	return errorhandling.JoinErrors(rmErrors)
 }

@@ -7,20 +7,28 @@ podman\-system\-prune - Remove all unused pods, containers, images, networks, an
 **podman system prune** [*options*]
 
 ## DESCRIPTION
-**podman system prune** removes all unused containers (both dangling and unreferenced), pods, networks, and optionally, volumes from local storage.
+**podman system prune** removes all unused containers (both dangling and unreferenced), build containers, pods, networks, and optionally, volumes from local storage.
 
 Use the **--all** option to delete all unused images.  Unused images are dangling images as well as any image that does not have any containers based on it.
 
 By default, volumes are not removed to prevent important data from being deleted if there is currently no container using the volume. Use the **--volumes** flag when running the command to prune volumes as well.
+
+By default, build containers are not removed to prevent interference with builds in progress. Use the **--build** flag when running the command to remove build containers as well.
 
 ## OPTIONS
 #### **--all**, **-a**
 
 Recursively remove all unused pods, containers, images, networks, and volume data. (Maximum 50 iterations.)
 
+#### **--build**
+
+Removes any build containers that were created during the build, but were not removed because the build was unexpectedly terminated.
+
+Note: **This is not safe operation and should be executed only when no builds are in progress. It can interfere with builds in progress.**
+
 #### **--external**
 
-Removes all leftover container storage files from local storage not managed by Podman. In normal circumstances, no such data exists, but in case of an unclean shutdown, the Podman database may be corrupted and cause this.
+Tries to clean up remainders of previous containers or layers that are not references in the storage json files. These can happen in the case of unclean shutdowns or regular restarts in transient storage mode.
 
 However, when using transient storage mode, the Podman database does not persist. This means containers leave the writable layers on disk after a reboot. When using a transient store, it is recommended that the **podman system prune --external** command is run during boot.
 
@@ -34,10 +42,10 @@ The *filters* argument format is of `key=value`. If there is more than one *filt
 
 Supported filters:
 
-| Filter             | Description                                                                 |
-| :----------------: | --------------------------------------------------------------------------- |
-| *label*            | Only remove containers and images, with (or without, in the case of label!=[...] is used) the specified labels.                  |
-| *until*            | Only remove containers and images created before given timestamp.           |
+| Filter | Description                                                                                                     |
+|:------:|-----------------------------------------------------------------------------------------------------------------|
+| label  | Only remove containers and images, with (or without, in the case of label!=[...] is used) the specified labels. |
+| until  | Only remove containers and images created before given timestamp.                                               |
 
 The `label` *filter* accepts two formats. One is the `label`=*key* or `label`=*key*=*value*, which removes containers and images with the specified labels. The other format is the `label!`=*key* or `label!`=*key*=*value*, which removes containers and images without the specified labels.
 

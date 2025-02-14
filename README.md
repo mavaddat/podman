@@ -11,11 +11,10 @@ Podman (the POD MANager) is a tool for managing containers and images, volumes m
 Podman runs containers on Linux, but can also be used on Mac and Windows systems using a Podman-managed virtual machine.
 Podman is based on libpod, a library for container lifecycle management that is also contained in this repository. The libpod library provides APIs for managing containers, pods, container images, and volumes.
 
-
-All releases are GPG signed. Public keys of members of the team approved to make releases are located [here](https://github.com/containers/release-keys/tree/main/podman).
+Podman releases a new major or minor release 4 times a year, during the second week of February, May, August, and November. Patch releases are more frequent and may occur at any time to get bugfixes out to users. All releases are PGP signed. Public keys of members of the team approved to make releases are located [here](https://github.com/containers/release-keys/tree/main/podman).
 
 * Continuous Integration:
-  * [![Build Status](https://api.cirrus-ci.com/github/containers/podman.svg)](https://cirrus-ci.com/github/containers/podman/master)
+  * [![Build Status](https://api.cirrus-ci.com/github/containers/podman.svg)](https://cirrus-ci.com/github/containers/podman/main)
   * [GoDoc: ![GoDoc](https://godoc.org/github.com/containers/podman/libpod?status.svg)](https://godoc.org/github.com/containers/podman/libpod)
   * [Downloads](DOWNLOADS.md)
 
@@ -37,9 +36,7 @@ At a high level, the scope of Podman and libpod is the following:
 
 ## Roadmap
 
-1. A fully-featured GUI frontend for `podman machine`
-1. Further improvements to `podman generate kube` and `podman play kube`
-1. Improvements to Pods, including the addition of pod-level resource limits
+The future of Podman feature development can be found in its **[roadmap](ROADMAP.md)**.
 
 ## Communications
 
@@ -72,7 +69,10 @@ A little configuration by an administrator is required before rootless Podman ca
 
 ## Podman Desktop
 
-[Podman Desktop](https://podman-desktop.io/) is a new project under the container organization built to help the developers working with containers from their local environment with a desktop UI. Podman Desktop is still in its early days, but already provides capabilities to list your images, interact with containers (access logs, get a terminal), connect to registries (pull private images, push your images) and configure podman settings (proxies). The project develops on [Github](https://github.com/containers/podman-desktop) and contributors are welcome.
+[Podman Desktop](https://podman-desktop.io/) provides a local development environment for Podman and Kubernetes on Linux, Windows, and Mac machines.
+It is a full-featured desktop UI frontend for Podman which uses the `podman machine` backend on non-Linux operating systems to run containers.
+It supports full container lifecycle management (building, pulling, and pushing images, creating and managing containers, creating and managing pods, and working with Kubernetes YAML).
+The project develops on [GitHub](https://github.com/containers/podman-desktop) and contributions are welcome.
 
 ## Out of scope
 
@@ -87,7 +87,7 @@ Podman uses OCI projects and best of breed libraries for different aspects:
 - Runtime: We use the [OCI runtime tools](https://github.com/opencontainers/runtime-tools) to generate OCI runtime configurations that can be used with any OCI-compliant runtime, like [crun](https://github.com/containers/crun/) and [runc](https://github.com/opencontainers/runc/).
 - Images: Image management uses the [containers/image](https://github.com/containers/image) library.
 - Storage: Container and image storage is managed by [containers/storage](https://github.com/containers/storage).
-- Networking: Networking support through use of [Netavark](https://github.com/containers/netavark) and [Aardvark](https://github.com/containers/aardvark-dns).  Rootless networking is handled via [slirp4netns](https://github.com/rootless-containers/slirp4netns).
+- Networking: Networking support through use of [Netavark](https://github.com/containers/netavark) and [Aardvark](https://github.com/containers/aardvark-dns).  Rootless networking is handled via [pasta](https://passt.top/passt) or [slirp4netns](https://github.com/rootless-containers/slirp4netns).
 - Builds: Builds are supported via [Buildah](https://github.com/containers/buildah).
 - Conmon: [Conmon](https://github.com/containers/conmon) is a tool for monitoring OCI runtimes, used by both Podman and CRI-O.
 - Seccomp: A unified [Seccomp](https://github.com/containers/common/blob/main/pkg/seccomp/seccomp.json) policy for Podman, Buildah, and CRI-O.
@@ -99,7 +99,7 @@ For blogs, release announcements and more, please checkout the [podman.io](https
 **[Installation notes](install.md)**
 Information on how to install Podman in your environment.
 
-**[OCI Hooks Support](pkg/hooks/README.md)**
+**[OCI Hooks Support](https://github.com/containers/common/blob/main/pkg/hooks/README.md)**
 Information on how Podman configures [OCI Hooks][spec-hooks] to run when launching a container.
 
 **[Podman API](https://docs.podman.io/en/latest/_static/api.html)**
@@ -108,6 +108,9 @@ Documentation on the Podman REST API.
 **[Podman Commands](https://podman.readthedocs.io/en/latest/Commands.html)**
 A list of the Podman commands with links to their man pages and in many cases videos
 showing the commands in use.
+
+**[Podman Container Images](https://github.com/containers/image_build/blob/main/podman/README.md)**
+Information on the Podman Container Images found on [quay.io](https://quay.io/podman/stable).
 
 **[Podman Troubleshooting Guide](troubleshooting.md)**
 A list of common issues and solutions for Podman.
@@ -171,7 +174,7 @@ you to manage and maintain those images and containers in a production environme
 familiar container cli commands.  For more details, see the
 [Container Tools Guide](https://github.com/containers/buildah/tree/main/docs/containertools).
 
-## [Podman Hello](https://podman.io/images/podman-hello.jpg)
+## Podman Hello
 ```
 $ podman run quay.io/podman/hello
 Trying to pull quay.io/podman/hello:latest...
@@ -197,8 +200,3 @@ Website:   https://podman.io
 Documents: https://docs.podman.io
 Twitter:   @Podman_io
 ```
-
-## Podman Former API (Varlink)
-Podman formerly offered a Varlink-based API for remote management of containers. However, this API
-was replaced by the REST API. Varlink support has been removed as of the 3.0 release.
-For more details, you can see [this blog](https://podman.io/blogs/2020/01/17/podman-new-api.html).

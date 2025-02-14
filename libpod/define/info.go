@@ -1,6 +1,7 @@
 package define
 
 import (
+	"github.com/containers/common/libnetwork/types"
 	"github.com/containers/storage/pkg/idtools"
 )
 
@@ -27,30 +28,33 @@ type SecurityInfo struct {
 
 // HostInfo describes the libpod host
 type HostInfo struct {
-	Arch              string           `json:"arch"`
-	BuildahVersion    string           `json:"buildahVersion"`
-	CgroupManager     string           `json:"cgroupManager"`
-	CgroupsVersion    string           `json:"cgroupVersion"`
-	CgroupControllers []string         `json:"cgroupControllers"`
-	Conmon            *ConmonInfo      `json:"conmon"`
-	CPUs              int              `json:"cpus"`
-	CPUUtilization    *CPUUsage        `json:"cpuUtilization"`
-	DatabaseBackend   string           `json:"databaseBackend"`
-	Distribution      DistributionInfo `json:"distribution"`
-	EventLogger       string           `json:"eventLogger"`
-	FreeLocks         *uint32          `json:"freeLocks,omitempty"`
-	Hostname          string           `json:"hostname"`
-	IDMappings        IDMappings       `json:"idMappings,omitempty"`
-	Kernel            string           `json:"kernel"`
-	LogDriver         string           `json:"logDriver"`
-	MemFree           int64            `json:"memFree"`
-	MemTotal          int64            `json:"memTotal"`
-	NetworkBackend    string           `json:"networkBackend"`
-	OCIRuntime        *OCIRuntimeInfo  `json:"ociRuntime"`
-	OS                string           `json:"os"`
+	Arch               string            `json:"arch"`
+	BuildahVersion     string            `json:"buildahVersion"`
+	CgroupManager      string            `json:"cgroupManager"`
+	CgroupsVersion     string            `json:"cgroupVersion"`
+	CgroupControllers  []string          `json:"cgroupControllers"`
+	Conmon             *ConmonInfo       `json:"conmon"`
+	CPUs               int               `json:"cpus"`
+	CPUUtilization     *CPUUsage         `json:"cpuUtilization"`
+	DatabaseBackend    string            `json:"databaseBackend"`
+	Distribution       DistributionInfo  `json:"distribution"`
+	EventLogger        string            `json:"eventLogger"`
+	FreeLocks          *uint32           `json:"freeLocks,omitempty"`
+	Hostname           string            `json:"hostname"`
+	IDMappings         IDMappings        `json:"idMappings,omitempty"`
+	Kernel             string            `json:"kernel"`
+	LogDriver          string            `json:"logDriver"`
+	MemFree            int64             `json:"memFree"`
+	MemTotal           int64             `json:"memTotal"`
+	NetworkBackend     string            `json:"networkBackend"`
+	NetworkBackendInfo types.NetworkInfo `json:"networkBackendInfo"`
+	OCIRuntime         *OCIRuntimeInfo   `json:"ociRuntime"`
+	OS                 string            `json:"os"`
 	// RemoteSocket returns the UNIX domain socket the Podman service is listening on
-	RemoteSocket *RemoteSocket          `json:"remoteSocket,omitempty"`
-	RuntimeInfo  map[string]interface{} `json:"runtimeInfo,omitempty"`
+	RemoteSocket *RemoteSocket `json:"remoteSocket,omitempty"`
+	// RootlessNetworkCmd returns the default rootless network command (slirp4netns or pasta)
+	RootlessNetworkCmd string                 `json:"rootlessNetworkCmd"`
+	RuntimeInfo        map[string]interface{} `json:"runtimeInfo,omitempty"`
 	// ServiceIsRemote is true when the podman/libpod service is remote to the client
 	ServiceIsRemote bool         `json:"serviceIsRemote"`
 	Security        SecurityInfo `json:"security"`
@@ -60,13 +64,14 @@ type HostInfo struct {
 	SwapFree  int64  `json:"swapFree"`
 	SwapTotal int64  `json:"swapTotal"`
 	Uptime    string `json:"uptime"`
+	Variant   string `json:"variant"`
 	Linkmode  string `json:"linkmode"`
 }
 
 // RemoteSocket describes information about the API socket
 type RemoteSocket struct {
 	Path   string `json:"path,omitempty"`
-	Exists bool   `json:"exists,omitempty"`
+	Exists bool   `json:"exists"`
 }
 
 // SlirpInfo describes the slirp executable that is being used

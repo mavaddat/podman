@@ -1,19 +1,23 @@
+//go:build !remote
+
 package abi
 
 import (
 	"context"
 	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
 
 	"github.com/containers/common/libimage"
 	"github.com/containers/common/pkg/config"
-	"github.com/containers/podman/v4/libpod/define"
-	"github.com/containers/podman/v4/pkg/domain/entities"
-	envLib "github.com/containers/podman/v4/pkg/env"
-	"github.com/containers/podman/v4/utils"
+	"github.com/containers/podman/v5/libpod/define"
+	"github.com/containers/podman/v5/pkg/domain/entities"
+	envLib "github.com/containers/podman/v5/pkg/env"
+	"github.com/containers/podman/v5/utils"
+	"github.com/containers/storage/pkg/fileutils"
 	"github.com/google/shlex"
 	"github.com/sirupsen/logrus"
 )
@@ -135,7 +139,7 @@ func generateRunlabelCommand(runlabel string, img *libimage.Image, inputName str
 		name = splitImageName[len(splitImageName)-1]
 		// make sure to remove the tag from the image name, otherwise the name cannot
 		// be used as container name because a colon is an illegal character
-		name = strings.SplitN(name, ":", 2)[0]
+		name, _, _ = strings.Cut(name, ":")
 	}
 
 	// Append the user-specified arguments to the runlabel (command).
@@ -171,6 +175,13 @@ func generateRunlabelCommand(runlabel string, img *libimage.Image, inputName str
 				return ""
 			}
 			return d
+		case "HOME":
+			h, err := os.UserHomeDir()
+			if err != nil {
+				logrus.Warnf("Unable to determine user's home directory: %s", err)
+				return ""
+			}
+			return h
 		}
 		return ""
 	}
@@ -276,7 +287,7 @@ func substituteCommand(cmd string) (string, error) {
 		if err != nil {
 			return "", err
 		}
-		if _, err := os.Stat(res); !os.IsNotExist(err) {
+		if err := fileutils.Exists(res); !errors.Is(err, fs.ErrNotExist) {
 			return res, nil
 		} else if err != nil {
 			return "", err

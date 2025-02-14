@@ -15,9 +15,9 @@ import (
 	"strconv"
 	"time"
 
-	"github.com/containers/common/pkg/util"
-	"github.com/containers/podman/v4/libpod/define"
-	"github.com/containers/podman/v4/pkg/bindings"
+	"github.com/containers/common/pkg/detach"
+	"github.com/containers/podman/v5/libpod/define"
+	"github.com/containers/podman/v5/pkg/bindings"
 	"github.com/moby/term"
 	"github.com/sirupsen/logrus"
 	terminal "golang.org/x/term"
@@ -29,7 +29,13 @@ type CloseWriter interface {
 	CloseWrite() error
 }
 
-// Attach attaches to a running container
+// Attach attaches to a running container.
+//
+// NOTE: When stdin is provided, this function currently leaks a goroutine reading from that stream
+// even if the ctx is cancelled. The goroutine will only exit if the input stream is closed. For example,
+// if stdin is `os.Stdin` attached to a tty, the goroutine will consume a chunk of user input from the
+// terminal even after the container has exited. In this scenario the os.Stdin stream will not be expected
+// to be closed.
 func Attach(ctx context.Context, nameOrID string, stdin io.Reader, stdout io.Writer, stderr io.Writer, attachReady chan bool, options *AttachOptions) error {
 	if options == nil {
 		options = new(AttachOptions)
@@ -159,7 +165,7 @@ func Attach(ctx context.Context, nameOrID string, stdin io.Reader, stdout io.Wri
 		go func() {
 			logrus.Debugf("Copying STDIN to socket")
 
-			_, err := util.CopyDetachable(socket, stdin, detachKeysInBytes)
+			_, err := detach.Copy(socket, stdin, detachKeysInBytes)
 			if err != nil && err != define.ErrDetach {
 				logrus.Errorf("Failed to write input to service: %v", err)
 			}
@@ -296,11 +302,11 @@ func ResizeContainerTTY(ctx context.Context, nameOrID string, options *ResizeTTY
 }
 
 // ResizeExecTTY sets session's TTY height and width in characters
-func ResizeExecTTY(ctx context.Context, nameOrID string, options *ResizeExecTTYOptions) error {
+func ResizeExecTTY(ctx context.Context, sessionID string, options *ResizeExecTTYOptions) error {
 	if options == nil {
 		options = new(ResizeExecTTYOptions)
 	}
-	return resizeTTY(ctx, bindings.JoinURL("exec", nameOrID, "resize"), options.Height, options.Width)
+	return resizeTTY(ctx, bindings.JoinURL("exec", sessionID, "resize"), options.Height, options.Width)
 }
 
 // resizeTTY set size of TTY of container
@@ -497,7 +503,7 @@ func ExecStartAndAttach(ctx context.Context, sessionID string, options *ExecStar
 	if options.GetAttachInput() {
 		go func() {
 			logrus.Debugf("Copying STDIN to socket")
-			_, err := util.CopyDetachable(socket, options.InputStream, []byte{})
+			_, err := detach.Copy(socket, options.InputStream, []byte{})
 			if err != nil {
 				logrus.Errorf("Failed to write input to service: %v", err)
 			}
@@ -518,7 +524,7 @@ func ExecStartAndAttach(ctx context.Context, sessionID string, options *ExecStar
 			return fmt.Errorf("exec session %s has a terminal and must have STDOUT enabled", sessionID)
 		}
 		// If not multiplex'ed, read from server and write to stdout
-		_, err := util.CopyDetachable(options.GetOutputStream(), socket, []byte{})
+		_, err := detach.Copy(options.GetOutputStream(), socket, []byte{})
 		if err != nil {
 			return err
 		}

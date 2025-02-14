@@ -1,5 +1,4 @@
-//go:build linux || freebsd
-// +build linux freebsd
+//go:build !remote && (linux || freebsd)
 
 package libpod
 
@@ -11,8 +10,8 @@ import (
 	"strings"
 
 	"github.com/containers/buildah/copier"
-	"github.com/containers/podman/v4/libpod/define"
-	"github.com/containers/podman/v4/pkg/copy"
+	"github.com/containers/podman/v5/libpod/define"
+	"github.com/containers/podman/v5/pkg/copy"
 )
 
 // statOnHost stats the specified path *on the host*.  It returns the file info
@@ -22,7 +21,7 @@ import (
 func (c *Container) statOnHost(mountPoint string, containerPath string) (*copier.StatForItem, string, string, error) {
 	// Now resolve the container's path.  It may hit a volume, it may hit a
 	// bind mount, it may be relative.
-	resolvedRoot, resolvedPath, err := c.resolvePath(mountPoint, containerPath)
+	resolvedRoot, resolvedPath, _, err := c.resolvePath(mountPoint, containerPath)
 	if err != nil {
 		return nil, "", "", err
 	}

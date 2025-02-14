@@ -47,6 +47,7 @@ The *container* event type reports the follow statuses:
  * sync
  * unmount
  * unpause
+ * update
 
 The *pod* event type reports the follow statuses:
  * create
@@ -61,6 +62,7 @@ The *image* event type reports the following statuses:
  * loadFromArchive,
  * mount
  * pull
+ * pull-error
  * push
  * remove
  * save
@@ -87,13 +89,16 @@ Setting `events_container_create_inspect_data=true` in containers.conf(5) instru
 
 Filter events that are displayed.  They must be in the format of "filter=value".  The following
 filters are supported:
- * container=name_or_id
- * event=event_status (described above)
- * image=name_or_id
- * label=key=value
- * pod=name_or_id
- * volume=name_or_id
- * type=event_type (described above)
+
+| **Filter** | **Description**                     |
+|------------|-------------------------------------|
+| container  | [Name or ID] Container's name or ID |
+| event      | event_status (described above)      |
+| image      | [Name or ID] Image name or ID       |
+| label      | [key=value] label                   |
+| pod        | [Name or ID] Pod name or ID         |
+| volume     | [Name or ID] Volume name or ID      |
+| type       | Event_type (described above)        |
 
 In the case where an ID is used, the ID may be in its full or shortened form.  The "die" event is mapped to "died" for Docker compatibility.
 
@@ -101,20 +106,22 @@ In the case where an ID is used, the ID may be in its full or shortened form.  T
 
 Format the output to JSON Lines or using the given Go template.
 
-| **Placeholder**       | **Description**                               |
-|-----------------------|-----------------------------------------------|
-| .Attributes           | created_at, _by, labels, and more (map[])     |
-| .ContainerExitCode    | Exit code (int)                               |
-| .ContainerInspectData | Payload of the container's inspect            |
-| .HealthStatus         | Health Status (string)                        |
-| .ID                   | Container ID (full 64-bit SHA)                |
-| .Image                | Name of image being run (string)              |
-| .Name                 | Container name (string)                       |
-| .Network              | Name of network being used (string)           |
-| .PodID                | ID of pod associated with container, if any   |
-| .Status               | Event status (e.g., create, start, died, ...) |
-| .Time                 | Event timestamp (string)                      |
-| .Type                 | Event type (e.g., image, container, pod, ...) |
+| **Placeholder**       | **Description**                                                      |
+| --------------------- | -------------------------------------------------------------------- |
+| .Attributes ...       | created_at, _by, labels, and more (map[])                            |
+| .ContainerExitCode    | Exit code (int)                                                      |
+| .ContainerInspectData | Payload of the container's inspect                                   |
+| .Error                | Error message in case the event status is an error (e.g. pull-error) |
+| .HealthStatus         | Health Status (string)                                               |
+| .ID                   | Container ID (full 64-bit SHA)                                       |
+| .Image                | Name of image being run (string)                                     |
+| .Name                 | Container name (string)                                              |
+| .Network              | Name of network being used (string)                                  |
+| .PodID                | ID of pod associated with container, if any                          |
+| .Status               | Event status (e.g., create, start, died, ...)                        |
+| .Time                 | Event timestamp (string)                                             |
+| .TimeNano             | Event timestamp with nanosecond precision (int64)                    |
+| .Type                 | Event type (e.g., image, container, pod, ...)                        |
 
 #### **--help**
 
@@ -160,7 +167,7 @@ The journald events-backend of Podman uses the following journald identifiers.  
 
 ## EXAMPLES
 
-Showing Podman events
+Show Podman events:
 ```
 $ podman events
 2019-03-02 10:33:42.312377447 -0600 CST container create 34503c192940 (image=docker.io/library/alpine:latest, name=friendly_allen)
@@ -170,7 +177,7 @@ $ podman events
 2019-03-02 10:33:51.047104966 -0600 CST container cleanup 34503c192940 (image=docker.io/library/alpine:latest, name=friendly_allen)
 ```
 
-Show only Podman create events
+Show only Podman container create events:
 ```
 $ podman events -f event=create
 2019-03-02 10:36:01.375685062 -0600 CST container create 20dc581f6fbf (image=docker.io/library/alpine:latest, name=sharp_morse)
@@ -179,7 +186,7 @@ $ podman events -f event=create
 2019-03-02 10:36:29.978806894 -0600 CST container create d81e30f1310f (image=docker.io/library/busybox:latest, name=musing_newton)
 ```
 
-Show only Podman pod create events
+Show only Podman pod create events:
 ```
 $ podman events --filter event=create --filter type=pod
 2019-03-02 10:44:29.601746633 -0600 CST pod create 1df5ebca7b44 (image=, name=confident_hawking)
@@ -196,7 +203,7 @@ $ sudo podman events --since 5m
 2019-03-02 10:44:42.374637304 -0600 CST pod create ca731231718e (image=, name=webapp)
 ```
 
-Show Podman events in JSON Lines format
+Show Podman events in JSON Lines format:
 ```
 $ podman events --format json
 {"ID":"683b0909d556a9c02fa8cd2b61c3531a965db42158627622d1a67b391964d519","Image":"localhost/myshdemo:latest","Name":"agitated_diffie","Status":"cleanup","Time":"2019-04-27T22:47:00.849932843-04:00","Type":"container"}

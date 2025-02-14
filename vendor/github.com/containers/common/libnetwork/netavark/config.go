@@ -1,5 +1,4 @@
 //go:build linux || freebsd
-// +build linux freebsd
 
 package netavark
 
@@ -11,19 +10,19 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"slices"
 	"strconv"
 	"time"
 
 	internalutil "github.com/containers/common/libnetwork/internal/util"
 	"github.com/containers/common/libnetwork/types"
-	"github.com/containers/common/pkg/util"
 	"github.com/containers/storage/pkg/stringid"
 )
 
 func sliceRemoveDuplicates(strList []string) []string {
 	list := make([]string, 0, len(strList))
 	for _, item := range strList {
-		if !util.StringInSlice(item, list) {
+		if !slices.Contains(list, item) {
 			list = append(list, item)
 		}
 	}
@@ -31,6 +30,9 @@ func sliceRemoveDuplicates(strList []string) []string {
 }
 
 func (n *netavarkNetwork) commitNetwork(network *types.Network) error {
+	if err := os.MkdirAll(n.networkConfigDir, 0o755); err != nil {
+		return nil
+	}
 	confPath := filepath.Join(n.networkConfigDir, network.Name+".json")
 	f, err := os.Create(confPath)
 	if err != nil {
@@ -71,7 +73,7 @@ func (n *netavarkNetwork) NetworkUpdate(name string, options types.NetworkUpdate
 	networkDNSServersBefore := network.NetworkDNSServers
 	networkDNSServersAfter := []string{}
 	for _, server := range networkDNSServersBefore {
-		if util.StringInSlice(server, options.RemoveDNSServers) {
+		if slices.Contains(options.RemoveDNSServers, server) {
 			continue
 		}
 		networkDNSServersAfter = append(networkDNSServersAfter, server)
@@ -127,7 +129,7 @@ func (n *netavarkNetwork) networkCreate(newNetwork *types.Network, defaultNet bo
 
 		// generate random network ID
 		var i int
-		for i = 0; i < 1000; i++ {
+		for i = range 1000 {
 			id := stringid.GenerateNonCryptoID()
 			if _, err := n.getNetwork(id); err != nil {
 				newNetwork.ID = id
@@ -167,11 +169,9 @@ func (n *netavarkNetwork) networkCreate(newNetwork *types.Network, defaultNet bo
 	switch newNetwork.Driver {
 	case types.BridgeNetworkDriver:
 		internalutil.MapDockerBridgeDriverOptions(newNetwork)
-		err = internalutil.CreateBridge(n, newNetwork, usedNetworks, n.defaultsubnetPools)
-		if err != nil {
-			return nil, err
-		}
-		// validate the given options, we do not need them but just check to make sure they are valid
+
+		var vlan int
+		// validate the given options,
 		for key, value := range newNetwork.Options {
 			switch key {
 			case types.MTUOption:
@@ -181,28 +181,52 @@ func (n *netavarkNetwork) networkCreate(newNetwork *types.Network, defaultNet bo
 				}
 
 			case types.VLANOption:
-				_, err = internalutil.ParseVlan(value)
+				vlan, err = internalutil.ParseVlan(value)
 				if err != nil {
 					return nil, err
 				}
 
 			case types.IsolateOption:
-				val, err := strconv.ParseBool(value)
+				val, err := internalutil.ParseIsolate(value)
 				if err != nil {
 					return nil, err
 				}
-				// rust only support "true" or "false" while go can parse 1 and 0 as well so we need to change it
-				newNetwork.Options[types.IsolateOption] = strconv.FormatBool(val)
+				newNetwork.Options[types.IsolateOption] = val
 			case types.MetricOption:
 				_, err := strconv.ParseUint(value, 10, 32)
 				if err != nil {
 					return nil, err
 				}
-
+			case types.NoDefaultRoute:
+				val, err := strconv.ParseBool(value)
+				if err != nil {
+					return nil, err
+				}
+				// rust only support "true" or "false" while go can parse 1 and 0 as well so we need to change it
+				newNetwork.Options[types.NoDefaultRoute] = strconv.FormatBool(val)
+			case types.VRFOption:
+				if len(value) == 0 {
+					return nil, errors.New("invalid vrf name")
+				}
+			case types.ModeOption:
+				if !slices.Contains(types.ValidBridgeModes, value) {
+					return nil, fmt.Errorf("unknown bridge mode %q", value)
+				}
 			default:
 				return nil, fmt.Errorf("unsupported bridge network option %s", key)
 			}
 		}
+
+		// If there is no vlan there should be no other config with the same bridge.
+		// However with vlan we want to allow that so that you can have different
+		// configs on the same bridge but different vlans
+		// https://github.com/containers/common/issues/2095
+		checkBridgeConflict := vlan == 0
+		err = internalutil.CreateBridge(n, newNetwork, usedNetworks, n.defaultsubnetPools, checkBridgeConflict)
+		if err != nil {
+			return nil, err
+		}
+
 	case types.MacVLANNetworkDriver, types.IPVLANNetworkDriver:
 		err = createIpvlanOrMacvlan(newNetwork)
 		if err != nil {
@@ -237,6 +261,12 @@ func (n *netavarkNetwork) networkCreate(newNetwork *types.Network, defaultNet bo
 		return nil, err
 	}
 
+	// validate routes
+	err = internalutil.ValidateRoutes(newNetwork.Routes)
+	if err != nil {
+		return nil, err
+	}
+
 	newNetwork.Created = time.Now()
 
 	if !defaultNet {
@@ -258,7 +288,7 @@ func createIpvlanOrMacvlan(network *types.Network) error {
 		if err != nil {
 			return err
 		}
-		if !util.StringInSlice(network.NetworkInterface, interfaceNames) {
+		if !slices.Contains(interfaceNames, network.NetworkInterface) {
 			return fmt.Errorf("parent interface %s does not exist", network.NetworkInterface)
 		}
 	}
@@ -295,7 +325,7 @@ func createIpvlanOrMacvlan(network *types.Network) error {
 			return errIpvlanNoDHCP
 		}
 		if len(network.Subnets) > 0 {
-			return fmt.Errorf("ipam driver dhcp set but subnets are set")
+			return errors.New("ipam driver dhcp set but subnets are set")
 		}
 	}
 
@@ -304,19 +334,42 @@ func createIpvlanOrMacvlan(network *types.Network) error {
 		switch key {
 		case types.ModeOption:
 			if isMacVlan {
-				if !util.StringInSlice(value, types.ValidMacVLANModes) {
+				if !slices.Contains(types.ValidMacVLANModes, value) {
 					return fmt.Errorf("unknown macvlan mode %q", value)
 				}
 			} else {
-				if !util.StringInSlice(value, types.ValidIPVLANModes) {
+				if !slices.Contains(types.ValidIPVLANModes, value) {
 					return fmt.Errorf("unknown ipvlan mode %q", value)
 				}
+			}
+		case types.MetricOption:
+			_, err := strconv.ParseUint(value, 10, 32)
+			if err != nil {
+				return err
 			}
 		case types.MTUOption:
 			_, err := internalutil.ParseMTU(value)
 			if err != nil {
 				return err
 			}
+		case types.NoDefaultRoute:
+			val, err := strconv.ParseBool(value)
+			if err != nil {
+				return err
+			}
+			// rust only support "true" or "false" while go can parse 1 and 0 as well so we need to change it
+			network.Options[types.NoDefaultRoute] = strconv.FormatBool(val)
+		case types.BclimOption:
+			if isMacVlan {
+				_, err := strconv.ParseInt(value, 10, 32)
+				if err != nil {
+					return fmt.Errorf("failed to parse %q option: %w", key, err)
+				}
+				// do not fallthrough for macvlan
+				break
+			}
+			// bclim is only valid for macvlan not ipvlan so fallthrough to error case
+			fallthrough
 		default:
 			return fmt.Errorf("unsupported %s network option %s", driver, key)
 		}
@@ -342,6 +395,11 @@ func (n *netavarkNetwork) NetworkRemove(nameOrID string) error {
 	// Removing the default network is not allowed.
 	if network.Name == n.defaultNetwork {
 		return fmt.Errorf("default network %s cannot be removed", n.defaultNetwork)
+	}
+
+	// remove the ipam bucket for this network
+	if err := n.removeNetworkIPAMBucket(network); err != nil {
+		return err
 	}
 
 	file := filepath.Join(n.networkConfigDir, network.Name+".json")
@@ -440,7 +498,7 @@ func getAllPlugins(dirs []string) []string {
 		if err == nil {
 			for _, entry := range entries {
 				name := entry.Name()
-				if !util.StringInSlice(name, plugins) {
+				if !slices.Contains(plugins, name) {
 					plugins = append(plugins, name)
 				}
 			}

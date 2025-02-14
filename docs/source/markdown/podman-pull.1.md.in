@@ -13,7 +13,7 @@ podman\-pull - Pull an image from a registry
 **podman image pull** [*options*] [*transport*]*name*[:*tag*|@*digest*]
 
 ## DESCRIPTION
-podman pull copies an image from a registry onto the local machine. The command can pull one or more images.  If the image reference in the command line argument does not contain a registry, it is referred to as a`short-name` reference. If the image is a 'short-name' reference, Podman prompts the user for the specific container registry to pull the image from, if an alias for the short-name has not been specified in the `short-name-aliases.conf`.  If an image tag is not specified, **podman pull** defaults to the image with the **latest** tag (if it exists) and pulls it. After the image is pulled, podman prints the full image ID.  **podman pull** can also pull images using a digest **podman pull** *image*@*digest* and can also be used to pull images from archives and local storage using different transports.
+podman pull copies an image from a registry onto the local machine. The command can pull one or more images. If the image reference in the command line argument does not contain a registry, it is referred to as a `short-name` reference. If the image is a 'short-name' reference, Podman prompts the user for the specific container registry to pull the image from, if an alias for the short-name has not been specified in the `short-name-aliases.conf`. If an image tag is not specified, **podman pull** defaults to the image with the **latest** tag (if it exists) and pulls it. After the image is pulled, podman prints the full image ID. **podman pull** can also pull images using a digest **podman pull** *image*@*digest* and can also be used to pull images from archives and local storage using different transports.
 *IMPORTANT: Images are stored in local image storage.*
 
 ## SOURCE
@@ -72,6 +72,10 @@ Print the usage statement.
 #### **--quiet**, **-q**
 
 Suppress output information when pulling images
+
+@@option retry
+
+@@option retry-delay
 
 @@option tls-verify
 
@@ -205,8 +209,19 @@ Storing signatures
 3cba58dad5d9b35e755b48b634acb3fdd185ab1c996ac11510cc72c17780e13c
 ```
 
+Pull an image with up to 6 retries, delaying 10 seconds between retries in quet mode.
+```
+$ podman --remote pull -q --retry 6 --retry-delay 10s ubi9
+4d6addf62a90e392ff6d3f470259eb5667eab5b9a8e03d20b41d0ab910f92170
+```
+
 ## SEE ALSO
 **[podman(1)](podman.1.md)**, **[podman-push(1)](podman-push.1.md)**, **[podman-login(1)](podman-login.1.md)**, **[containers-certs.d(5)](https://github.com/containers/image/blob/main/docs/containers-certs.d.5.md)**, **[containers-registries.conf(5)](https://github.com/containers/image/blob/main/docs/containers-registries.conf.5.md)**, **[containers-transports(5)](https://github.com/containers/image/blob/main/docs/containers-transports.5.md)**
+
+### Troubleshooting
+
+See [podman-troubleshooting(7)](https://github.com/containers/podman/blob/main/troubleshooting.md)
+for solutions to common issues.
 
 ## HISTORY
 July 2017, Originally compiled by Urvashi Mohnani <umohnani@redhat.com>

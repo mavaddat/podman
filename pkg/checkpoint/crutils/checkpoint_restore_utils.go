@@ -10,7 +10,7 @@ import (
 	"path/filepath"
 
 	metadata "github.com/checkpoint-restore/checkpointctl/lib"
-	"github.com/checkpoint-restore/go-criu/v6/stats"
+	"github.com/checkpoint-restore/go-criu/v7/stats"
 	"github.com/containers/storage/pkg/archive"
 	"github.com/opencontainers/selinux/go-selinux/label"
 )
@@ -222,14 +222,25 @@ func CRRuntimeSupportsCheckpointRestore(runtimePath string) bool {
 	return false
 }
 
-// CRRuntimeSupportsCheckpointRestore tests if the runtime at 'runtimePath'
+// CRRuntimeSupportsPodCheckpointRestore tests if the runtime at 'runtimePath'
 // supports restoring into existing Pods. The runtime needs to support
 // the CRIU option --lsm-mount-context and the existence of this is checked
 // by this function. In addition it is necessary to at least have CRIU 3.16.
 func CRRuntimeSupportsPodCheckpointRestore(runtimePath string) bool {
 	cmd := exec.Command(runtimePath, "restore", "--lsm-mount-context")
 	out, _ := cmd.CombinedOutput()
-	return bytes.Contains(out, []byte("flag needs an argument"))
+
+	// check for runc
+	if bytes.Contains(out, []byte("flag needs an argument")) {
+		return true
+	}
+
+	// check for crun
+	if bytes.Contains(out, []byte("requires an argument")) {
+		return true
+	}
+
+	return false
 }
 
 // CRGetRuntimeFromArchive extracts the checkpoint metadata from the

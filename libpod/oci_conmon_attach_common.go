@@ -1,5 +1,4 @@
-//go:build linux || freebsd
-// +build linux freebsd
+//go:build !remote && (linux || freebsd)
 
 package libpod
 
@@ -13,10 +12,10 @@ import (
 	"syscall"
 
 	"github.com/containers/common/pkg/config"
+	"github.com/containers/common/pkg/detach"
 	"github.com/containers/common/pkg/resize"
-	"github.com/containers/common/pkg/util"
-	"github.com/containers/podman/v4/libpod/define"
-	"github.com/containers/podman/v4/pkg/errorhandling"
+	"github.com/containers/podman/v5/libpod/define"
+	"github.com/containers/podman/v5/pkg/errorhandling"
 	"github.com/moby/term"
 	"github.com/sirupsen/logrus"
 	"golang.org/x/sys/unix"
@@ -32,8 +31,9 @@ const (
 // Attach to the given container.
 // Does not check if state is appropriate.
 // started is only required if startContainer is true.
+// It does not wait for the container to be healthy, it is the caller responsibility to do so.
 func (r *ConmonOCIRuntime) Attach(c *Container, params *AttachOptions) error {
-	passthrough := c.LogDriver() == define.PassthroughLogging
+	passthrough := c.LogDriver() == define.PassthroughLogging || c.LogDriver() == define.PassthroughTTYLogging
 
 	if params == nil || params.Streams == nil {
 		return fmt.Errorf("must provide parameters to Attach: %w", define.ErrInternal)
@@ -91,6 +91,7 @@ func (r *ConmonOCIRuntime) Attach(c *Container, params *AttachOptions) error {
 		}
 		params.Started <- true
 	}
+	close(params.Started)
 
 	if passthrough {
 		return nil
@@ -234,7 +235,7 @@ func setupStdioChannels(streams *define.AttachStreams, conn *net.UnixConn, detac
 	go func() {
 		var err error
 		if streams.AttachInput {
-			_, err = util.CopyDetachable(conn, streams.InputStream, detachKeys)
+			_, err = detach.Copy(conn, streams.InputStream, detachKeys)
 		}
 		stdinDone <- err
 	}()

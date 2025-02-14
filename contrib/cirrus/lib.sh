@@ -36,6 +36,25 @@ fi
 # Managed by setup_environment.sh; holds task-specific definitions.
 if [[ -r "/etc/ci_environment" ]]; then source /etc/ci_environment; fi
 
+# Set DEST_BRANCH automatically, this var used for many checks,
+# i.e. to find out the merge base to do build/commit checks.
+# To avoid having to set it manually for each branch try to
+# generate based of the CIRRUS env.
+# shellcheck disable=SC2154
+if [[ -z "$CIRRUS_PR" ]]; then
+    # shellcheck disable=SC2154
+    DEST_BRANCH="$CIRRUS_BRANCH"
+else
+    # shellcheck disable=SC2154
+    DEST_BRANCH="$CIRRUS_BASE_BRANCH"
+fi
+if [[ -z "${DEST_BRANCH}" ]]; then
+    die "DEST_BRANCH is undefined, not running under cirrus?"
+fi
+msg "DEST_BRANCH is $DEST_BRANCH"
+export DEST_BRANCH
+
+
 # This is normally set from .cirrus.yml but default is necessary when
 # running under hack/get_ci_vm.sh since it cannot infer the value.
 DISTRO_NV="${DISTRO_NV:-$OS_REL_VER}"
@@ -71,38 +90,31 @@ export CI="${CI:-false}"
 CIRRUS_CI="${CIRRUS_CI:-false}"
 CONTINUOUS_INTEGRATION="${CONTINUOUS_INTEGRATION:-false}"
 CIRRUS_REPO_NAME=${CIRRUS_REPO_NAME:-podman}
-# Cirrus only sets $CIRRUS_BASE_SHA properly for PRs, but $EPOCH_TEST_COMMIT
-# needs to be set from this value in order for `make validate` to run properly.
-# When running get_ci_vm.sh, most $CIRRUS_xyz variables are empty. Attempt
-# to accommodate both branch and get_ci_vm.sh testing by discovering the base
-# branch SHA value.
-# shellcheck disable=SC2154
-if [[ -z "$CIRRUS_BASE_SHA" ]] && [[ -z "$CIRRUS_TAG" ]]
-then  # Operating on a branch, or under `get_ci_vm.sh`
-    CIRRUS_BASE_SHA=$(git rev-parse ${UPSTREAM_REMOTE:-origin}/$DEST_BRANCH)
-elif [[ -z "$CIRRUS_BASE_SHA" ]]
-then  # Operating on a tag
-    CIRRUS_BASE_SHA=$(git rev-parse HEAD)
-fi
-# The starting place for linting and code validation
-EPOCH_TEST_COMMIT="$CIRRUS_BASE_SHA"
 
-# Regex defining all CI-related env. vars. necessary for all possible
-# testing operations on all platforms and versions.  This is necessary
-# to avoid needlessly passing through global/system values across
-# contexts, such as host->container or root->rootless user
+# All CI jobs use a local registry
+export CI_USE_REGISTRY_CACHE=true
+
+# shellcheck disable=SC2154
+if [[ -n "$CIRRUS_PR" ]] && [[ -z "$PR_BASE_SHA" ]]; then
+    # shellcheck disable=SC2154
+    PR_BASE_SHA=$(git merge-base ${DEST_BRANCH:-main} HEAD)
+    export PR_BASE_SHA
+fi
+
+# The next three values define regular expressions matching env. vars. necessary
+# for all possible testing contexts (rootless, container, etc.).  These values
+# are consumed by the passthrough_envars() automation library function.
 #
 # List of envariables which must be EXACT matches
-PASSTHROUGH_ENV_EXACT='CGROUP_MANAGER|DEST_BRANCH|DISTRO_NV|GOCACHE|GOPATH|GOSRC|NETWORK_BACKEND|OCI_RUNTIME|ROOTLESS_USER|SCRIPT_BASE|SKIP_USERNS|EC2_INST_TYPE|PODMAN_DB'
+PASSTHROUGH_ENV_EXACT='CGROUP_MANAGER|DEST_BRANCH|DISTRO_NV|GOCACHE|GOPATH|GOSRC|NETWORK_BACKEND|OCI_RUNTIME|PR_BASE_SHA|ROOTLESS_USER|SCRIPT_BASE|SKIP_USERNS|EC2_INST_TYPE|PODMAN_DB|STORAGE_FS|PODMAN_BATS_LEAK_CHECK'
 
 # List of envariable patterns which must match AT THE BEGINNING of the name.
-PASSTHROUGH_ENV_ATSTART='CI|TEST'
+# Consumed by the passthrough_envars() automation library function.
+PASSTHROUGH_ENV_ATSTART='CI|LANG|LC_|STORAGE_OPTIONS_|TEST'
 
-# List of envariable patterns which can match ANYWHERE in the name
+# List of envariable patterns which can match ANYWHERE in the name.
+# Consumed by the passthrough_envars() automation library function.
 PASSTHROUGH_ENV_ANYWHERE='_NAME|_FQIN'
-
-# Combine into one
-PASSTHROUGH_ENV_RE="(^($PASSTHROUGH_ENV_EXACT)\$)|(^($PASSTHROUGH_ENV_ATSTART))|($PASSTHROUGH_ENV_ANYWHERE)"
 
 # Unsafe env. vars for display
 SECRET_ENV_RE='ACCOUNT|GC[EP]..|SSH|PASSWORD|SECRET|TOKEN'
@@ -113,25 +125,14 @@ CG_FS_TYPE="$(stat -f -c %T /sys/fs/cgroup)"
 # Set to 1 in all podman container images
 CONTAINER="${CONTAINER:-0}"
 
+# Without this, perl garbles "f39β" command-line args
+PERL_UNICODE=A
+
 # END Global export of all variables
 set +a
 
 lilto() { err_retry 8 1000 "" "$@"; }  # just over 4 minutes max
 bigto() { err_retry 7 5670 "" "$@"; }  # 12 minutes max
-
-# Return a list of environment variables that should be passed through
-# to lower levels (tests in containers, or via ssh to rootless).
-# We return the variable names only, not their values. It is up to our
-# caller to reference values.
-passthrough_envars(){
-    local envname
-    warn "Will pass env. vars. matching the following regex:
-    $PASSTHROUGH_ENV_RE"
-    compgen -A variable | \
-        grep -Ev "SETUP_ENVIRONMENT" | \
-        grep -Ev "$SECRET_ENV_RE" | \
-        grep -E  "$PASSTHROUGH_ENV_RE"
-}
 
 setup_rootless() {
     req_env_vars GOPATH GOSRC SECRET_ENV_RE
@@ -149,7 +150,11 @@ setup_rootless() {
     # shellcheck disable=SC2154
     if passwd --status $ROOTLESS_USER
     then
-        if [[ $PRIV_NAME = "rootless" ]]; then
+        # Farm tests utilize the rootless user to simulate a "remote" podman instance.
+    # Root still needs to own the repo. clone and all things under `$GOPATH`.  The
+    # opposite is true for the lower-level podman e2e tests, the rootless user
+    # runs them, and therefore needs permissions.
+        if [[ $PRIV_NAME = "rootless" ]] && [[ "$TEST_FLAVOR" != "farm"  ]]; then
             msg "Updating $ROOTLESS_USER user permissions on possibly changed libpod code"
             chown -R $ROOTLESS_USER:$ROOTLESS_USER "$GOPATH" "$GOSRC"
             return 0
@@ -164,8 +169,11 @@ setup_rootless() {
     ROOTLESS_UID=$rootless_uid
     rootless_gid=$((1500 + RANDOM % 5000))
     msg "creating $rootless_uid:$rootless_gid $ROOTLESS_USER user"
-    groupadd -g $rootless_gid $ROOTLESS_USER
-    useradd -g $rootless_gid -u $rootless_uid --no-user-group --create-home $ROOTLESS_USER
+    showrun groupadd -g $rootless_gid $ROOTLESS_USER
+    showrun useradd -g $rootless_gid -u $rootless_uid --no-user-group --create-home $ROOTLESS_USER
+
+    # use tmpfs to speed up IO
+    mount -t tmpfs -o size=75%,mode=0700,uid=$rootless_uid,gid=$rootless_gid none /home/$ROOTLESS_USER
 
     echo "$ROOTLESS_USER ALL=(root) NOPASSWD: ALL" > /etc/sudoers.d/ci-rootless
 
@@ -174,8 +182,8 @@ setup_rootless() {
     msg "Creating ssh key pairs"
     [[ -r "$HOME/.ssh/id_rsa" ]] || \
         ssh-keygen -t rsa -P "" -f "$HOME/.ssh/id_rsa"
-    ssh-keygen -t ed25519 -P "" -f "/home/$ROOTLESS_USER/.ssh/id_ed25519"
-    ssh-keygen -t rsa -P "" -f "/home/$ROOTLESS_USER/.ssh/id_rsa"
+    showrun ssh-keygen -t ed25519 -P "" -f "/home/$ROOTLESS_USER/.ssh/id_ed25519"
+    showrun ssh-keygen -t rsa -P "" -f "/home/$ROOTLESS_USER/.ssh/id_rsa"
 
     msg "Set up authorized_keys"
     cat $HOME/.ssh/*.pub /home/$ROOTLESS_USER/.ssh/*.pub >> $HOME/.ssh/authorized_keys
@@ -196,66 +204,30 @@ setup_rootless() {
     # Maintain access-permission consistency with all other .ssh files.
     install -Z -m 700 -o $ROOTLESS_USER -g $ROOTLESS_USER \
         /root/.ssh/known_hosts /home/$ROOTLESS_USER/.ssh/known_hosts
+
+    if [[ -n "$ROOTLESS_USER" ]]; then
+        showrun echo "conditional setup for ROOTLESS_USER [=$ROOTLESS_USER]"
+        # Make all future CI scripts aware of these values
+        echo "ROOTLESS_USER=$ROOTLESS_USER" >> /etc/ci_environment
+        echo "ROOTLESS_UID=$ROOTLESS_UID" >> /etc/ci_environment
+    fi
 }
 
 install_test_configs() {
-    msg "Installing ./test/registries.conf system-wide."
-    install -v -D -m 644 ./test/registries.conf /etc/containers/
-}
-
-use_cni() {
-    req_env_vars OS_RELEASE_ID PACKAGE_DOWNLOAD_DIR SCRIPT_BASE
-    # Defined by common automation library
-    # shellcheck disable=SC2154
-    if [[ "$OS_RELEASE_ID" =~ "debian" ]]; then
-        # Supporting it involves swapping the rpm & dnf commands below
-        die "Testing debian w/ CNI networking currently not supported"
+    # Which registries.conf to use. By default we always want the cached one...
+    cached="-cached"
+    # ...except for podman-machine, where it's antihelpful
+    if [[ -n "$1" ]]; then
+        if [[ "$1" = "nocache" ]]; then
+            cached=""
+        else
+            die "Internal error: install_test_configs(): unknown arg '$*'"
+        fi
     fi
 
-    msg "Unsetting NETWORK_BACKEND for all subsequent environments."
-    echo "export -n NETWORK_BACKEND" >> /etc/ci_environment
-    echo "unset NETWORK_BACKEND" >> /etc/ci_environment
-    export -n NETWORK_BACKEND
-    unset NETWORK_BACKEND
-    # While it's possible a user may want both installed, for CNI CI testing
-    # purposes we only care about backward-compatibility, not forward.
-    # If both CNI & netavark are present, in some situations where --root
-    # is used it's possible for podman to pick the "wrong" networking stack.
-    msg "Force-removing netavark and aardvark-dns"
-    # Other packages depend on nv/av, but we're testing with podman
-    # binaries built from source, so it's safe to ignore these deps.
-    #
-    # Do not fail when netavark and aardvark-dns are not installed.
-    for pkg in aardvark-dns netavark
-    do
-        [ -z "$(rpm -qa | grep $pkg)" ] && echo "$pkg not installed" || rpm -e --nodeps $pkg
-    done
-    msg "Installing default CNI configuration"
-    dnf install -y $PACKAGE_DOWNLOAD_DIR/podman-plugins*
-    cd $GOSRC || exit 1
-    rm -rvf /etc/cni/net.d
-    mkdir -p /etc/cni/net.d
-    install -v -D -m 644 ./cni/87-podman-bridge.conflist \
-        /etc/cni/net.d/
-    # This config must always sort last in the list of networks (podman picks
-    # first one as the default).  This config prevents allocation of network
-    # address space used by default in google cloud.
-    # https://cloud.google.com/vpc/docs/vpc#ip-ranges
-    install -v -D -m 644 $SCRIPT_BASE/99-do-not-use-google-subnets.conflist \
-        /etc/cni/net.d/
-}
-
-use_netavark() {
-    req_env_vars OS_RELEASE_ID PRIOR_FEDORA_NAME DISTRO_NV
-    local magickind repokind
-    msg "Forcing NETWORK_BACKEND=netavark for all subsequent environments."
-    echo "NETWORK_BACKEND=netavark" >> /etc/ci_environment
-    export NETWORK_BACKEND=netavark  # needed for install_test_configs()
-    msg "Removing any/all CNI configuration"
-    rm -rvf /etc/cni/net.d/*
-    # N/B: The CNI packages are still installed and available. This is
-    # on purpose, since CI needs to verify the selection mechanisms are
-    # functional when both are available.
+    msg "Installing ./test/registries$cached.conf system-wide."
+    # All CI VMs run with a local registry
+    install -v -D -m 644 ./test/registries$cached.conf /etc/containers/registries.conf
 }
 
 # Remove all files provided by the distro version of podman.
@@ -269,15 +241,15 @@ remove_packaged_podman_files() {
     req_env_vars OS_RELEASE_ID
 
     # If any binaries are resident they could cause unexpected pollution
-    for unit in io.podman.service io.podman.socket
+    for unit in podman.socket podman-auto-update.timer
     do
         for state in enabled active
         do
             if systemctl --quiet is-$state $unit
             then
                 echo "Warning: $unit found $state prior to packaged-file removal"
-                systemctl --quiet disable $unit || true
-                systemctl --quiet stop $unit || true
+                showrun systemctl --quiet disable $unit || true
+                showrun systemctl --quiet stop $unit || true
             fi
         done
     done
@@ -291,14 +263,20 @@ remove_packaged_podman_files() {
         LISTING_CMD="rpm -ql podman"
     fi
 
+    # delete the podman socket in case it has been created previously.
+    # Do so without running podman, lest that invocation initialize unwanted state.
+    rm -f /run/podman/podman.sock  /run/user/$(id -u)/podman/podman.sock || true
+
     # yum/dnf/dpkg may list system directories, only remove files
     $LISTING_CMD | while read fullpath
     do
         # Sub-directories may contain unrelated/valuable stuff
         if [[ -d "$fullpath" ]]; then continue; fi
-        ooe.sh rm -vf "$fullpath"
+        showrun ooe.sh rm -vf "$fullpath"
     done
 
     # Be super extra sure and careful vs performant and completely safe
     sync && echo 3 > /proc/sys/vm/drop_caches || true
 }
+
+showrun echo "finished"

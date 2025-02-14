@@ -170,14 +170,7 @@ func cUnescapeOne(p string, acceptNul bool) (int, rune, bool) {
 
 		ret = rune(c)
 		count = 9
-	case '0':
-	case '1':
-	case '2':
-	case '3':
-	case '4':
-	case '5':
-	case '6':
-	case '7':
+	case '0', '1', '2', '3', '4', '5', '6', '7':
 		/* octal encoding */
 
 		if len(p) < 3 {
@@ -189,12 +182,12 @@ func cUnescapeOne(p string, acceptNul bool) (int, rune, bool) {
 			return -1, 0, false
 		}
 
-		b := unoctchar(p[0])
+		b := unoctchar(p[1])
 		if b < 0 {
 			return -1, 0, false
 		}
 
-		c := unoctchar(p[0])
+		c := unoctchar(p[2])
 		if c < 0 {
 			return -1, 0, false
 		}
@@ -428,13 +421,17 @@ func splitString(s string, separators string, flags SplitFlags) ([]string, error
 	return splitStringAppend(make([]string, 0), s, separators, flags)
 }
 
-func charNeedEscape(c rune) bool {
+func charNeedEscape(c rune, isPath bool) bool {
 	if c > 128 {
 		return false /* unicode is ok */
 	}
 
+	pathRune := (isPath && c == '-') ||
+		(isPath && c == '/')
+
 	return unicode.IsSpace(c) ||
 		unicode.IsControl(c) ||
+		pathRune ||
 		c == '"' ||
 		c == '\'' ||
 		c == '\\'
@@ -442,18 +439,22 @@ func charNeedEscape(c rune) bool {
 
 func wordNeedEscape(word string) bool {
 	for _, c := range word {
-		if charNeedEscape(c) {
+		if charNeedEscape(c, false) {
 			return true
 		}
 	}
-
 	return false
 }
 
 func appendEscapeWord(escaped *strings.Builder, word string) {
 	escaped.WriteRune('"')
-	for _, c := range word {
-		if charNeedEscape(c) {
+	escapeString(escaped, word, false)
+	escaped.WriteRune('"')
+}
+
+func escapeString(escaped *strings.Builder, word string, isPath bool) {
+	for i, c := range word {
+		if charNeedEscape(c, isPath) {
 			switch c {
 			case '\a':
 				escaped.WriteString("\\a")
@@ -477,6 +478,10 @@ func appendEscapeWord(escaped *strings.Builder, word string) {
 				escaped.WriteString("\\\"")
 			case '\'':
 				escaped.WriteString("'")
+			case '/':
+				if isPath && i != 0 {
+					escaped.WriteString("-")
+				}
 			default:
 				escaped.WriteString(fmt.Sprintf("\\x%.2x", c))
 			}
@@ -484,7 +489,6 @@ func appendEscapeWord(escaped *strings.Builder, word string) {
 			escaped.WriteRune(c)
 		}
 	}
-	escaped.WriteRune('"')
 }
 
 func escapeWords(words []string) string {
@@ -500,6 +504,5 @@ func escapeWords(words []string) string {
 			escaped.WriteString(word)
 		}
 	}
-
 	return escaped.String()
 }

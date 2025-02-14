@@ -27,7 +27,10 @@ load helpers
     run_podman wait $cid_none_implicit $cid_none_explicit $cid_on_failure
 
     run_podman rm $cid_none_implicit $cid_none_explicit $cid_on_failure
-    run_podman stop -t 1 $cid_always
+    run_podman 0+w stop -t 1 $cid_always
+    if ! is_remote; then
+        require_warning "StopSignal SIGTERM failed to stop container .*, resorting to SIGKILL"
+    fi
     run_podman rm $cid_always
 }
 
@@ -55,6 +58,9 @@ load helpers
     is "$output" ".*$c1_id.*" "--filter finds container 1"
     is "$output" ".*$c3_id.*" "--filter finds container 3"
 
+    # start again, before this fix it could panic
+    run_podman start --filter restart-policy=always
+
     # Start via filtered names
     run_podman start --filter restart-policy=on-failure $c2 $c3
     is "$output" "$c2" "--filter finds container 2"
@@ -62,6 +68,8 @@ load helpers
     # Nothing on match
     run_podman start --filter restart-policy=none --all
     is "$output" ""
+
+    run_podman rm -f $c1 $c2 $c3
 }
 
 @test "podman start --filter invalid-restart-policy - return error" {
@@ -70,6 +78,7 @@ load helpers
     run_podman 125 start --filter restart-policy=fakepolicy $cid
     is "$output" "Error: fakepolicy invalid restart policy" \
        "CID of restart-policy=<not-exists> container"
+    run_podman rm -f $cid
 }
 
 @test "podman start --all --filter" {
@@ -81,6 +90,8 @@ load helpers
     run_podman wait $cid_exited_0 $cid_exited_1
     run_podman start --all --filter exited=0
     is "$output" "$cid_exited_0"
+
+    run_podman rm -f $cid_exited_0 $cid_exited_1
 }
 
 @test "podman start print IDs or raw input" {

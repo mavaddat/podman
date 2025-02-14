@@ -1,16 +1,17 @@
+//go:build !remote
+
 package compat
 
 import (
 	"fmt"
 	"net/http"
 
-	"github.com/containers/podman/v4/libpod"
-	"github.com/containers/podman/v4/libpod/events"
-	"github.com/containers/podman/v4/pkg/api/handlers/utils"
-	api "github.com/containers/podman/v4/pkg/api/types"
-	"github.com/containers/podman/v4/pkg/domain/entities"
-	"github.com/containers/podman/v4/pkg/util"
-	"github.com/gorilla/schema"
+	"github.com/containers/podman/v5/libpod"
+	"github.com/containers/podman/v5/libpod/events"
+	"github.com/containers/podman/v5/pkg/api/handlers/utils"
+	api "github.com/containers/podman/v5/pkg/api/types"
+	"github.com/containers/podman/v5/pkg/domain/entities"
+	"github.com/containers/podman/v5/pkg/util"
 	jsoniter "github.com/json-iterator/go"
 	"github.com/sirupsen/logrus"
 )
@@ -19,7 +20,7 @@ import (
 func GetEvents(w http.ResponseWriter, r *http.Request) {
 	var (
 		fromStart bool
-		decoder   = r.Context().Value(api.DecoderKey).(*schema.Decoder)
+		decoder   = utils.GetDecoder(r)
 		runtime   = r.Context().Value(api.RuntimeKey).(*libpod.Runtime)
 		json      = jsoniter.ConfigCompatibleWithStandardLibrary // FIXME: this should happen on the package level
 	)
@@ -44,24 +45,24 @@ func GetEvents(w http.ResponseWriter, r *http.Request) {
 
 	libpodFilters, err := util.FiltersFromRequest(r)
 	if err != nil {
-		utils.Error(w, http.StatusBadRequest, fmt.Errorf("failed to parse parameters for %s: %w", r.URL.String(), err))
+		utils.Error(w, http.StatusBadRequest, fmt.Errorf("failed to parse filters for %s: %w", r.URL.String(), err))
 		return
 	}
-	eventChannel := make(chan *events.Event)
-	errorChannel := make(chan error)
+	eventChannel := make(chan events.ReadResult)
 
-	// Start reading events.
-	go func() {
-		readOpts := events.ReadOptions{
-			FromStart:    fromStart,
-			Stream:       query.Stream,
-			Filters:      libpodFilters,
-			EventChannel: eventChannel,
-			Since:        query.Since,
-			Until:        query.Until,
-		}
-		errorChannel <- runtime.Events(r.Context(), readOpts)
-	}()
+	readOpts := events.ReadOptions{
+		FromStart:    fromStart,
+		Stream:       query.Stream,
+		Filters:      libpodFilters,
+		EventChannel: eventChannel,
+		Since:        query.Since,
+		Until:        query.Until,
+	}
+	err = runtime.Events(r.Context(), readOpts)
+	if err != nil {
+		utils.InternalServerError(w, err)
+		return
+	}
 
 	flush := func() {}
 	if flusher, ok := w.(http.Flusher); ok {
@@ -77,18 +78,21 @@ func GetEvents(w http.ResponseWriter, r *http.Request) {
 
 	for {
 		select {
-		case err := <-errorChannel:
-			if err != nil {
-				// FIXME StatusOK already sent above cannot send 500 here
-				utils.InternalServerError(w, err)
-			}
+		case <-r.Context().Done():
 			return
-		case evt := <-eventChannel:
-			if evt == nil {
+		case evt, ok := <-eventChannel:
+			if !ok {
+				return
+			}
+			if evt.Error != nil {
+				logrus.Errorf("Unable to read event: %q", err)
+				continue
+			}
+			if evt.Event == nil {
 				continue
 			}
 
-			e := entities.ConvertToEntitiesEvent(*evt)
+			e := entities.ConvertToEntitiesEvent(*evt.Event)
 			// Some events differ between Libpod and Docker endpoints.
 			// Handle these differences for Docker-compat.
 			if !utils.IsLibpodRequest(r) && e.Type == "image" && e.Status == "remove" {
@@ -105,8 +109,6 @@ func GetEvents(w http.ResponseWriter, r *http.Request) {
 				logrus.Errorf("Unable to write json: %q", err)
 			}
 			flush()
-		case <-r.Context().Done():
-			return
 		}
 	}
 }

@@ -2,20 +2,18 @@ package utils
 
 import (
 	"bytes"
-	"crypto/rand"
 	"fmt"
 	"io"
 	"os"
 	"os/exec"
-	"strconv"
 	"strings"
-	"sync"
+	"time"
 
-	"github.com/containers/common/pkg/cgroups"
 	"github.com/containers/storage/pkg/archive"
 	"github.com/containers/storage/pkg/chrootarchive"
-	"github.com/godbus/dbus/v5"
 	"github.com/sirupsen/logrus"
+	"github.com/vbauerster/mpb/v8"
+	"github.com/vbauerster/mpb/v8/decor"
 )
 
 // ExecCmd executes a command with args and returns its output as a string along
@@ -57,7 +55,7 @@ func UntarToFileSystem(dest string, tarball *os.File, options *archive.TarOption
 	return archive.Untar(tarball, dest, options)
 }
 
-// Creates a new tar file and wrties bytes from io.ReadCloser
+// Creates a new tar file and writes bytes from io.ReadCloser
 func CreateTarFromSrc(source string, dest string) error {
 	file, err := os.Create(dest)
 	if err != nil {
@@ -74,6 +72,7 @@ func TarToFilesystem(source string, tarball *os.File) error {
 	if err != nil {
 		return err
 	}
+	defer tb.Close()
 	_, err = io.Copy(tarball, tb)
 	if err != nil {
 		return err
@@ -95,6 +94,7 @@ func TarChrootToFilesystem(source string, tarball *os.File) error {
 	if err != nil {
 		return err
 	}
+	defer tb.Close()
 	_, err = io.Copy(tarball, tb)
 	if err != nil {
 		return err
@@ -110,135 +110,33 @@ func TarWithChroot(source string) (io.ReadCloser, error) {
 	return chrootarchive.Tar(source, nil, source)
 }
 
-// RemoveScientificNotationFromFloat returns a float without any
-// scientific notation if the number has any.
-// golang does not handle conversion of float64s that have scientific
-// notation in them and otherwise stinks.  please replace this if you have
-// a better implementation.
-func RemoveScientificNotationFromFloat(x float64) (float64, error) {
-	bigNum := strconv.FormatFloat(x, 'g', -1, 64)
-	breakPoint := strings.IndexAny(bigNum, "Ee")
-	if breakPoint > 0 {
-		bigNum = bigNum[:breakPoint]
+// GuardedRemoveAll functions much like os.RemoveAll but
+// will not delete certain catastrophic paths.
+func GuardedRemoveAll(path string) error {
+	if path == "" || path == "/" {
+		return fmt.Errorf("refusing to recursively delete `%s`", path)
 	}
-	result, err := strconv.ParseFloat(bigNum, 64)
-	if err != nil {
-		return x, fmt.Errorf("unable to remove scientific number from calculations: %w", err)
-	}
-	return result, nil
+	return os.RemoveAll(path)
 }
 
-var (
-	runsOnSystemdOnce sync.Once
-	runsOnSystemd     bool
-)
+func ProgressBar(prefix string, size int64, onComplete string) (*mpb.Progress, *mpb.Bar) {
+	p := mpb.New(
+		mpb.WithWidth(80), // Do not go below 80, see bug #17718
+		mpb.WithRefreshRate(180*time.Millisecond),
+	)
 
-// RunsOnSystemd returns whether the system is using systemd
-func RunsOnSystemd() bool {
-	runsOnSystemdOnce.Do(func() {
-		// per sd_booted(3), check for this dir
-		fd, err := os.Stat("/run/systemd/system")
-		runsOnSystemd = err == nil && fd.IsDir()
-	})
-	return runsOnSystemd
-}
-
-func moveProcessPIDFileToScope(pidPath, slice, scope string) error {
-	data, err := os.ReadFile(pidPath)
-	if err != nil {
-		// do not raise an error if the file doesn't exist
-		if os.IsNotExist(err) {
-			return nil
-		}
-		return fmt.Errorf("cannot read pid file: %w", err)
-	}
-	pid, err := strconv.ParseUint(string(data), 10, 0)
-	if err != nil {
-		return fmt.Errorf("cannot parse pid file %s: %w", pidPath, err)
+	bar := p.AddBar(size,
+		mpb.BarFillerClearOnComplete(),
+		mpb.PrependDecorators(
+			decor.OnComplete(decor.Name(prefix), onComplete),
+		),
+		mpb.AppendDecorators(
+			decor.OnComplete(decor.CountersKibiByte("%.1f / %.1f"), ""),
+		),
+	)
+	if size == 0 {
+		bar.SetTotal(0, true)
 	}
 
-	return moveProcessToScope(int(pid), slice, scope)
-}
-
-func moveProcessToScope(pid int, slice, scope string) error {
-	err := RunUnderSystemdScope(pid, slice, scope)
-	// If the PID is not valid anymore, do not return an error.
-	if dbusErr, ok := err.(dbus.Error); ok {
-		if dbusErr.Name == "org.freedesktop.DBus.Error.UnixProcessIdUnknown" {
-			return nil
-		}
-	}
-	return err
-}
-
-// MoveRootlessNetnsSlirpProcessToUserSlice moves the slirp4netns process for the rootless netns
-// into a different scope so that systemd does not kill it with a container.
-func MoveRootlessNetnsSlirpProcessToUserSlice(pid int) error {
-	randBytes := make([]byte, 4)
-	_, err := rand.Read(randBytes)
-	if err != nil {
-		return err
-	}
-	return moveProcessToScope(pid, "user.slice", fmt.Sprintf("rootless-netns-%x.scope", randBytes))
-}
-
-// MovePauseProcessToScope moves the pause process used for rootless mode to keep the namespaces alive to
-// a separate scope.
-func MovePauseProcessToScope(pausePidPath string) {
-	var err error
-
-	for i := 0; i < 10; i++ {
-		randBytes := make([]byte, 4)
-		_, err = rand.Read(randBytes)
-		if err != nil {
-			logrus.Errorf("failed to read random bytes: %v", err)
-			continue
-		}
-		err = moveProcessPIDFileToScope(pausePidPath, "user.slice", fmt.Sprintf("podman-pause-%x.scope", randBytes))
-		if err == nil {
-			return
-		}
-	}
-
-	if err != nil {
-		unified, err2 := cgroups.IsCgroup2UnifiedMode()
-		if err2 != nil {
-			logrus.Warnf("Failed to detect if running with cgroup unified: %v", err)
-		}
-		if RunsOnSystemd() && unified {
-			logrus.Warnf("Failed to add pause process to systemd sandbox cgroup: %v", err)
-		} else {
-			logrus.Debugf("Failed to add pause process to systemd sandbox cgroup: %v", err)
-		}
-	}
-}
-
-var (
-	maybeMoveToSubCgroupSync    sync.Once
-	maybeMoveToSubCgroupSyncErr error
-)
-
-// MaybeMoveToSubCgroup moves the current process in a sub cgroup when
-// it is running in the root cgroup on a system that uses cgroupv2.
-func MaybeMoveToSubCgroup() error {
-	maybeMoveToSubCgroupSync.Do(func() {
-		unifiedMode, err := cgroups.IsCgroup2UnifiedMode()
-		if err != nil {
-			maybeMoveToSubCgroupSyncErr = err
-			return
-		}
-		if !unifiedMode {
-			maybeMoveToSubCgroupSyncErr = nil
-			return
-		}
-		cgroup, err := GetOwnCgroup()
-		if err != nil {
-			maybeMoveToSubCgroupSyncErr = err
-			return
-		}
-		if cgroup == "/" {
-			maybeMoveToSubCgroupSyncErr = MoveUnderCgroupSubtree("init")
-		}
-	})
-	return maybeMoveToSubCgroupSyncErr
+	return p, bar
 }

@@ -7,7 +7,9 @@
 podman pull -q $IMAGE
 
 t GET libpod/images/json 200 \
-  .[0].Id~[0-9a-f]\\{64\\}
+  length=1 \
+  .[0].Id~[0-9a-f]\\{64\\} \
+  .[0].Names[0]="$IMAGE"
 iid=$(jq -r '.[0].Id' <<<"$output")
 
 # Create an empty manifest and make sure it is not listed
@@ -18,7 +20,7 @@ t GET images/json 200 length=1
 t GET libpod/images/json 200 length=2
 
 t GET libpod/images/$iid/exists                     204
-t GET libpod/images/$PODMAN_TEST_IMAGE_NAME/exists  204
+t GET libpod/images/$PODMAN_TEST_IMAGE_NAME:$PODMAN_TEST_IMAGE_TAG/exists  204
 t GET libpod/images/${iid}abcdef/exists  404 \
   .cause="failed to find image ${iid}abcdef"
 
@@ -49,12 +51,15 @@ t GET images/$iid/json 200 \
   .RepoTags[0]=$IMAGE
 
 t POST "images/create?fromImage=alpine" 200 .error~null .status~".*Download complete.*"
+t POST "libpod/images/pull?reference=alpine&compatMode=true" 200 .error~null .status~".*Download complete.*"
 
-t POST "images/create?fromImage=alpine&tag=latest" 200
+t POST "images/create?fromImage=alpine&tag=latest" 200 \
+  .status~"Already exists"
 
 # 10977 - handle platform parameter correctly
-t POST "images/create?fromImage=quay.io/libpod/testimage:20210610&platform=linux/arm64" 200
-t GET  "images/testimage:20210610/json" 200 \
+# THIS IMAGE MUST NOT BE THE SAME AS $IMAGE
+t POST "images/create?fromImage=quay.io/libpod/testimage:20221018&platform=linux/arm64" 200
+t GET  "images/testimage:20221018/json" 200 \
   .Architecture=arm64
 
 # Make sure that new images are pulled
@@ -72,34 +77,73 @@ t POST "images/create?fromSrc=-&repo=myimage&tag=mytag" - 200
 t GET "images/myimage:mytag/json" 200 \
   .Id~'^sha256:[0-9a-f]\{64\}$' \
   .RepoTags[0]="docker.io/library/myimage:mytag"
+t POST /images/create?fromImage=busybox:invalidtag123 404
 
 # Display the image history
 t GET libpod/images/nonesuch/history 404
 
-for i in $iid ${iid:0:12} $PODMAN_TEST_IMAGE_NAME; do
+for i in $iid ${iid:0:12} $PODMAN_TEST_IMAGE_NAME:$PODMAN_TEST_IMAGE_TAG; do
   t GET libpod/images/$i/history 200 \
     .[0].Id=$iid \
+    .[1].Id="<missing>" \
+    .[2].Id="<missing>" \
+    .[3].Id="<missing>" \
     .[0].Created~[0-9]\\{10\\} \
     .[0].Tags[0]="$IMAGE" \
-    .[0].Size=0 \
-    .[0].Comment=
+    .[0].Size=1024 \
+    .[1].Size=0 \
+    .[2].Size=0 \
+    .[3].Size=0 \
+    .[0].Comment="" \
+    .[1].Comment="" \
+    .[2].Comment="" \
+    .[3].Comment="FROM localhost/interim-image:latest" \
+    .[0].CreatedBy~".*/echo.*This container is intended for podman CI testing.*" \
+    .[1].CreatedBy~".* WORKDIR /home/podman" \
+    .[2].CreatedBy~".* LABEL created_at=.*" \
+    .[3].CreatedBy~".* LABEL created_by=test/system/build-testimage"
 done
 
-for i in $iid ${iid:0:12} $PODMAN_TEST_IMAGE_NAME; do
+for i in $iid ${iid:0:12} $PODMAN_TEST_IMAGE_NAME:$PODMAN_TEST_IMAGE_TAG; do
   t GET images/$i/history 200 \
-    .[0].Id="sha256:"$iid \
+    .[0].Id="sha256:$iid" \
+    .[1].Id="sha256:<missing>" \
+    .[2].Id="sha256:<missing>" \
+    .[3].Id="sha256:<missing>" \
     .[0].Created~[0-9]\\{10\\} \
     .[0].Tags[0]="$IMAGE" \
-    .[0].Size=0 \
-    .[0].Comment=
+    .[0].Size=1024 \
+    .[1].Size=0 \
+    .[2].Size=0 \
+    .[3].Size=0 \
+    .[0].Comment="" \
+    .[1].Comment="" \
+    .[2].Comment="" \
+    .[3].Comment="FROM localhost/interim-image:latest" \
+    .[0].CreatedBy~".*/echo.*This container is intended for podman CI testing.*" \
+    .[1].CreatedBy~".* WORKDIR /home/podman" \
+    .[2].CreatedBy~".* LABEL created_at=.*" \
+    .[3].CreatedBy~".* LABEL created_by=test/system/build-testimage"
 done
+
+# compat api pull image unauthorized message error
+# This depends on whether we're using local cache registry or real quay
+expect_code=401
+expect_msg="unauthorized: access to the requested resource is not authorized"
+if [[ -n "$CI_USE_REGISTRY_CACHE" ]]; then
+    # local registry has no auth, so it can return 404
+    expect_code=404
+    expect_msg="manifest unknown: manifest unknown"
+fi
+t POST "/images/create?fromImage=quay.io/idonotexist/idonotexist:dummy" $expect_code \
+  .message="$expect_msg"
 
 # Export an image on the local
 t GET libpod/images/nonesuch/get 404
 t GET libpod/images/$iid/get?format=foo 500
 t GET libpod/images/$PODMAN_TEST_IMAGE_NAME/get?compress=bar 400
 
-for i in $iid ${iid:0:12} $PODMAN_TEST_IMAGE_NAME; do
+for i in $iid ${iid:0:12} $PODMAN_TEST_IMAGE_NAME:$PODMAN_TEST_IMAGE_TAG; do
   t GET "libpod/images/$i/get"                200 '[POSIX tar archive]'
   t GET "libpod/images/$i/get?compress=true"  200 '[POSIX tar archive]'
   t GET "libpod/images/$i/get?compress=false" 200 '[POSIX tar archive]'
@@ -158,6 +202,8 @@ t DELETE libpod/images/test:test 200
 t GET images/json?filters='{"label":["xyz"]}' 200 length=0
 t GET libpod/images/json?filters='{"label":["xyz"]}' 200 length=0
 
+# Must not error out: #20469
+t POST images/prune?filters='{"dangling":["false"]}' 200
 
 # to be used in prune until filter tests
 podman image build -t test1:latest -<<EOF
@@ -234,7 +280,7 @@ response_headers=$(cat "$WORKDIR/curl.headers.out")
 like "$response_headers" ".*application/json.*" "header does not contain application/json"
 
 # Build api response header must contain Content-type: application/json
-t POST "build?dockerfile=containerfile&pull=never" $CONTAINERFILE_TAR application/json 200
+t POST "build?dockerfile=containerfile&pull=1" $CONTAINERFILE_TAR application/json 200
 response_headers=$(cat "$WORKDIR/curl.headers.out")
 like "$response_headers" ".*application/json.*" "header does not contain application/json"
 
@@ -266,6 +312,12 @@ else
     _show_ok 1 "compat quiet build"
 fi
 
+# Do not try a real build here to tests the comma separated syntax as emulation
+# is slow and may not work everywhere, checking the error is good enough to know
+# we parsed it correctly on the server I would say
+t POST "/build?q=1&dockerfile=containerfile&platform=linux/amd64,test" $CONTAINERFILE_WITH_ERR_TAR 400 \
+  .message="failed to parse query parameter 'platform': \"test\": invalid platform syntax for --platform=\"test\": \"test\": unknown operating system or architecture: invalid argument"
+
 cleanBuildTest
 
 # compat API vs libpod API event differences:
@@ -282,10 +334,12 @@ t DELETE libpod/images/test:test 200
 # This sleep seems to avoid the race.
 # If it fails and begins to flake, investigate a retry loop.
 sleep 1
+# FIXME 2024-05-30 #22726: when running with a local cache registry, DELETE
+# sometimes produces 5-6 events instead of the desired only-one.
 t GET "libpod/events?stream=false&since=$START"  200  \
-  'select(.status | contains("remove")).Action=remove'
+  'select(.status | contains("remove")).Actor.Attributes.name~.*localhost/test:test'
 t GET "events?stream=false&since=$START"  200  \
-  'select(.status | contains("delete")).Action=delete'
+  'select(.status | contains("delete")).Actor.Attributes.name~.*localhost/test:test'
 
 # Test image removal with `noprune={true,false}`
 podman create --name c_test1 $IMAGE true
@@ -316,5 +370,33 @@ t GET libpod/images/$iid_test2/exists 204
 t DELETE images/$iid_test2?noprune=false 200
 t GET libpod/images/$iid_test1/exists 404
 t GET libpod/images/$iid_test2/exists 404
+
+# If the /resolve tests fail, make sure to use ../registries.conf for the
+# podman-service.
+
+# With an alias, we only get one item back.
+t GET libpod/images/podman-desktop-test123:this/resolve 200 \
+  .Names[0]="florent.fr/will/like:this"
+
+# If no alias matches, we will get a candidate for each unqualified-search
+# registry.
+t GET libpod/images/no-alias-for-sure/resolve 200 \
+  .Names[0]="docker.io/library/no-alias-for-sure:latest" \
+  .Names[1]="quay.io/no-alias-for-sure:latest" \
+  .Names[2]="registry.fedoraproject.org/no-alias-for-sure:latest"
+
+# Test invalid input.
+t GET libpod/images/noCAPITALcharAllowed/resolve 400 \
+  .cause="repository name must be lowercase"
+
+
+START=$(date +%s.%N)
+# test pull-error API response
+podman pull --retry 0 localhost:5000/idonotexist || true
+t GET "libpod/events?stream=false&since=$START"  200  \
+  .status=pull-error \
+  .Action=pull-error \
+  .Actor.Attributes.name="localhost:5000/idonotexist" \
+  .Actor.Attributes.error~".*connection refused"
 
 # vim: filetype=sh

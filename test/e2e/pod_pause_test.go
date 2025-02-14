@@ -1,10 +1,11 @@
+//go:build linux || freebsd
+
 package integration
 
 import (
-	. "github.com/containers/podman/v4/test/utils"
+	. "github.com/containers/podman/v5/test/utils"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
-	. "github.com/onsi/gomega/gexec"
 )
 
 var _ = Describe("Podman pod pause", func() {
@@ -17,13 +18,21 @@ var _ = Describe("Podman pod pause", func() {
 	It("podman pod pause bogus pod", func() {
 		session := podmanTest.Podman([]string{"pod", "pause", "foobar"})
 		session.WaitWithDefaultTimeout()
-		Expect(session).To(ExitWithError())
+		expect := "no pod with name or ID foobar found: no such pod"
+		if IsRemote() {
+			expect = `unable to find pod "foobar": no such pod`
+		}
+		Expect(session).To(ExitWithError(125, expect))
 	})
 
 	It("podman unpause bogus pod", func() {
 		session := podmanTest.Podman([]string{"pod", "unpause", "foobar"})
 		session.WaitWithDefaultTimeout()
-		Expect(session).To(ExitWithError())
+		expect := "no pod with name or ID foobar found: no such pod"
+		if IsRemote() {
+			expect = `unable to find pod "foobar": no such pod`
+		}
+		Expect(session).To(ExitWithError(125, expect))
 	})
 
 	It("podman pod pause a created pod by id", func() {
@@ -32,7 +41,7 @@ var _ = Describe("Podman pod pause", func() {
 
 		result := podmanTest.Podman([]string{"pod", "pause", podid})
 		result.WaitWithDefaultTimeout()
-		Expect(result).Should(Exit(0))
+		Expect(result).Should(ExitCleanly())
 	})
 
 	It("pause a running pod by id", func() {
@@ -41,12 +50,12 @@ var _ = Describe("Podman pod pause", func() {
 
 		session := podmanTest.RunTopContainerInPod("", podid)
 		session.WaitWithDefaultTimeout()
-		Expect(session).Should(Exit(0))
+		Expect(session).Should(ExitCleanly())
 
 		result := podmanTest.Podman([]string{"pod", "pause", podid})
 		result.WaitWithDefaultTimeout()
 
-		Expect(result).Should(Exit(0))
+		Expect(result).Should(ExitCleanly())
 		Expect(podmanTest.NumberOfContainersRunning()).To(Equal(0))
 		Expect(podmanTest.GetContainerStatus()).To(ContainSubstring(pausedState))
 
@@ -61,18 +70,18 @@ var _ = Describe("Podman pod pause", func() {
 
 		session := podmanTest.RunTopContainerInPod("", podid)
 		session.WaitWithDefaultTimeout()
-		Expect(session).Should(Exit(0))
+		Expect(session).Should(ExitCleanly())
 
 		result := podmanTest.Podman([]string{"pod", "pause", podid})
 		result.WaitWithDefaultTimeout()
-		Expect(result).Should(Exit(0))
+		Expect(result).Should(ExitCleanly())
 		Expect(result.OutputToStringArray()).Should(HaveLen(1))
 		Expect(podmanTest.NumberOfContainersRunning()).To(Equal(0))
 		Expect(podmanTest.GetContainerStatus()).To(Equal(pausedState))
 
 		result = podmanTest.Podman([]string{"pod", "unpause", podid})
 		result.WaitWithDefaultTimeout()
-		Expect(result).Should(Exit(0))
+		Expect(result).Should(ExitCleanly())
 		Expect(result.OutputToStringArray()).Should(HaveLen(1))
 		Expect(podmanTest.NumberOfContainersRunning()).To(Equal(1))
 	})
@@ -83,18 +92,18 @@ var _ = Describe("Podman pod pause", func() {
 
 		session := podmanTest.RunTopContainerInPod("", "test1")
 		session.WaitWithDefaultTimeout()
-		Expect(session).Should(Exit(0))
+		Expect(session).Should(ExitCleanly())
 
 		result := podmanTest.Podman([]string{"pod", "pause", "test1"})
 		result.WaitWithDefaultTimeout()
-		Expect(result).Should(Exit(0))
+		Expect(result).Should(ExitCleanly())
 		Expect(result.OutputToStringArray()).Should(HaveLen(1))
 		Expect(podmanTest.NumberOfContainersRunning()).To(Equal(0))
 		Expect(podmanTest.GetContainerStatus()).To(Equal(pausedState))
 
 		result = podmanTest.Podman([]string{"pod", "unpause", "test1"})
 		result.WaitWithDefaultTimeout()
-		Expect(result).Should(Exit(0))
+		Expect(result).Should(ExitCleanly())
 		Expect(result.OutputToStringArray()).Should(HaveLen(1))
 		Expect(podmanTest.NumberOfContainersRunning()).To(Equal(1))
 	})
@@ -107,21 +116,21 @@ var _ = Describe("Podman pod pause", func() {
 
 		session := podmanTest.RunTopContainerInPod("", podid1)
 		session.WaitWithDefaultTimeout()
-		Expect(session).Should(Exit(0))
+		Expect(session).Should(ExitCleanly())
 		session = podmanTest.RunTopContainerInPod("", podid2)
 		session.WaitWithDefaultTimeout()
-		Expect(session).Should(Exit(0))
+		Expect(session).Should(ExitCleanly())
 
 		result := podmanTest.Podman([]string{"pod", "pause", podid1})
 		result.WaitWithDefaultTimeout()
-		Expect(result).Should(Exit(0))
+		Expect(result).Should(ExitCleanly())
 		Expect(result.OutputToStringArray()).Should(HaveLen(1))
 		Expect(podmanTest.NumberOfContainersRunning()).To(Equal(1))
 		Expect(podmanTest.GetContainerStatus()).To(ContainSubstring(pausedState))
 
 		result = podmanTest.Podman([]string{"pod", "unpause", "--all"})
 		result.WaitWithDefaultTimeout()
-		Expect(result).Should(Exit(0))
+		Expect(result).Should(ExitCleanly())
 		Expect(result.OutputToStringArray()).Should(HaveLen(1))
 		Expect(podmanTest.NumberOfContainersRunning()).To(Equal(2))
 	})

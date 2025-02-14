@@ -6,10 +6,10 @@ import (
 	"fmt"
 
 	"github.com/containers/common/libnetwork/types"
-	"github.com/containers/podman/v4/libpod/define"
-	"github.com/containers/podman/v4/pkg/bindings/network"
-	"github.com/containers/podman/v4/pkg/domain/entities"
-	"github.com/containers/podman/v4/pkg/errorhandling"
+	"github.com/containers/podman/v5/libpod/define"
+	"github.com/containers/podman/v5/pkg/bindings/network"
+	"github.com/containers/podman/v5/pkg/domain/entities"
+	"github.com/containers/podman/v5/pkg/errorhandling"
 )
 
 func (ic *ContainerEngine) NetworkUpdate(ctx context.Context, netName string, opts entities.NetworkUpdateOptions) error {
@@ -22,9 +22,9 @@ func (ic *ContainerEngine) NetworkList(ctx context.Context, opts entities.Networ
 	return network.List(ic.ClientCtx, options)
 }
 
-func (ic *ContainerEngine) NetworkInspect(ctx context.Context, namesOrIds []string, opts entities.InspectOptions) ([]types.Network, []error, error) {
+func (ic *ContainerEngine) NetworkInspect(ctx context.Context, namesOrIds []string, opts entities.InspectOptions) ([]entities.NetworkInspectReport, []error, error) {
 	var (
-		reports = make([]types.Network, 0, len(namesOrIds))
+		reports = make([]entities.NetworkInspectReport, 0, len(namesOrIds))
 		errs    = []error{}
 	)
 	options := new(network.InspectOptions)

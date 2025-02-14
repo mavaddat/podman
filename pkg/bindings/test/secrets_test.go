@@ -6,8 +6,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/containers/podman/v4/pkg/bindings"
-	"github.com/containers/podman/v4/pkg/bindings/secrets"
+	"github.com/containers/podman/v5/pkg/bindings"
+	"github.com/containers/podman/v5/pkg/bindings/secrets"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 	"github.com/onsi/gomega/gexec"
@@ -26,7 +26,7 @@ var _ = Describe("Podman secrets", func() {
 		bt.RestoreImagesFromCache()
 		s = bt.startAPIService()
 		time.Sleep(1 * time.Second)
-		connText, err = bindings.NewConnection(context.Background(), bt.sock)
+		connText, err = bindings.NewConnection(context.Background(), bt.sock) //nolint:fatcontext
 		Expect(err).ToNot(HaveOccurred())
 	})
 

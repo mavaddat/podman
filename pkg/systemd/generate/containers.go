@@ -1,3 +1,5 @@
+//go:build !remote
+
 package generate
 
 import (
@@ -10,11 +12,11 @@ import (
 	"text/template"
 	"time"
 
-	"github.com/containers/podman/v4/libpod"
-	libpodDefine "github.com/containers/podman/v4/libpod/define"
-	"github.com/containers/podman/v4/pkg/domain/entities"
-	"github.com/containers/podman/v4/pkg/systemd/define"
-	"github.com/containers/podman/v4/version"
+	"github.com/containers/podman/v5/libpod"
+	libpodDefine "github.com/containers/podman/v5/libpod/define"
+	"github.com/containers/podman/v5/pkg/domain/entities"
+	"github.com/containers/podman/v5/pkg/systemd/define"
+	"github.com/containers/podman/v5/version"
 	"github.com/sirupsen/logrus"
 	"github.com/spf13/pflag"
 )
@@ -469,8 +471,8 @@ func executeContainerTemplate(info *containerInfo, options entities.GenerateSyst
 			// because it does try to red the value from the environment
 			if !strings.Contains(env, "=") {
 				for _, containerEnv := range info.containerEnv {
-					split := strings.SplitN(containerEnv, "=", 2)
-					if split[0] == env {
+					key, _, _ := strings.Cut(containerEnv, "=")
+					if key == env {
 						info.ExtraEnvs = append(info.ExtraEnvs, escapeSystemdArg(containerEnv))
 					}
 				}
@@ -500,7 +502,7 @@ func executeContainerTemplate(info *containerInfo, options entities.GenerateSyst
 	}
 
 	if info.GenerateTimestamp {
-		info.TimeStamp = fmt.Sprintf("%v", time.Now().Format(time.UnixDate))
+		info.TimeStamp = time.Now().Format(time.UnixDate)
 	}
 	// Sort the slices to assure a deterministic output.
 	sort.Strings(info.BoundToServices)

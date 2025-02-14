@@ -33,7 +33,7 @@ $| = 1;
 # Stylesheet for highlighting or de-highlighting parts of lines
 our $CSS = <<'END_CSS';
 /* wrap long lines - don't require user to scroll right */
-pre        { line-break: normal; overflow-wrap: normal; white-space: pre-wrap; }
+.tt           { font-family: monospace; line-break: normal; overflow-wrap: normal; white-space: pre-wrap; }
 
 /* synopsis table at top */
 table.synopsis { border: none; border-collapse: collapse; margin-left: 2em; margin-top: 2ex; }
@@ -72,7 +72,7 @@ table.synopsis { border: none; border-collapse: collapse; margin-left: 2em; marg
 /* [It] is where the test happens but we don't need any special highlights */
 .ginkgo-it           { }
 
-/* Finall summary line at bottom */
+/* Final summary line at bottom */
 .ginkgo-final-success { background: #393; font-weight: bold; font-size: 150%; }
 .ginkgo-final-fail    { background: #f00; font-weight: bold; font-size: 150%; }
 
@@ -246,7 +246,7 @@ END_HTML
     # When running in cirrus, we have the commit SHA
     $git_commit = $ENV{CIRRUS_CHANGE_IN_REPO};
 
-    print { $out_fh } "<pre> <!-- begin processed output -->\n";
+    print { $out_fh } "<div class='tt'> <!-- begin processed output -->\n";
 
     # Assume rootful prompt, check for rootless (here and in log itself, below)
     my $Prompt = '#';
@@ -322,6 +322,16 @@ END_HTML
             #           1  12  3                 34         4             5   526
             $line =~ s{^(.*)(\/(containers\/[^/]+)(\/\S+\.py).*,\s+line\s+(\d+))(,\s+in.*)$}
                       {$1<a class="codelink" href='https://github.com/$3/blob/$git_commit$4#L$5'>$2</a>$6};
+
+            # And, sigh, Macintosh always has to be different
+            #           1              123    3 4   425  5
+            $line =~ s{^(.*/ci/task-\d+)((/\S+):(\d+))(.*)$}
+                      {$1<a class="codelink" href="https://github.com/containers/podman/blob/$git_commit$3#L$4">$2</a>$5};
+
+            # ...as does Windows
+            #           1                             123    3 4   435  5
+            $line =~ s{^(.*/Local/cirrus-ci-build/repo)((/\S+):(\d+))(.*)$}
+                      {$1<a class="codelink" href="https://github.com/containers/podman/blob/$git_commit$3#L$4">$2</a>$5}
         }
 
         # Try to identify the cirrus task
@@ -339,7 +349,7 @@ END_HTML
         # BATS handling. This will recognize num_tests both at start and end
         if ($line =~ /^1\.\.(\d+)$/) {
             $looks_like_bats = 1;
-            $bats_count{expected_total} = $1;
+            $bats_count{expected_total} += $1;
             undef $looks_like_python;
         }
         # Since the number of tests can't always be predicted, recognize
@@ -435,9 +445,14 @@ END_HTML
             if ($css) {
                 # Make it linkable, e.g. foo.html#t--00001
                 if ($line =~ /^(not\s+)?ok\s+(\d+)\s+(.*)/) {
-                    $line = sprintf("<a name='t--%05d'>%s</a>", $2, $line);
+                    my ($notok, $num, $name) = ($1, $2, $3);
+                    # Parallel system tests are shown as |nnn| instead of [nnn]
+                    my $p = '';
+                    $p = 'p' if $name =~ /^\s*\|\d+\|/;
 
-                    push @{$bats_count{__fail_list}}, [ $2, $3 ] if $1;
+                    $line = sprintf("<a name='t--%05d%s'>%s</a>", $num, $p, $line);
+
+                    push @{$bats_count{__fail_list}}, [ $num, $name ] if $notok;
                 }
                 $bats_count{$css}++;
                 $css = "bats-$css";
@@ -571,7 +586,7 @@ END_HTML
             $subtest_status = 'passed';         # until proven otherwise
             $subtest_name = '';
 
-            print { $out_fh } "</pre>\n<hr />\n<pre>\n";
+            print { $out_fh } "</div>\n<hr />\n<div class='tt'>\n";
             # Always show timestamp at start of each new test
             $previous_timestamp = '';
             next LINE;
@@ -581,7 +596,7 @@ END_HTML
             # Highlight the important (non-boilerplate) podman command.
             $line =~ s/\s+--remote\s+/ /g;      # --remote takes no args
             # Strip out the global podman options, but show them on hover
-            $line =~ s{(\S+\/podman(-remote)?)((\s+--(root|runroot|runtime|tmpdir|storage-opt|conmon|cgroup-manager|\S+-backend|network-config-dir|storage-driver|url) \S+)*)(\s.*)}{
+            $line =~ s{(\S+\/podman(-remote)?)((\s+--(root|runroot|runtime|tmpdir|storage-opt|conmon|cgroup-manager|\S+-backend|network-config-dir|pull-option|storage-driver|url) \S+)*)(\s.*)}{
                 my ($full_path, $remote, $options, $args) = ($1, $2||'', $3, $6);
 
                 $options =~ s/^\s+//;
@@ -597,6 +612,11 @@ END_HTML
                       {<span title="$1"><b>$2$3</b></span><span class="boring">$4</span><b>$5</b>};
 
             $current_output = '';
+        }
+        # Windows
+        #                 1   12                        2  3  3
+        elsif ($line =~ /^(\s*)(C:\\Users.*\\podman\.exe)\s(.*)$/) {
+            $line = qq{$1C&gt; <span title="$2"><b>podman.exe</b></span> <b>$3</b>};
         }
         elsif ($line =~ /^\s*Error:/ || $line =~ / level=(warning|error) /) {
             $line = "<span class='log-warning'>" . $line . "</span>";
@@ -655,7 +675,7 @@ END_HTML
                 #   https://onsi.github.io/ginkgo/#generating-reports-programmatically
                 $after_divider = 999;
             }
-            elsif ($line =~ m!^\s*/\S+!) {
+            elsif ($line =~ m!^\s*(/\S+|C:/)!) {
                 # Source code path: skip
             }
             elsif ($line =~ /<b/) {
@@ -666,7 +686,14 @@ END_HTML
                 $subtest_name .= " " if $subtest_name;
                 $subtest_name .= $2;
                 my $id = make_id($subtest_name, 'anchor');
-                $line = "<a name='t--$id'><h2 class=\"log-$subtest_status\">$line</h2></a>";
+                $line = "<a name='t--$id' /><h2 class=\"log-$subtest_status\">$line</h2>";
+
+                # Special case for tests that fail outside of a Describe()
+                # block, e.g., global After/BeforeEach. We still want to
+                # highlight those in the <h2>, but do not include "TOP-LEVEL"
+                # in the anchor name for the actual test name (which will
+                # come later, a few lines down).
+                $subtest_name = '' if $subtest_name =~ /^\s*TOP-LEVEL/;
             }
         }
         ++$after_divider;
@@ -680,6 +707,7 @@ END_HTML
         #              1     2           2   3  3   4                       4   15           5
         if ($line =~ /^(\s*\[(FAIL|PANIC!)\] (.*) \[(It|BeforeEach|AfterEach)\] )([A-Za-z-].*)/) {
             my ($lhs, $type, $desc, $ginkgo_fluff, $testname) = ($1, $2, $3, $4, $5);
+            $desc =~ s/^TOP-LEVEL\s*//;
             my $id = make_id("$desc $testname", 'link');
 
             $line = "<span class=\"log-error\">$lhs<a href='#t--$id'>$testname</a></span>";
@@ -716,7 +744,7 @@ END_HTML
             print { $out_fh } "</span>\n";
         }
 
-        print { $out_fh } "</pre>  <!-- end processed output -->\n";
+        print { $out_fh } "</div>  <!-- end processed output -->\n";
 
         # Did we find a cirrus task? Link back.
         if ($cirrus_task) {
@@ -788,6 +816,7 @@ sub make_id {
 
     state %counter;
 
+    $name =~ s/\r//g;                   # strip windows ^Ms
     $name =~ s/^\s+|\s+$//g;            # strip leading/trailing whitespace
     $name =~ s/^\[It\]\s*//;            # strip leading "[It] "
     $name =~ s/\&#\d+;//g;              # 'doesn&#39;t' -> 'doesnt'
@@ -840,17 +869,24 @@ END_SYNOPSIS
     $test_name =~ s/\\\s+/ /g;
     $s .= _tr("Test name", $test_name);
 
+    # Macs always have to be different
+    my $is_mac = ($test_name =~ /darwin/);
+
     # Link to further Cirrus results, e.g. other runs.
     # Build is mostly boring, it's usually TASK that we want to see.
     $s .= _tr("Cirrus", sprintf("<small>Build %s</small> / <b>Task %s</b>",
                                 _a("{CIRRUS_BUILD_ID}", "https://cirrus-ci.com/build/{CIRRUS_BUILD_ID}"),
                                 _a("{CIRRUS_TASK_ID}", "https://cirrus-ci.com/task/{CIRRUS_TASK_ID}")));
 
-    # Logs: link to original (unformatted) log; journal; and, if remote, server
-    my @logs = (
-        _a("main", "https://api.cirrus-ci.com/v1/task/{CIRRUS_TASK_ID}/logs/main.log"),
-        _a("journal", "https://api.cirrus-ci.com/v1/task/{CIRRUS_TASK_ID}/logs/journal.log"),
-    );
+    # Logs: link to original (unformatted) log; journal; cleanup tracer; and, if remote, server
+    my @logs;
+    push @logs, _a("main", sprintf("https://api.cirrus-ci.com/v1/task/{CIRRUS_TASK_ID}/logs/%s.log",
+                                   ($is_mac ? 'test' : 'main')));
+    push @logs, _a("journal", "https://api.cirrus-ci.com/v1/task/{CIRRUS_TASK_ID}/logs/journal.log")
+        unless $is_mac;
+
+    push @logs, _a("cleanup tracer", "https://api.cirrus-ci.com/v1/artifact/task/{CIRRUS_TASK_ID}/cleanup_tracer/podman-cleanup-tracer.log")
+        unless $is_mac;
 
     # System tests are single-threaded, and have a server log available
     if ($test_name =~ /sys\s+remote\s/) {
@@ -858,10 +894,13 @@ END_SYNOPSIS
     }
     $s .= _tr("Logs", join(" / ", @logs));
 
-    # BASE_SHA can tell us if our parent includes--or doesn't--a purported
-    # fix for a flake. Note that "commits", plural, links to a git history
-    # listing; if we used "commit", singular, that would be less useful.
-    $s .= _tr("Base commit", _a("{CIRRUS_BASE_SHA}", "https://{CIRRUS_REPO_CLONE_HOST}/{CIRRUS_REPO_FULL_NAME}/commits/{CIRRUS_BASE_SHA}"));
+    # PR_BASE_SHA (set in lib.sh) can tell us if our parent includes--or
+    # doesn't--a purported fix for a flake. Note about the URL: "commits", plural,
+    # links to a git history listing; if we used "commit", singular, that would
+    # be less useful.
+    if (my $base = $ENV{PR_BASE_SHA}) {
+        $s .= _tr("Base commit", _a($base, "https://{CIRRUS_REPO_CLONE_HOST}/{CIRRUS_REPO_FULL_NAME}/commits/$base"));
+    }
 
     $s .= "</table>\n";
     return $s;

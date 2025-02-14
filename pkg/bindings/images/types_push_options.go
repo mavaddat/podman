@@ -5,7 +5,7 @@ import (
 	"io"
 	"net/url"
 
-	"github.com/containers/podman/v4/pkg/bindings/internal/util"
+	"github.com/containers/podman/v5/pkg/bindings/internal/util"
 )
 
 // Changed returns true if named field has been set
@@ -76,6 +76,51 @@ func (o *PushOptions) GetCompressionFormat() string {
 		return z
 	}
 	return *o.CompressionFormat
+}
+
+// WithCompressionLevel set field CompressionLevel to given value
+func (o *PushOptions) WithCompressionLevel(value int) *PushOptions {
+	o.CompressionLevel = &value
+	return o
+}
+
+// GetCompressionLevel returns value of field CompressionLevel
+func (o *PushOptions) GetCompressionLevel() int {
+	if o.CompressionLevel == nil {
+		var z int
+		return z
+	}
+	return *o.CompressionLevel
+}
+
+// WithForceCompressionFormat set field ForceCompressionFormat to given value
+func (o *PushOptions) WithForceCompressionFormat(value bool) *PushOptions {
+	o.ForceCompressionFormat = &value
+	return o
+}
+
+// GetForceCompressionFormat returns value of field ForceCompressionFormat
+func (o *PushOptions) GetForceCompressionFormat() bool {
+	if o.ForceCompressionFormat == nil {
+		var z bool
+		return z
+	}
+	return *o.ForceCompressionFormat
+}
+
+// WithAddCompression set field AddCompression to given value
+func (o *PushOptions) WithAddCompression(value []string) *PushOptions {
+	o.AddCompression = value
+	return o
+}
+
+// GetAddCompression returns value of field AddCompression
+func (o *PushOptions) GetAddCompression() []string {
+	if o.AddCompression == nil {
+		var z []string
+		return z
+	}
+	return o.AddCompression
 }
 
 // WithFormat set field Format to given value
@@ -151,6 +196,36 @@ func (o *PushOptions) GetRemoveSignatures() bool {
 		return z
 	}
 	return *o.RemoveSignatures
+}
+
+// WithRetry set field Retry to given value
+func (o *PushOptions) WithRetry(value uint) *PushOptions {
+	o.Retry = &value
+	return o
+}
+
+// GetRetry returns value of field Retry
+func (o *PushOptions) GetRetry() uint {
+	if o.Retry == nil {
+		var z uint
+		return z
+	}
+	return *o.Retry
+}
+
+// WithRetryDelay set field RetryDelay to given value
+func (o *PushOptions) WithRetryDelay(value string) *PushOptions {
+	o.RetryDelay = &value
+	return o
+}
+
+// GetRetryDelay returns value of field RetryDelay
+func (o *PushOptions) GetRetryDelay() string {
+	if o.RetryDelay == nil {
+		var z string
+		return z
+	}
+	return *o.RetryDelay
 }
 
 // WithUsername set field Username to given value

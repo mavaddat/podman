@@ -6,9 +6,9 @@ import (
 	"os"
 
 	"github.com/containers/common/pkg/report"
-	"github.com/containers/podman/v4/cmd/podman/common"
-	"github.com/containers/podman/v4/cmd/podman/registry"
-	"github.com/containers/podman/v4/pkg/domain/entities"
+	"github.com/containers/podman/v5/cmd/podman/common"
+	"github.com/containers/podman/v5/cmd/podman/registry"
+	"github.com/containers/podman/v5/pkg/domain/entities"
 	"github.com/spf13/cobra"
 )
 
@@ -65,7 +65,7 @@ func mount(cmd *cobra.Command, args []string) error {
 		return errors.New("when using the --all switch, you may not pass any image names or IDs")
 	}
 
-	reports, err := registry.ImageEngine().Mount(registry.GetContext(), args, mountOpts)
+	reports, err := registry.ImageEngine().Mount(registry.Context(), args, mountOpts)
 	if err != nil {
 		return err
 	}

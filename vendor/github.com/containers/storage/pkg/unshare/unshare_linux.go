@@ -1,5 +1,4 @@
 //go:build linux
-// +build linux
 
 package unshare
 
@@ -21,9 +20,9 @@ import (
 
 	"github.com/containers/storage/pkg/idtools"
 	"github.com/containers/storage/pkg/reexec"
+	"github.com/moby/sys/capability"
 	"github.com/opencontainers/runtime-spec/specs-go"
 	"github.com/sirupsen/logrus"
-	"github.com/syndtr/gocapability/capability"
 )
 
 // Cmd wraps an exec.Cmd created by the reexec package in unshare(), and
@@ -99,7 +98,7 @@ func IsSetID(path string, modeid os.FileMode, capid capability.Cap) (bool, error
 	return cap.Get(capability.EFFECTIVE, capid), nil
 }
 
-func (c *Cmd) Start() error {
+func (c *Cmd) Start() (retErr error) {
 	runtime.LockOSThread()
 	defer runtime.UnlockOSThread()
 
@@ -129,7 +128,7 @@ func (c *Cmd) Start() error {
 	if err != nil {
 		pidRead.Close()
 		pidWrite.Close()
-		return fmt.Errorf("creating pid pipe: %w", err)
+		return fmt.Errorf("creating continue read/write pipe: %w", err)
 	}
 	c.Env = append(c.Env, fmt.Sprintf("_Containers-continue-pipe=%d", len(c.ExtraFiles)+3))
 	c.ExtraFiles = append(c.ExtraFiles, continueRead)
@@ -167,6 +166,15 @@ func (c *Cmd) Start() error {
 	if err != nil {
 		return err
 	}
+
+	// If the function fails from here, we need to make sure the
+	// child process is killed and properly cleaned up.
+	defer func() {
+		if retErr != nil {
+			_ = c.Cmd.Process.Kill()
+			_ = c.Cmd.Wait()
+		}
+	}()
 
 	// Close the ends of the pipes that the parent doesn't need.
 	continueRead.Close()
@@ -441,6 +449,16 @@ func GetRootlessUID() int {
 	return os.Getuid()
 }
 
+// GetRootlessGID returns the GID of the user in the parent userNS
+func GetRootlessGID() int {
+	gidEnv := getenv("_CONTAINERS_ROOTLESS_GID")
+	if gidEnv != "" {
+		u, _ := strconv.Atoi(gidEnv)
+		return u
+	}
+	return os.Getgid()
+}
+
 // RootlessEnv returns the environment settings for the rootless containers
 func RootlessEnv() []string {
 	return append(os.Environ(), UsernsEnvName+"=done")
@@ -516,8 +534,11 @@ func MaybeReexecUsingUserNamespace(evenForRoot bool) {
 	} else {
 		// If we have CAP_SYS_ADMIN, then we don't need to create a new namespace in order to be able
 		// to use unshare(), so don't bother creating a new user namespace at this point.
-		capabilities, err := capability.NewPid(0)
+		capabilities, err := capability.NewPid2(0)
+		bailOnError(err, "Initializing a new Capabilities object of pid 0")
+		err = capabilities.Load()
 		bailOnError(err, "Reading the current capabilities sets")
+
 		if capabilities.Get(capability.EFFECTIVE, capability.CAP_SYS_ADMIN) {
 			return
 		}
@@ -577,7 +598,12 @@ func MaybeReexecUsingUserNamespace(evenForRoot bool) {
 	cmd.Hook = func(int) error {
 		go func() {
 			for receivedSignal := range interrupted {
-				cmd.Cmd.Process.Signal(receivedSignal)
+				if err := cmd.Cmd.Process.Signal(receivedSignal); err != nil {
+					logrus.Warnf(
+						"Failed to send a signal '%d' to the Process (PID: %d): %v",
+						receivedSignal, cmd.Cmd.Process.Pid, err,
+					)
+				}
 			}
 		}()
 		return nil

@@ -25,7 +25,7 @@ import (
 	"strconv"
 	"strings"
 
-	inf "gopkg.in/inf.v0"
+	"gopkg.in/inf.v0"
 )
 
 // Quantity is a fixed-point representation of a number.
@@ -87,7 +87,7 @@ import (
 //
 // This format is intended to make it difficult to use these numbers without
 // writing some sort of special handling code in the hopes that that will
-// cause implementors to also use a fixed point implementation.
+// cause implementers to also use a fixed point implementation.
 //
 // +protobuf=true
 // +protobuf.embed=string

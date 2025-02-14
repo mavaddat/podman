@@ -6,12 +6,12 @@ import (
 	"time"
 
 	"github.com/containers/common/pkg/completion"
-	"github.com/containers/podman/v4/cmd/podman/common"
-	"github.com/containers/podman/v4/cmd/podman/registry"
-	"github.com/containers/podman/v4/cmd/podman/utils"
-	"github.com/containers/podman/v4/cmd/podman/validate"
-	"github.com/containers/podman/v4/pkg/domain/entities"
-	"github.com/containers/podman/v4/pkg/rootless"
+	"github.com/containers/podman/v5/cmd/podman/common"
+	"github.com/containers/podman/v5/cmd/podman/registry"
+	"github.com/containers/podman/v5/cmd/podman/utils"
+	"github.com/containers/podman/v5/cmd/podman/validate"
+	"github.com/containers/podman/v5/pkg/domain/entities"
+	"github.com/containers/podman/v5/pkg/rootless"
 	"github.com/spf13/cobra"
 )
 
@@ -32,7 +32,6 @@ var (
 		ValidArgsFunction: common.AutocompleteContainersAndImages,
 		Example: `podman container restore ctrID
   podman container restore imageID
-  podman container restore --latest
   podman container restore --all`,
 	}
 )
@@ -106,7 +105,7 @@ func restore(cmd *cobra.Command, args []string) error {
 	// Check if the container exists (#15055)
 	exists := &entities.BoolReport{Value: false}
 	for _, ctr := range args {
-		exists, e = registry.ContainerEngine().ContainerExists(registry.GetContext(), ctr, entities.ContainerExistsOptions{})
+		exists, e = registry.ContainerEngine().ContainerExists(registry.Context(), ctr, entities.ContainerExistsOptions{})
 		if e != nil {
 			return e
 		}
@@ -123,7 +122,7 @@ func restore(cmd *cobra.Command, args []string) error {
 		}
 	}
 
-	notImport := (!restoreOptions.CheckpointImage && restoreOptions.Import == "")
+	notImport := !restoreOptions.CheckpointImage && restoreOptions.Import == ""
 
 	if notImport && restoreOptions.ImportPrevious != "" {
 		return fmt.Errorf("--import-previous can only be used with image or --import")

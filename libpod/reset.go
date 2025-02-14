@@ -1,3 +1,5 @@
+//go:build !remote
+
 package libpod
 
 import (
@@ -9,10 +11,10 @@ import (
 
 	"github.com/containers/common/libimage"
 	"github.com/containers/common/libnetwork/types"
-	"github.com/containers/podman/v4/libpod/define"
-	"github.com/containers/podman/v4/pkg/errorhandling"
-	"github.com/containers/podman/v4/pkg/rootless"
-	"github.com/containers/podman/v4/pkg/util"
+	blobinfocache "github.com/containers/image/v5/pkg/blobinfocache"
+	"github.com/containers/podman/v5/libpod/define"
+	"github.com/containers/podman/v5/pkg/errorhandling"
+	"github.com/containers/podman/v5/pkg/util"
 	"github.com/containers/storage"
 	"github.com/containers/storage/pkg/lockfile"
 	stypes "github.com/containers/storage/types"
@@ -89,17 +91,38 @@ func (r *Runtime) removeAllDirs() error {
 	return lastErr
 }
 
-// Reset removes all storage
-func (r *Runtime) reset(ctx context.Context) error {
-	var timeout *uint
+// Reset removes all Libpod files.
+// All containers, images, volumes, pods, and networks will be removed.
+// Calls Shutdown(), rendering the runtime unusable after this is run.
+func (r *Runtime) Reset(ctx context.Context) error {
+	// Acquire the alive lock and hold it.
+	// Ensures that we don't let other Podman commands run while we are
+	// removing everything.
+	aliveLock, err := r.getRuntimeAliveLock()
+	if err != nil {
+		return fmt.Errorf("retrieving alive lock: %w", err)
+	}
+	aliveLock.Lock()
+	defer aliveLock.Unlock()
+
+	if !r.valid {
+		return define.ErrRuntimeStopped
+	}
+
+	var timeout uint = 0
 	pods, err := r.GetAllPods()
 	if err != nil {
 		return err
 	}
 	for _, p := range pods {
-		if err := r.RemovePod(ctx, p, true, true, timeout); err != nil {
+		if ctrs, err := r.RemovePod(ctx, p, true, true, &timeout); err != nil {
 			if errors.Is(err, define.ErrNoSuchPod) {
 				continue
+			}
+			for ctr, err := range ctrs {
+				if err != nil {
+					logrus.Errorf("Error removing pod %s container %s: %v", p.ID(), ctr, err)
+				}
 			}
 			logrus.Errorf("Removing Pod %s: %v", p.ID(), err)
 		}
@@ -111,13 +134,23 @@ func (r *Runtime) reset(ctx context.Context) error {
 	}
 
 	for _, c := range ctrs {
-		if err := r.RemoveContainer(ctx, c, true, true, timeout); err != nil {
-			if err := r.RemoveStorageContainer(c.ID(), true); err != nil {
-				if errors.Is(err, define.ErrNoSuchCtr) {
-					continue
-				}
-				logrus.Errorf("Removing container %s: %v", c.ID(), err)
+		if ctrs, _, err := r.RemoveContainerAndDependencies(ctx, c, true, true, &timeout); err != nil {
+			for ctr, err := range ctrs {
+				logrus.Errorf("Error removing container %s: %v", ctr, err)
 			}
+
+			if errors.Is(err, define.ErrNoSuchCtr) || errors.Is(err, define.ErrCtrRemoved) {
+				continue
+			}
+
+			logrus.Errorf("Removing container %s: %v", c.ID(), err)
+
+			// There's no point trying a storage container removal
+			// here. High likelihood it doesn't work
+			// (RemoveStorageContainer will refuse to remove if a
+			// container exists in the Libpod database) and, even if
+			// it would, we'll get the container later on during
+			// image removal.
 		}
 	}
 
@@ -125,22 +158,31 @@ func (r *Runtime) reset(ctx context.Context) error {
 		logrus.Errorf("Stopping pause process: %v", err)
 	}
 
-	rmiOptions := &libimage.RemoveImagesOptions{Filters: []string{"readonly=false"}}
-	if _, rmiErrors := r.LibimageRuntime().RemoveImages(ctx, nil, rmiOptions); rmiErrors != nil {
-		return errorhandling.JoinErrors(rmiErrors)
-	}
-
+	// Volumes before images, as volumes can mount images.
 	volumes, err := r.state.AllVolumes()
 	if err != nil {
 		return err
 	}
 	for _, v := range volumes {
-		if err := r.RemoveVolume(ctx, v, true, timeout); err != nil {
+		if err := r.RemoveVolume(ctx, v, true, &timeout); err != nil {
 			if errors.Is(err, define.ErrNoSuchVolume) {
 				continue
 			}
 			logrus.Errorf("Removing volume %s: %v", v.config.Name, err)
 		}
+	}
+
+	// Set force and ignore.
+	// Ignore shouldn't be necessary, but it seems safer. We want everything
+	// gone anyways...
+	rmiOptions := &libimage.RemoveImagesOptions{
+		Force:               true,
+		Ignore:              true,
+		RemoveContainerFunc: r.RemoveContainersForImageCallback(ctx),
+		Filters:             []string{"readonly=false"},
+	}
+	if _, rmiErrors := r.LibimageRuntime().RemoveImages(ctx, nil, rmiOptions); rmiErrors != nil {
+		return errorhandling.JoinErrors(rmiErrors)
 	}
 
 	// remove all networks
@@ -195,7 +237,7 @@ func (r *Runtime) reset(ctx context.Context) error {
 			prevError = err
 		}
 	}
-	runtimeDir, err := util.GetRuntimeDir()
+	runtimeDir, err := util.GetRootlessRuntimeDir()
 	if err != nil {
 		return err
 	}
@@ -216,7 +258,15 @@ func (r *Runtime) reset(ctx context.Context) error {
 			prevError = err
 		}
 	}
-	if storageConfPath, err := storage.DefaultConfigFile(rootless.IsRootless()); err == nil {
+
+	if err := blobinfocache.CleanupDefaultCache(nil); err != nil {
+		if prevError != nil {
+			logrus.Error(prevError)
+		}
+		prevError = err
+	}
+
+	if storageConfPath, err := storage.DefaultConfigFile(); err == nil {
 		switch storageConfPath {
 		case stypes.SystemConfigFile:
 			break
@@ -227,6 +277,14 @@ func (r *Runtime) reset(ctx context.Context) error {
 			}
 		}
 	} else {
+		if prevError != nil {
+			logrus.Error(prevError)
+		}
+		prevError = err
+	}
+
+	// Shut down the runtime, it's no longer usable after mass-deletion.
+	if err := r.Shutdown(false); err != nil {
 		if prevError != nil {
 			logrus.Error(prevError)
 		}

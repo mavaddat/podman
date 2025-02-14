@@ -4,10 +4,10 @@ import (
 	"errors"
 	"fmt"
 
-	"github.com/containers/podman/v4/cmd/podman/common"
-	"github.com/containers/podman/v4/cmd/podman/registry"
-	"github.com/containers/podman/v4/cmd/podman/utils"
-	"github.com/containers/podman/v4/pkg/domain/entities"
+	"github.com/containers/podman/v5/cmd/podman/common"
+	"github.com/containers/podman/v5/cmd/podman/registry"
+	"github.com/containers/podman/v5/cmd/podman/utils"
+	"github.com/containers/podman/v5/pkg/domain/entities"
 	"github.com/spf13/cobra"
 	"github.com/spf13/pflag"
 )
@@ -58,7 +58,7 @@ func unmount(cmd *cobra.Command, args []string) error {
 	if len(args) > 0 && unmountOpts.All {
 		return errors.New("when using the --all switch, you may not pass any image names or IDs")
 	}
-	reports, err := registry.ImageEngine().Unmount(registry.GetContext(), args, unmountOpts)
+	reports, err := registry.ImageEngine().Unmount(registry.Context(), args, unmountOpts)
 	if err != nil {
 		return err
 	}

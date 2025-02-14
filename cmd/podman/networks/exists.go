@@ -1,8 +1,8 @@
 package network
 
 import (
-	"github.com/containers/podman/v4/cmd/podman/common"
-	"github.com/containers/podman/v4/cmd/podman/registry"
+	"github.com/containers/podman/v5/cmd/podman/common"
+	"github.com/containers/podman/v5/cmd/podman/registry"
 	"github.com/spf13/cobra"
 )
 
@@ -27,7 +27,7 @@ func init() {
 }
 
 func networkExists(cmd *cobra.Command, args []string) error {
-	response, err := registry.ContainerEngine().NetworkExists(registry.GetContext(), args[0])
+	response, err := registry.ContainerEngine().NetworkExists(registry.Context(), args[0])
 	if err != nil {
 		return err
 	}

@@ -1,9 +1,13 @@
+//go:build !remote
+
 package libimage
 
 import (
 	"context"
+	"errors"
 
 	"github.com/containers/storage"
+	storageTypes "github.com/containers/storage/types"
 	ociv1 "github.com/opencontainers/image-spec/specs-go/v1"
 	"github.com/sirupsen/logrus"
 )
@@ -30,7 +34,19 @@ func (t *layerTree) node(layerID string) *layerNode {
 	return node
 }
 
+// ErrorIsImageUnknown returns true if the specified error indicates that an
+// image is unknown or has been partially removed (e.g., a missing layer).
+func ErrorIsImageUnknown(err error) bool {
+	return errors.Is(err, storage.ErrImageUnknown) ||
+		errors.Is(err, storageTypes.ErrLayerUnknown) ||
+		errors.Is(err, storageTypes.ErrSizeUnknown) ||
+		errors.Is(err, storage.ErrNotAnImage)
+}
+
 // toOCI returns an OCI image for the specified image.
+//
+// WARNING: callers are responsible for handling cases where the target image
+// has been (partially) removed and can use `ErrorIsImageUnknown` to detect it.
 func (t *layerTree) toOCI(ctx context.Context, i *Image) (*ociv1.Image, error) {
 	var err error
 	oci, exists := t.ociCache[i.ID()]
@@ -73,21 +89,18 @@ func (l *layerNode) repoTags() ([]string, error) {
 	return orderedTags, nil
 }
 
-// layerTree extracts a layerTree from the layers in the local storage and
-// relates them to the specified images.
-func (r *Runtime) layerTree(images []*Image) (*layerTree, error) {
-	layers, err := r.store.Layers()
+// newFreshLayerTree extracts a layerTree from consistent layers and images in the local storage.
+func (r *Runtime) newFreshLayerTree() (*layerTree, error) {
+	images, layers, err := r.getImagesAndLayers()
 	if err != nil {
 		return nil, err
 	}
+	return r.newLayerTreeFromData(images, layers)
+}
 
-	if images == nil {
-		images, err = r.ListImages(context.Background(), nil, nil)
-		if err != nil {
-			return nil, err
-		}
-	}
-
+// newLayerTreeFromData extracts a layerTree from the given the layers and images.
+// The caller is responsible for (layers, images) being consistent.
+func (r *Runtime) newLayerTreeFromData(images []*Image, layers []storage.Layer) (*layerTree, error) {
 	tree := layerTree{
 		nodes:    make(map[string]*layerNode),
 		ociCache: make(map[string]*ociv1.Image),
@@ -119,7 +132,7 @@ func (r *Runtime) layerTree(images []*Image) (*layerTree, error) {
 			// mistake. Users may not be able to recover, so we're now
 			// throwing a warning to guide them to resolve the issue and
 			// turn the errors non-fatal.
-			logrus.Warnf("Top layer %s of image %s not found in layer tree. The storage may be corrupted, consider running `podman system reset`.", topLayer, img.ID())
+			logrus.Warnf("Top layer %s of image %s not found in layer tree. The storage may be corrupted, consider running `podman system check`.", topLayer, img.ID())
 			continue
 		}
 		node.images = append(node.images, img)
@@ -133,7 +146,9 @@ func (t *layerTree) layersOf(image *Image) []*storage.Layer {
 	var layers []*storage.Layer
 	node := t.node(image.TopLayer())
 	for node != nil {
-		layers = append(layers, node.layer)
+		if node.layer != nil {
+			layers = append(layers, node.layer)
+		}
 		node = node.parent
 	}
 	return layers
@@ -155,6 +170,9 @@ func (t *layerTree) children(ctx context.Context, parent *Image, all bool) ([]*I
 	parentID := parent.ID()
 	parentOCI, err := t.toOCI(ctx, parent)
 	if err != nil {
+		if ErrorIsImageUnknown(err) {
+			return nil, nil
+		}
 		return nil, err
 	}
 
@@ -165,6 +183,9 @@ func (t *layerTree) children(ctx context.Context, parent *Image, all bool) ([]*I
 		}
 		childOCI, err := t.toOCI(ctx, child)
 		if err != nil {
+			if ErrorIsImageUnknown(err) {
+				return false, nil
+			}
 			return false, err
 		}
 		// History check.
@@ -179,6 +200,17 @@ func (t *layerTree) children(ctx context.Context, parent *Image, all bool) ([]*I
 	if parent.TopLayer() == "" {
 		for i := range t.emptyImages {
 			empty := t.emptyImages[i]
+			isManifest, err := empty.IsManifestList(ctx)
+			if err != nil {
+				return nil, err
+			}
+			if isManifest {
+				// If this is a manifest list and is already
+				// marked as empty then no instance can be
+				// selected from this list therefore its
+				// better to skip this.
+				continue
+			}
 			isParent, err := checkParent(empty)
 			if err != nil {
 				return nil, err
@@ -199,7 +231,7 @@ func (t *layerTree) children(ctx context.Context, parent *Image, all bool) ([]*I
 		// mistake. Users may not be able to recover, so we're now
 		// throwing a warning to guide them to resolve the issue and
 		// turn the errors non-fatal.
-		logrus.Warnf("Layer %s not found in layer tree. The storage may be corrupted, consider running `podman system reset`.", parent.TopLayer())
+		logrus.Warnf("Layer %s not found in layer tree. The storage may be corrupted, consider running `podman system check`.", parent.TopLayer())
 		return children, nil
 	}
 
@@ -255,6 +287,9 @@ func (t *layerTree) parent(ctx context.Context, child *Image) (*Image, error) {
 	childID := child.ID()
 	childOCI, err := t.toOCI(ctx, child)
 	if err != nil {
+		if ErrorIsImageUnknown(err) {
+			return nil, nil
+		}
 		return nil, err
 	}
 
@@ -266,8 +301,22 @@ func (t *layerTree) parent(ctx context.Context, child *Image) (*Image, error) {
 			if childID == empty.ID() {
 				continue
 			}
+			isManifest, err := empty.IsManifestList(ctx)
+			if err != nil {
+				return nil, err
+			}
+			if isManifest {
+				// If this is a manifest list and is already
+				// marked as empty then no instance can be
+				// selected from this list therefore its
+				// better to skip this.
+				continue
+			}
 			emptyOCI, err := t.toOCI(ctx, empty)
 			if err != nil {
+				if ErrorIsImageUnknown(err) {
+					return nil, nil
+				}
 				return nil, err
 			}
 			// History check.
@@ -284,7 +333,7 @@ func (t *layerTree) parent(ctx context.Context, child *Image) (*Image, error) {
 		// mistake. Users may not be able to recover, so we're now
 		// throwing a warning to guide them to resolve the issue and
 		// turn the errors non-fatal.
-		logrus.Warnf("Layer %s not found in layer tree. The storage may be corrupted, consider running `podman system reset`.", child.TopLayer())
+		logrus.Warnf("Layer %s not found in layer tree. The storage may be corrupted, consider running `podman system check`.", child.TopLayer())
 		return nil, nil
 	}
 
@@ -300,6 +349,9 @@ func (t *layerTree) parent(ctx context.Context, child *Image) (*Image, error) {
 		}
 		parentOCI, err := t.toOCI(ctx, parent)
 		if err != nil {
+			if ErrorIsImageUnknown(err) {
+				return nil, nil
+			}
 			return nil, err
 		}
 		// History check.

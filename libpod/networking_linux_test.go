@@ -1,3 +1,5 @@
+//go:build !remote
+
 package libpod
 
 import (
@@ -9,7 +11,7 @@ import (
 	"github.com/stretchr/testify/assert"
 
 	"github.com/containers/common/libnetwork/types"
-	"github.com/containers/podman/v4/libpod/define"
+	"github.com/containers/podman/v5/libpod/define"
 )
 
 func Test_ocicniPortsToNetTypesPorts(t *testing.T) {
@@ -230,7 +232,6 @@ func Test_ocicniPortsToNetTypesPorts(t *testing.T) {
 		},
 	}
 	for _, tt := range tests {
-		tt := tt
 		t.Run(tt.name, func(t *testing.T) {
 			result := ocicniPortsToNetTypesPorts(tt.arg)
 			assert.Equal(t, tt.want, result, "ports do not match")

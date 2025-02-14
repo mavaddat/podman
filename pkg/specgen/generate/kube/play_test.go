@@ -1,5 +1,4 @@
-//go:build linux
-// +build linux
+//go:build linux && !remote
 
 package kube
 
@@ -10,12 +9,14 @@ import (
 	"testing"
 
 	"github.com/containers/common/pkg/secrets"
-	v1 "github.com/containers/podman/v4/pkg/k8s.io/api/core/v1"
-	"github.com/containers/podman/v4/pkg/k8s.io/apimachinery/pkg/api/resource"
-	v12 "github.com/containers/podman/v4/pkg/k8s.io/apimachinery/pkg/apis/meta/v1"
-	"github.com/containers/podman/v4/pkg/k8s.io/apimachinery/pkg/util/intstr"
-	"github.com/containers/podman/v4/pkg/specgen"
+	"github.com/containers/podman/v5/libpod/define"
+	v1 "github.com/containers/podman/v5/pkg/k8s.io/api/core/v1"
+	"github.com/containers/podman/v5/pkg/k8s.io/apimachinery/pkg/api/resource"
+	v12 "github.com/containers/podman/v5/pkg/k8s.io/apimachinery/pkg/apis/meta/v1"
+	"github.com/containers/podman/v5/pkg/k8s.io/apimachinery/pkg/util/intstr"
+	"github.com/containers/podman/v5/pkg/specgen"
 	"github.com/docker/docker/pkg/meminfo"
+	spec "github.com/opencontainers/runtime-spec/specs-go"
 	"github.com/stretchr/testify/assert"
 	"sigs.k8s.io/yaml"
 )
@@ -224,7 +225,6 @@ func TestConfigMapVolumes(t *testing.T) {
 	}
 
 	for _, test := range tests {
-		test := test
 		t.Run(test.name, func(t *testing.T) {
 			result, err := VolumeFromConfigMap(test.volume.ConfigMap, test.configmaps)
 			if test.errorMessage == "" {
@@ -434,7 +434,6 @@ func TestEnvVarsFrom(t *testing.T) {
 	}
 
 	for _, test := range tests {
-		test := test
 		t.Run(test.name, func(t *testing.T) {
 			result, err := envVarsFrom(test.envFrom, &test.options)
 			assert.Equal(t, err == nil, test.succeed)
@@ -449,7 +448,7 @@ func TestEnvVarValue(t *testing.T) {
 	stringNumCPUs := strconv.Itoa(runtime.NumCPU())
 
 	mi, err := meminfo.Read()
-	assert.Nil(t, err)
+	assert.NoError(t, err)
 	stringMemTotal := strconv.FormatInt(mi.MemTotal, 10)
 
 	tests := []struct {
@@ -1027,7 +1026,6 @@ func TestEnvVarValue(t *testing.T) {
 	}
 
 	for _, test := range tests {
-		test := test
 		t.Run(test.name, func(t *testing.T) {
 			result, err := envVarValue(test.envVar, &test.options)
 			assert.Equal(t, err == nil, test.succeed)
@@ -1247,14 +1245,223 @@ func TestHttpLivenessProbe(t *testing.T) {
 			true,
 			"http://localhost:80/",
 		},
+		{
+			"HttpLivenessProbeNamedPort",
+			specgen.SpecGenerator{},
+			v1.Container{
+				LivenessProbe: &v1.Probe{
+					Handler: v1.Handler{
+						HTTPGet: &v1.HTTPGetAction{
+							Port: intstr.FromString("httpPort"),
+						},
+					},
+				},
+				Ports: []v1.ContainerPort{
+					{Name: "servicePort", ContainerPort: 7000},
+					{Name: "httpPort", ContainerPort: 8000},
+				},
+			},
+			"always",
+			true,
+			"http://localhost:8000/",
+		},
 	}
 
 	for _, test := range tests {
-		test := test
+		t.Run(test.name, func(t *testing.T) {
+			err := setupLivenessProbe(&test.specGenerator, test.container, test.restartPolicy)
+			if err == nil {
+				assert.Equal(t, err == nil, test.succeed)
+				assert.Contains(t, test.specGenerator.ContainerHealthCheckConfig.HealthConfig.Test, test.expectedURL)
+			}
+		})
+	}
+}
+
+func TestTCPLivenessProbe(t *testing.T) {
+	tests := []struct {
+		name          string
+		specGenerator specgen.SpecGenerator
+		container     v1.Container
+		restartPolicy string
+		succeed       bool
+		expectedHost  string
+		expectedPort  string
+	}{
+		{
+			"TCPLivenessProbeNormal",
+			specgen.SpecGenerator{},
+			v1.Container{
+				LivenessProbe: &v1.Probe{
+					Handler: v1.Handler{
+						TCPSocket: &v1.TCPSocketAction{
+							Host: "127.0.0.1",
+							Port: intstr.FromInt(8080),
+						},
+					},
+				},
+			},
+			"always",
+			true,
+			"127.0.0.1",
+			"8080",
+		},
+		{
+			"TCPLivenessProbeHostUsesDefault",
+			specgen.SpecGenerator{},
+			v1.Container{
+				LivenessProbe: &v1.Probe{
+					Handler: v1.Handler{
+						TCPSocket: &v1.TCPSocketAction{
+							Port: intstr.FromInt(200),
+						},
+					},
+				},
+			},
+			"always",
+			true,
+			"localhost",
+			"200",
+		},
+		{
+			"TCPLivenessProbeUseNamedPort",
+			specgen.SpecGenerator{},
+			v1.Container{
+				LivenessProbe: &v1.Probe{
+					Handler: v1.Handler{
+						TCPSocket: &v1.TCPSocketAction{
+							Port: intstr.FromString("servicePort"),
+							Host: "myservice.domain.com",
+						},
+					},
+				},
+				Ports: []v1.ContainerPort{
+					{ContainerPort: 6000},
+					{Name: "servicePort", ContainerPort: 4000},
+					{Name: "2ndServicePort", ContainerPort: 3000},
+				},
+			},
+			"always",
+			true,
+			"myservice.domain.com",
+			"4000",
+		},
+		{
+			"TCPLivenessProbeInvalidPortName",
+			specgen.SpecGenerator{},
+			v1.Container{
+				LivenessProbe: &v1.Probe{
+					Handler: v1.Handler{
+						TCPSocket: &v1.TCPSocketAction{
+							Port: intstr.FromString("3rdservicePort"),
+							Host: "myservice.domain.com",
+						},
+					},
+				},
+				Ports: []v1.ContainerPort{
+					{ContainerPort: 6000},
+					{Name: "servicePort", ContainerPort: 4000},
+					{Name: "2ndServicePort", ContainerPort: 3000},
+				},
+			},
+			"always",
+			false,
+			"myservice.domain.com",
+			"4000",
+		},
+		{
+			"TCPLivenessProbeNormalWithOnFailureRestartPolicy",
+			specgen.SpecGenerator{},
+			v1.Container{
+				LivenessProbe: &v1.Probe{
+					Handler: v1.Handler{
+						TCPSocket: &v1.TCPSocketAction{
+							Host: "127.0.0.1",
+							Port: intstr.FromInt(8080),
+						},
+					},
+				},
+			},
+			"on-failure",
+			true,
+			"127.0.0.1",
+			"8080",
+		},
+	}
+
+	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
 			err := setupLivenessProbe(&test.specGenerator, test.container, test.restartPolicy)
 			assert.Equal(t, err == nil, test.succeed)
-			assert.Contains(t, test.specGenerator.ContainerHealthCheckConfig.HealthConfig.Test, test.expectedURL)
+			if err == nil {
+				assert.Equal(t, int(test.specGenerator.ContainerHealthCheckConfig.HealthCheckOnFailureAction), define.HealthCheckOnFailureActionRestart)
+				assert.Contains(t, test.specGenerator.ContainerHealthCheckConfig.HealthConfig.Test, test.expectedHost)
+				assert.Contains(t, test.specGenerator.ContainerHealthCheckConfig.HealthConfig.Test, test.expectedPort)
+			}
+		})
+	}
+}
+
+func TestDeviceResource(t *testing.T) {
+	tests := []struct {
+		name          string
+		specGenerator specgen.SpecGenerator
+		container     v1.Container
+		succeed       bool
+		devices       []spec.LinuxDevice
+	}{
+		{
+			"ParseQualifiedCDI",
+			specgen.SpecGenerator{},
+			v1.Container{
+				Resources: v1.ResourceRequirements{
+					Limits: v1.ResourceList{
+						"nvidia.com/gpu=0": resource.MustParse("1"),
+					},
+				},
+			},
+			true,
+			[]spec.LinuxDevice{
+				{Path: "nvidia.com/gpu=0"},
+			},
+		},
+		{
+			"ParsePodmanDeviceResource",
+			specgen.SpecGenerator{},
+			v1.Container{
+				Resources: v1.ResourceRequirements{
+					Requests: v1.ResourceList{
+						"podman.io/device=/dev/kmsg": resource.MustParse("1"),
+					},
+				},
+			},
+			true,
+			[]spec.LinuxDevice{
+				{Path: "/dev/kmsg"},
+			},
+		},
+		{
+			"InvalidCDI",
+			specgen.SpecGenerator{},
+			v1.Container{
+				Resources: v1.ResourceRequirements{
+					Limits: v1.ResourceList{
+						"foobar.net/class=///": resource.MustParse("1"),
+					},
+				},
+			},
+			false,
+			[]spec.LinuxDevice{},
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			err := setupContainerDevices(&test.specGenerator, test.container)
+			assert.Equal(t, err == nil, test.succeed)
+			if err == nil {
+				assert.Equal(t, test.specGenerator.Devices, test.devices)
+			}
 		})
 	}
 }

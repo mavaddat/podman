@@ -3,11 +3,12 @@ package common_test
 import (
 	"testing"
 
-	"github.com/containers/podman/v4/cmd/podman/common"
+	"github.com/containers/podman/v5/cmd/podman/common"
 	"github.com/spf13/cobra"
 	"github.com/stretchr/testify/assert"
 )
 
+//nolint:recvcheck // We like to test mixed pointer receiver and non-pointer receiver
 type Car struct {
 	Brand string
 	Stats struct {

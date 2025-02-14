@@ -13,7 +13,7 @@ Note: **N/A** means that the option cannot be supported in a single-node Podman 
 | imagePullSecrets                                    | no      |
 | enableServiceLinks                                  | no      |
 | os\.name                                            | no      |
-| volumes                                             | no      |
+| volumes                                             | ✅      |
 | nodeSelector                                        | N/A     |
 | nodeName                                            | N/A     |
 | affinity\.nodeAffinity                              | N/A     |
@@ -33,7 +33,7 @@ Note: **N/A** means that the option cannot be supported in a single-node Podman 
 | topologySpreadConstraints\.labelSelector            | N/A     |
 | topologySpreadConstraints\.minDomains               | N/A     |
 | restartPolicy                                       | ✅      |
-| terminationGracePeriod                              | no      |
+| terminationGracePeriodSeconds                       | ✅      |
 | activeDeadlineSeconds                               | no      |
 | readinessGates\.conditionType                       | no      |
 | hostname                                            | ✅      |
@@ -52,20 +52,20 @@ Note: **N/A** means that the option cannot be supported in a single-node Podman 
 | shareProcessNamespace                               | ✅      |
 | serviceAccountName                                  | no      |
 | automountServiceAccountToken                        | no      |
-| securityContext\.runAsUser                          | no      |
+| securityContext\.runAsUser                          | ✅      |
 | securityContext\.runAsNonRoot                       | no      |
-| securityContext\.runAsGroup                         | no      |
-| securityContext\.supplementalGroups                 | no      |
+| securityContext\.runAsGroup                         | ✅      |
+| securityContext\.supplementalGroups                 | ✅      |
 | securityContext\.fsGroup                            | no      |
 | securityContext\.fsGroupChangePolicy                | no      |
 | securityContext\.seccompProfile\.type               | no      |
 | securityContext\.seccompProfile\.localhostProfile   | no      |
-| securityContext\.seLinuxOptions\.level              | no      |
-| securityContext\.seLinuxOptions\.role               | no      |
-| securityContext\.seLinuxOptions\.type               | no      |
-| securityContext\.seLinuxOptions\.user               | no      |
-| securityContext\.sysctls\.name                      | no      |
-| securityContext\.sysctls\.value                     | no      |
+| securityContext\.seLinuxOptions\.level              | ✅      |
+| securityContext\.seLinuxOptions\.role               | ✅      |
+| securityContext\.seLinuxOptions\.type               | ✅      |
+| securityContext\.seLinuxOptions\.user               | ✅      |
+| securityContext\.sysctls\.name                      | ✅      |
+| securityContext\.sysctls\.value                     | ✅      |
 | securityContext\.windowsOptions\.gmsaCredentialSpec | no      |
 | securityContext\.windowsOptions\.hostProcess        | no      |
 | securityContext\.windowsOptions\.runAsUserName      | no      |
@@ -104,7 +104,7 @@ Note: **N/A** means that the option cannot be supported in a single-node Podman 
 | volumeMounts\.name                                  | ✅      |
 | volumeMounts\.mountPropagation                      | no      |
 | volumeMounts\.readOnly                              | ✅      |
-| volumeMounts\.subPath                               | no      |
+| volumeMounts\.subPath                               | ✅      |
 | volumeMounts\.subPathExpr                           | no      |
 | volumeDevices\.devicePath                           | no      |
 | volumeDevices\.name                                 | no      |
@@ -121,7 +121,7 @@ Note: **N/A** means that the option cannot be supported in a single-node Podman 
 | securityContext\.runAsNonRoot                       | no      |
 | securityContext\.runAsGroup                         | ✅      |
 | securityContext\.readOnlyRootFilesystem             | ✅      |
-| securityContext\.procMount                          | no      |
+| securityContext\.procMount                          | ✅      |
 | securityContext\.privileged                         | ✅      |
 | securityContext\.allowPrivilegeEscalation           | ✅      |
 | securityContext\.capabilities\.add                  | ✅      |
@@ -173,3 +173,31 @@ Note: **N/A** means that the option cannot be supported in a single-node Podman 
 | revisionHistoryLimit                    | no                                                    |
 | progressDeadlineSeconds                 | no                                                    |
 | paused                                  | no                                                    |
+
+## DaemonSet Fields
+
+| Field                                   | Support |
+|-----------------------------------------|---------|
+| selector                                | ✅      |
+| template                                | ✅      |
+| minReadySeconds                         | no      |
+| strategy\.type                          | no      |
+| strategy\.rollingUpdate\.maxSurge       | no      |
+| strategy\.rollingUpdate\.maxUnavailable | no      |
+| revisionHistoryLimit                    | no      |
+
+## Job Fields
+
+| Field                   | Support                          |
+|-------------------------|----------------------------------|
+| activeDeadlineSeconds   | no                               |
+| selector                | no (automatically set by k8s)    |
+| template                | ✅                               |
+| backoffLimit            | no                               |
+| completionMode          | no                               |
+| completions             | no (set to 1 with kube generate) |
+| manualSelector          | no                               |
+| parallelism             | no (set to 1 with kube generate) |
+| podFailurePolicy        | no                               |
+| suspend                 | no                               |
+| ttlSecondsAfterFinished | no                               |

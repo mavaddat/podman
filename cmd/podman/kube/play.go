@@ -12,18 +12,20 @@ import (
 	"strings"
 	"syscall"
 
+	buildahParse "github.com/containers/buildah/pkg/parse"
 	"github.com/containers/common/pkg/auth"
 	"github.com/containers/common/pkg/completion"
 	"github.com/containers/image/v5/types"
-	"github.com/containers/podman/v4/cmd/podman/common"
-	"github.com/containers/podman/v4/cmd/podman/parse"
-	"github.com/containers/podman/v4/cmd/podman/registry"
-	"github.com/containers/podman/v4/cmd/podman/utils"
-	"github.com/containers/podman/v4/libpod/define"
-	"github.com/containers/podman/v4/libpod/shutdown"
-	"github.com/containers/podman/v4/pkg/domain/entities"
-	"github.com/containers/podman/v4/pkg/errorhandling"
-	"github.com/containers/podman/v4/pkg/util"
+	"github.com/containers/podman/v5/cmd/podman/common"
+	"github.com/containers/podman/v5/cmd/podman/parse"
+	"github.com/containers/podman/v5/cmd/podman/registry"
+	"github.com/containers/podman/v5/cmd/podman/utils"
+	"github.com/containers/podman/v5/libpod/define"
+	"github.com/containers/podman/v5/libpod/shutdown"
+	"github.com/containers/podman/v5/pkg/annotations"
+	"github.com/containers/podman/v5/pkg/domain/entities"
+	"github.com/containers/podman/v5/pkg/errorhandling"
+	"github.com/containers/podman/v5/pkg/util"
 	"github.com/spf13/cobra"
 )
 
@@ -46,7 +48,7 @@ var (
 	playOptions        = playKubeOptionsWrapper{}
 	playDescription    = `Reads in a structured file of Kubernetes YAML.
 
-  Creates pods or volumes based on the Kubernetes kind described in the YAML. Supported kinds are Pods, Deployments and PersistentVolumeClaims.`
+  Creates pods or volumes based on the Kubernetes kind described in the YAML. Supported kinds are Pods, Deployments, DaemonSets, Jobs, and PersistentVolumeClaims.`
 
 	playCmd = &cobra.Command{
 		Use:               "play [options] KUBEFILE|-",
@@ -96,9 +98,10 @@ func init() {
 func playFlags(cmd *cobra.Command) {
 	flags := cmd.Flags()
 	flags.SetNormalizeFunc(utils.AliasFlags)
+	podmanConfig := registry.PodmanConfig()
 
 	annotationFlagName := "annotation"
-	flags.StringSliceVar(
+	flags.StringArrayVar(
 		&playOptions.annotations,
 		annotationFlagName, []string{},
 		"Add annotations to pods (key=value)",
@@ -124,7 +127,7 @@ func playFlags(cmd *cobra.Command) {
 	_ = cmd.RegisterFlagCompletionFunc(logDriverFlagName, common.AutocompleteLogDriver)
 
 	logOptFlagName := "log-opt"
-	flags.StringSliceVar(
+	flags.StringArrayVar(
 		&playOptions.LogOptions,
 		logOptFlagName, []string{},
 		"Logging driver options",
@@ -132,12 +135,13 @@ func playFlags(cmd *cobra.Command) {
 	_ = cmd.RegisterFlagCompletionFunc(logOptFlagName, common.AutocompleteLogOpt)
 
 	usernsFlagName := "userns"
-	flags.StringVar(&playOptions.Userns, usernsFlagName, os.Getenv("PODMAN_USERNS"),
+	flags.StringVar(&playOptions.Userns, usernsFlagName, "",
 		"User namespace to use",
 	)
 	_ = cmd.RegisterFlagCompletionFunc(usernsFlagName, common.AutocompleteUserNamespace)
 
-	flags.BoolVar(&playOptions.NoHosts, "no-hosts", false, "Do not create /etc/hosts within the pod's containers, instead use the version from the image")
+	flags.BoolVar(&playOptions.NoHostname, "no-hostname", false, "Do not create /etc/hostname within the container, instead use the version from the image")
+	flags.BoolVar(&playOptions.NoHosts, "no-hosts", podmanConfig.ContainersConfDefaultsRO.Containers.NoHosts, "Do not create /etc/hosts within the pod's containers, instead use the version from the image")
 	flags.BoolVarP(&playOptions.Quiet, "quiet", "q", false, "Suppress output information when pulling images")
 	flags.BoolVar(&playOptions.TLSVerifyCLI, "tls-verify", true, "Require HTTPS and verify certificates when contacting registries")
 	flags.BoolVar(&playOptions.StartCLI, "start", true, "Start the pod after creating it")
@@ -158,12 +162,19 @@ func playFlags(cmd *cobra.Command) {
 	flags.StringSliceVar(&playOptions.PublishPorts, publishPortsFlagName, []string{}, "Publish a container's port, or a range of ports, to the host")
 	_ = cmd.RegisterFlagCompletionFunc(publishPortsFlagName, completion.AutocompleteNone)
 
+	publishAllPortsFlagName := "publish-all"
+	flags.BoolVar(&playOptions.PublishAllPorts, publishAllPortsFlagName, false, "Whether to publish all ports defined in the K8S YAML file (containerPort, hostPort), if false only hostPort will be published")
+
 	waitFlagName := "wait"
 	flags.BoolVarP(&playOptions.Wait, waitFlagName, "w", false, "Clean up all objects created when a SIGTERM is received or pods exit")
 
 	configmapFlagName := "configmap"
-	flags.StringSliceVar(&playOptions.ConfigMaps, configmapFlagName, []string{}, "`Pathname` of a YAML file containing a kubernetes configmap")
+	flags.StringArrayVar(&playOptions.ConfigMaps, configmapFlagName, []string{}, "`Pathname` of a YAML file containing a kubernetes configmap")
 	_ = cmd.RegisterFlagCompletionFunc(configmapFlagName, completion.AutocompleteDefault)
+
+	noTruncFlagName := "no-trunc"
+	flags.BoolVar(&playOptions.UseLongAnnotations, noTruncFlagName, false, "Use annotations that are not truncated to the Kubernetes maximum length of 63 characters")
+	_ = flags.MarkHidden(noTruncFlagName)
 
 	if !registry.IsRemote() {
 		certDirFlagName := "cert-dir"
@@ -213,9 +224,16 @@ func play(cmd *cobra.Command, args []string) error {
 	}
 	if cmd.Flags().Changed("build") {
 		playOptions.Build = types.NewOptionalBool(playOptions.BuildCLI)
+		if playOptions.Build == types.OptionalBoolTrue {
+			systemContext, err := buildahParse.SystemContextFromOptions(cmd)
+			if err != nil {
+				return err
+			}
+			playOptions.SystemContext = systemContext
+		}
 	}
-	if playOptions.Authfile != "" {
-		if _, err := os.Stat(playOptions.Authfile); err != nil {
+	if cmd.Flags().Changed("authfile") {
+		if err := auth.CheckAuthFile(playOptions.Authfile); err != nil {
 			return err
 		}
 	}
@@ -232,18 +250,18 @@ func play(cmd *cobra.Command, args []string) error {
 	}
 
 	for _, annotation := range playOptions.annotations {
-		splitN := strings.SplitN(annotation, "=", 2)
-		if len(splitN) > 2 {
+		key, val, hasVal := strings.Cut(annotation, "=")
+		if !hasVal {
 			return fmt.Errorf("annotation %q must include an '=' sign", annotation)
 		}
 		if playOptions.Annotations == nil {
 			playOptions.Annotations = make(map[string]string)
 		}
-		annotation := splitN[1]
-		if len(annotation) > define.MaxKubeAnnotation {
-			return fmt.Errorf("annotation exceeds maximum size, %d, of kubernetes annotation: %s", define.MaxKubeAnnotation, annotation)
-		}
-		playOptions.Annotations[splitN[0]] = annotation
+		playOptions.Annotations[key] = val
+	}
+
+	if err := annotations.ValidateAnnotations(playOptions.Annotations); err != nil {
+		return err
 	}
 
 	for _, mac := range playOptions.macs {
@@ -316,7 +334,7 @@ func play(cmd *cobra.Command, args []string) error {
 		// rerunning the same YAML file will cause an error and remove
 		// the previously created workload.
 		//
-		// teardown any containers, pods, and volumes that might have created before we hit the error
+		// teardown any containers, pods, and volumes that might have been created before we hit the error
 		// reader, err := readerFromArg(args[0])
 		// if err != nil {
 		// 	return err
@@ -380,7 +398,7 @@ func teardown(body io.Reader, options entities.PlayKubeDownOptions) error {
 		volRmErrors   utils.OutputErrors
 		secRmErrors   utils.OutputErrors
 	)
-	reports, err := registry.ContainerEngine().PlayKubeDown(registry.GetContext(), body, options)
+	reports, err := registry.ContainerEngine().PlayKubeDown(registry.Context(), body, options)
 	if err != nil {
 		return err
 	}
@@ -447,7 +465,7 @@ func teardown(body io.Reader, options entities.PlayKubeDownOptions) error {
 }
 
 func kubeplay(body io.Reader) error {
-	report, err := registry.ContainerEngine().PlayKube(registry.GetContext(), body, playOptions.PlayKubeOptions)
+	report, err := registry.ContainerEngine().PlayKube(registry.Context(), body, playOptions.PlayKubeOptions)
 	if err != nil {
 		return err
 	}
@@ -460,7 +478,7 @@ func kubeplay(body io.Reader) error {
 
 	// If --wait=true, we need wait for the service container to exit so that we know that the pod has exited and we can clean up
 	if playOptions.Wait {
-		_, err := registry.ContainerEngine().ContainerWait(registry.GetContext(), []string{report.ServiceContainerID}, entities.WaitOptions{})
+		_, err := registry.ContainerEngine().ContainerWait(registry.Context(), []string{report.ServiceContainerID}, entities.WaitOptions{})
 		if err != nil {
 			return err
 		}

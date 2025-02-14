@@ -1,17 +1,27 @@
 package quadlet
 
 import (
+	"bytes"
+	"encoding/csv"
 	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
 
-	"github.com/containers/podman/v4/pkg/systemd/parser"
+	"github.com/containers/podman/v5/pkg/specgenutilexternal"
+	"github.com/containers/podman/v5/pkg/systemd/parser"
+	"github.com/containers/storage/pkg/fileutils"
 	"github.com/containers/storage/pkg/regexp"
 )
 
 const (
+	// Fixme should use
+	// github.com/containers/podman/v5/libpod/define.AutoUpdateLabel
+	// but it is causing bloat
+	autoUpdateLabel = "io.containers.autoupdate"
+	// Directory for temporary Quadlet files (sysadmin owned)
+	UnitDirTemp = "/run/containers/systemd"
 	// Directory for global Quadlet files (sysadmin owned)
 	UnitDirAdmin = "/etc/containers/systemd"
 	// Directory for global Quadlet files (distro owned)
@@ -22,33 +32,73 @@ const (
 	InstallGroup    = "Install"
 	KubeGroup       = "Kube"
 	NetworkGroup    = "Network"
+	PodGroup        = "Pod"
 	ServiceGroup    = "Service"
 	UnitGroup       = "Unit"
 	VolumeGroup     = "Volume"
+	ImageGroup      = "Image"
+	BuildGroup      = "Build"
+	QuadletGroup    = "Quadlet"
 	XContainerGroup = "X-Container"
 	XKubeGroup      = "X-Kube"
 	XNetworkGroup   = "X-Network"
+	XPodGroup       = "X-Pod"
 	XVolumeGroup    = "X-Volume"
+	XImageGroup     = "X-Image"
+	XBuildGroup     = "X-Build"
+	XQuadletGroup   = "X-Quadlet"
+)
+
+// Systemd Unit file keys
+const (
+	ServiceKeyWorkingDirectory = "WorkingDirectory"
 )
 
 // All the supported quadlet keys
 const (
 	KeyAddCapability         = "AddCapability"
 	KeyAddDevice             = "AddDevice"
+	KeyAddHost               = "AddHost"
+	KeyAllTags               = "AllTags"
 	KeyAnnotation            = "Annotation"
+	KeyArch                  = "Arch"
+	KeyAuthFile              = "AuthFile"
+	KeyAutoUpdate            = "AutoUpdate"
+	KeyCertDir               = "CertDir"
+	KeyCgroupsMode           = "CgroupsMode"
 	KeyConfigMap             = "ConfigMap"
 	KeyContainerName         = "ContainerName"
+	KeyContainersConfModule  = "ContainersConfModule"
 	KeyCopy                  = "Copy"
+	KeyCreds                 = "Creds"
+	KeyDecryptionKey         = "DecryptionKey"
+	KeyDefaultDependencies   = "DefaultDependencies"
 	KeyDevice                = "Device"
+	KeyDisableDNS            = "DisableDNS"
+	KeyDNS                   = "DNS"
+	KeyDNSOption             = "DNSOption"
+	KeyDNSSearch             = "DNSSearch"
+	KeyDriver                = "Driver"
 	KeyDropCapability        = "DropCapability"
+	KeyEntrypoint            = "Entrypoint"
 	KeyEnvironment           = "Environment"
 	KeyEnvironmentFile       = "EnvironmentFile"
 	KeyEnvironmentHost       = "EnvironmentHost"
 	KeyExec                  = "Exec"
+	KeyExitCodePropagation   = "ExitCodePropagation"
 	KeyExposeHostPort        = "ExposeHostPort"
+	KeyFile                  = "File"
+	KeyForceRM               = "ForceRM"
+	KeyGateway               = "Gateway"
+	KeyGIDMap                = "GIDMap"
+	KeyGlobalArgs            = "GlobalArgs"
 	KeyGroup                 = "Group"
+	KeyGroupAdd              = "GroupAdd"
 	KeyHealthCmd             = "HealthCmd"
 	KeyHealthInterval        = "HealthInterval"
+	KeyHealthLogDestination  = "HealthLogDestination"
+	KeyHealthMaxLogCount     = "HealthMaxLogCount"
+	KeyHealthMaxLogSize      = "HealthMaxLogSize"
 	KeyHealthOnFailure       = "HealthOnFailure"
 	KeyHealthRetries         = "HealthRetries"
 	KeyHealthStartPeriod     = "HealthStartPeriod"
@@ -60,71 +110,120 @@ const (
 	KeyHealthTimeout         = "HealthTimeout"
 	KeyHostName              = "HostName"
 	KeyImage                 = "Image"
+	KeyImageTag              = "ImageTag"
+	KeyInternal              = "Internal"
 	KeyIP                    = "IP"
 	KeyIP6                   = "IP6"
-	KeyExitCodePropagation   = "ExitCodePropagation"
+	KeyIPAMDriver            = "IPAMDriver"
+	KeyIPRange               = "IPRange"
+	KeyIPv6                  = "IPv6"
+	KeyKubeDownForce         = "KubeDownForce"
 	KeyLabel                 = "Label"
 	KeyLogDriver             = "LogDriver"
+	KeyLogOpt                = "LogOpt"
+	KeyMask                  = "Mask"
 	KeyMount                 = "Mount"
 	KeyNetwork               = "Network"
-	KeyNetworkDisableDNS     = "DisableDNS"
-	KeyNetworkDriver         = "Driver"
-	KeyNetworkGateway        = "Gateway"
-	KeyNetworkIPAMDriver     = "IPAMDriver"
-	KeyNetworkIPRange        = "IPRange"
-	KeyNetworkIPv6           = "IPv6"
-	KeyNetworkInternal       = "Internal"
-	KeyNetworkOptions        = "Options"
-	KeyNetworkSubnet         = "Subnet"
+	KeyNetworkAlias          = "NetworkAlias"
+	KeyNetworkName           = "NetworkName"
 	KeyNoNewPrivileges       = "NoNewPrivileges"
 	KeyNotify                = "Notify"
 	KeyOptions               = "Options"
+	KeyOS                    = "OS"
+	KeyPidsLimit             = "PidsLimit"
+	KeyPod                   = "Pod"
 	KeyPodmanArgs            = "PodmanArgs"
+	KeyPodName               = "PodName"
 	KeyPublishPort           = "PublishPort"
 	KeyPull                  = "Pull"
 	KeyReadOnly              = "ReadOnly"
-	KeyRemapGID              = "RemapGid"
-	KeyRemapUID              = "RemapUid"
-	KeyRemapUIDSize          = "RemapUidSize"
-	KeyRemapUsers            = "RemapUsers"
+	KeyReadOnlyTmpfs         = "ReadOnlyTmpfs"
+	KeyRemapGid              = "RemapGid"     //nolint:stylecheck // deprecated
+	KeyRemapUid              = "RemapUid"     //nolint:stylecheck // deprecated
+	KeyRemapUidSize          = "RemapUidSize" //nolint:stylecheck // deprecated
+	KeyRemapUsers            = "RemapUsers"   // deprecated
 	KeyRootfs                = "Rootfs"
 	KeyRunInit               = "RunInit"
 	KeySeccompProfile        = "SeccompProfile"
+	KeySecret                = "Secret"
 	KeySecurityLabelDisable  = "SecurityLabelDisable"
 	KeySecurityLabelFileType = "SecurityLabelFileType"
 	KeySecurityLabelLevel    = "SecurityLabelLevel"
 	KeySecurityLabelNested   = "SecurityLabelNested"
 	KeySecurityLabelType     = "SecurityLabelType"
-	KeySecret                = "Secret"
+	KeyServiceName           = "ServiceName"
+	KeySetWorkingDirectory   = "SetWorkingDirectory"
+	KeyShmSize               = "ShmSize"
+	KeyStartWithPod          = "StartWithPod"
+	KeyStopSignal            = "StopSignal"
+	KeyStopTimeout           = "StopTimeout"
+	KeySubGIDMap             = "SubGIDMap"
+	KeySubnet                = "Subnet"
+	KeySubUIDMap             = "SubUIDMap"
+	KeySysctl                = "Sysctl"
+	KeyTarget                = "Target"
 	KeyTimezone              = "Timezone"
+	KeyTLSVerify             = "TLSVerify"
 	KeyTmpfs                 = "Tmpfs"
 	KeyType                  = "Type"
+	KeyUIDMap                = "UIDMap"
+	KeyUlimit                = "Ulimit"
+	KeyUnmask                = "Unmask"
 	KeyUser                  = "User"
 	KeyUserNS                = "UserNS"
-	KeyVolatileTmp           = "VolatileTmp"
+	KeyVariant               = "Variant"
+	KeyVolatileTmp           = "VolatileTmp" // deprecated
 	KeyVolume                = "Volume"
+	KeyVolumeName            = "VolumeName"
+	KeyWorkingDir            = "WorkingDir"
 	KeyYaml                  = "Yaml"
 )
 
+type UnitInfo struct {
+	// The name of the generated systemd service unit
+	ServiceName string
+	// The name of the podman resource created by the service
+	ResourceName string
+
+	// For .pod units
+	// List of containers to start with the pod
+	ContainersToStart []string
+}
+
 var (
+	URL            = regexp.Delayed(`^((https?)|(git)://)|(github\.com/).+$`)
 	validPortRange = regexp.Delayed(`\d+(-\d+)?(/udp|/tcp)?$`)
 
 	// Supported keys in "Container" group
 	supportedContainerKeys = map[string]bool{
 		KeyAddCapability:         true,
 		KeyAddDevice:             true,
+		KeyAddHost:               true,
 		KeyAnnotation:            true,
+		KeyAutoUpdate:            true,
+		KeyCgroupsMode:           true,
 		KeyContainerName:         true,
+		KeyContainersConfModule:  true,
+		KeyDNS:                   true,
+		KeyDNSOption:             true,
+		KeyDNSSearch:             true,
 		KeyDropCapability:        true,
 		KeyEnvironment:           true,
 		KeyEnvironmentFile:       true,
 		KeyEnvironmentHost:       true,
+		KeyEntrypoint:            true,
 		KeyExec:                  true,
 		KeyExposeHostPort:        true,
+		KeyGIDMap:                true,
+		KeyGlobalArgs:            true,
 		KeyGroup:                 true,
+		KeyGroupAdd:              true,
 		KeyHealthCmd:             true,
 		KeyHealthInterval:        true,
 		KeyHealthOnFailure:       true,
+		KeyHealthLogDestination:  true,
+		KeyHealthMaxLogCount:     true,
+		KeyHealthMaxLogSize:      true,
 		KeyHealthRetries:         true,
 		KeyHealthStartPeriod:     true,
 		KeyHealthStartupCmd:      true,
@@ -134,85 +233,205 @@ var (
 		KeyHealthStartupTimeout:  true,
 		KeyHealthTimeout:         true,
 		KeyHostName:              true,
-		KeyImage:                 true,
-		KeyIP:                    true,
 		KeyIP6:                   true,
+		KeyIP:                    true,
+		KeyImage:                 true,
 		KeyLabel:                 true,
 		KeyLogDriver:             true,
+		KeyLogOpt:                true,
+		KeyMask:                  true,
 		KeyMount:                 true,
 		KeyNetwork:               true,
+		KeyNetworkAlias:          true,
 		KeyNoNewPrivileges:       true,
 		KeyNotify:                true,
+		KeyPidsLimit:             true,
+		KeyPod:                   true,
 		KeyPodmanArgs:            true,
 		KeyPublishPort:           true,
 		KeyPull:                  true,
 		KeyReadOnly:              true,
-		KeyRemapGID:              true,
-		KeyRemapUID:              true,
-		KeyRemapUIDSize:          true,
+		KeyReadOnlyTmpfs:         true,
+		KeyRemapGid:              true,
+		KeyRemapUid:              true,
+		KeyRemapUidSize:          true,
 		KeyRemapUsers:            true,
 		KeyRootfs:                true,
 		KeyRunInit:               true,
 		KeySeccompProfile:        true,
+		KeySecret:                true,
 		KeySecurityLabelDisable:  true,
 		KeySecurityLabelFileType: true,
 		KeySecurityLabelLevel:    true,
 		KeySecurityLabelNested:   true,
 		KeySecurityLabelType:     true,
-		KeySecret:                true,
-		KeyTmpfs:                 true,
+		KeyServiceName:           true,
+		KeyShmSize:               true,
+		KeyStopSignal:            true,
+		KeyStartWithPod:          true,
+		KeyStopTimeout:           true,
+		KeySubGIDMap:             true,
+		KeySubUIDMap:             true,
+		KeySysctl:                true,
 		KeyTimezone:              true,
+		KeyTmpfs:                 true,
+		KeyUIDMap:                true,
+		KeyUlimit:                true,
+		KeyUnmask:                true,
 		KeyUser:                  true,
 		KeyUserNS:                true,
 		KeyVolatileTmp:           true,
 		KeyVolume:                true,
+		KeyWorkingDir:            true,
 	}
 
 	// Supported keys in "Volume" group
 	supportedVolumeKeys = map[string]bool{
-		KeyCopy:       true,
-		KeyDevice:     true,
-		KeyGroup:      true,
-		KeyLabel:      true,
-		KeyOptions:    true,
-		KeyPodmanArgs: true,
-		KeyType:       true,
-		KeyUser:       true,
+		KeyContainersConfModule: true,
+		KeyCopy:                 true,
+		KeyDevice:               true,
+		KeyDriver:               true,
+		KeyGlobalArgs:           true,
+		KeyGroup:                true,
+		KeyImage:                true,
+		KeyLabel:                true,
+		KeyOptions:              true,
+		KeyPodmanArgs:           true,
+		KeyServiceName:          true,
+		KeyType:                 true,
+		KeyUser:                 true,
+		KeyVolumeName:           true,
 	}
 
 	// Supported keys in "Network" group
 	supportedNetworkKeys = map[string]bool{
-		KeyLabel:             true,
-		KeyNetworkDisableDNS: true,
-		KeyNetworkDriver:     true,
-		KeyNetworkGateway:    true,
-		KeyNetworkIPAMDriver: true,
-		KeyNetworkIPRange:    true,
-		KeyNetworkIPv6:       true,
-		KeyNetworkInternal:   true,
-		KeyNetworkOptions:    true,
-		KeyNetworkSubnet:     true,
-		KeyPodmanArgs:        true,
+		KeyLabel:                true,
+		KeyDNS:                  true,
+		KeyContainersConfModule: true,
+		KeyGlobalArgs:           true,
+		KeyDisableDNS:           true,
+		KeyDriver:               true,
+		KeyGateway:              true,
+		KeyIPAMDriver:           true,
+		KeyIPRange:              true,
+		KeyIPv6:                 true,
+		KeyInternal:             true,
+		KeyNetworkName:          true,
+		KeyOptions:              true,
+		KeyServiceName:          true,
+		KeySubnet:               true,
+		KeyPodmanArgs:           true,
 	}
 
 	// Supported keys in "Kube" group
 	supportedKubeKeys = map[string]bool{
-		KeyConfigMap:           true,
-		KeyExitCodePropagation: true,
-		KeyLogDriver:           true,
-		KeyNetwork:             true,
-		KeyPodmanArgs:          true,
-		KeyPublishPort:         true,
-		KeyRemapGID:            true,
-		KeyRemapUID:            true,
-		KeyRemapUIDSize:        true,
-		KeyRemapUsers:          true,
-		KeyUserNS:              true,
-		KeyYaml:                true,
+		KeyAutoUpdate:           true,
+		KeyConfigMap:            true,
+		KeyContainersConfModule: true,
+		KeyExitCodePropagation:  true,
+		KeyGlobalArgs:           true,
+		KeyKubeDownForce:        true,
+		KeyLogDriver:            true,
+		KeyLogOpt:               true,
+		KeyNetwork:              true,
+		KeyPodmanArgs:           true,
+		KeyPublishPort:          true,
+		KeyRemapGid:             true,
+		KeyRemapUid:             true,
+		KeyRemapUidSize:         true,
+		KeyRemapUsers:           true,
+		KeyServiceName:          true,
+		KeySetWorkingDirectory:  true,
+		KeyUserNS:               true,
+		KeyYaml:                 true,
+	}
+
+	// Supported keys in "Image" group
+	supportedImageKeys = map[string]bool{
+		KeyAllTags:              true,
+		KeyArch:                 true,
+		KeyAuthFile:             true,
+		KeyCertDir:              true,
+		KeyContainersConfModule: true,
+		KeyCreds:                true,
+		KeyDecryptionKey:        true,
+		KeyGlobalArgs:           true,
+		KeyImage:                true,
+		KeyImageTag:             true,
+		KeyOS:                   true,
+		KeyPodmanArgs:           true,
+		KeyServiceName:          true,
+		KeyTLSVerify:            true,
+		KeyVariant:              true,
+	}
+
+	// Supported keys in "Build" group
+	supportedBuildKeys = map[string]bool{
+		KeyAnnotation:           true,
+		KeyArch:                 true,
+		KeyAuthFile:             true,
+		KeyContainersConfModule: true,
+		KeyDNS:                  true,
+		KeyDNSOption:            true,
+		KeyDNSSearch:            true,
+		KeyEnvironment:          true,
+		KeyFile:                 true,
+		KeyForceRM:              true,
+		KeyGlobalArgs:           true,
+		KeyGroupAdd:             true,
+		KeyImageTag:             true,
+		KeyLabel:                true,
+		KeyNetwork:              true,
+		KeyPodmanArgs:           true,
+		KeyPull:                 true,
+		KeySecret:               true,
+		KeyServiceName:          true,
+		KeySetWorkingDirectory:  true,
+		KeyTarget:               true,
+		KeyTLSVerify:            true,
+		KeyVariant:              true,
+		KeyVolume:               true,
+	}
+
+	supportedPodKeys = map[string]bool{
+		KeyAddHost:              true,
+		KeyContainersConfModule: true,
+		KeyDNS:                  true,
+		KeyDNSOption:            true,
+		KeyDNSSearch:            true,
+		KeyGIDMap:               true,
+		KeyGlobalArgs:           true,
+		KeyIP:                   true,
+		KeyIP6:                  true,
+		KeyNetwork:              true,
+		KeyNetworkAlias:         true,
+		KeyPodName:              true,
+		KeyPodmanArgs:           true,
+		KeyPublishPort:          true,
+		KeyRemapGid:             true,
+		KeyRemapUid:             true,
+		KeyRemapUidSize:         true,
+		KeyRemapUsers:           true,
+		KeyServiceName:          true,
+		KeyShmSize:              true,
+		KeySubGIDMap:            true,
+		KeySubUIDMap:            true,
+		KeyUIDMap:               true,
+		KeyUserNS:               true,
+		KeyVolume:               true,
+	}
+
+	// Supported keys in "Quadlet" group
+	supportedQuadletKeys = map[string]bool{
+		KeyDefaultDependencies: true,
 	}
 )
 
-func replaceExtension(name string, extension string, extraPrefix string, extraSuffix string) string {
+func (u *UnitInfo) ServiceFileName() string {
+	return fmt.Sprintf("%s.service", u.ServiceName)
+}
+
+func removeExtension(name string, extraPrefix string, extraSuffix string) string {
 	baseName := name
 
 	dot := strings.LastIndexByte(name, '.')
@@ -220,21 +439,35 @@ func replaceExtension(name string, extension string, extraPrefix string, extraSu
 		baseName = name[:dot]
 	}
 
-	return extraPrefix + baseName + extraSuffix + extension
+	return extraPrefix + baseName + extraSuffix
+}
+
+func isURL(urlCandidate string) bool {
+	return URL.MatchString(urlCandidate)
 }
 
 func isPortRange(port string) bool {
 	return validPortRange.MatchString(port)
 }
 
-func checkForUnknownKeys(unit *parser.UnitFile, groupName string, supportedKeys map[string]bool) error {
+func checkForUnknownKeysInSpecificGroup(unit *parser.UnitFile, groupName string, supportedKeys map[string]bool) error {
 	keys := unit.ListKeys(groupName)
 	for _, key := range keys {
 		if !supportedKeys[key] {
 			return fmt.Errorf("unsupported key '%s' in group '%s' in %s", key, groupName, unit.Path)
 		}
 	}
+
 	return nil
+}
+
+func checkForUnknownKeys(unit *parser.UnitFile, groupName string, supportedKeys map[string]bool) error {
+	err := checkForUnknownKeysInSpecificGroup(unit, groupName, supportedKeys)
+	if err == nil {
+		return checkForUnknownKeysInSpecificGroup(unit, QuadletGroup, supportedQuadletKeys)
+	}
+
+	return err
 }
 
 func splitPorts(ports string) []string {
@@ -285,9 +518,16 @@ func usernsOpts(kind string, opts []string) string {
 // service file (unit file with Service group) based on the options in the
 // Container group.
 // The original Container group is kept around as X-Container.
-func ConvertContainer(container *parser.UnitFile, isUser bool) (*parser.UnitFile, error) {
+func ConvertContainer(container *parser.UnitFile, isUser bool, unitsInfoMap map[string]*UnitInfo) (*parser.UnitFile, error) {
+	unitInfo, ok := unitsInfoMap[container.Filename]
+	if !ok {
+		return nil, fmt.Errorf("internal error while processing container %s", container.Filename)
+	}
+
 	service := container.Dup()
-	service.Filename = replaceExtension(container.Filename, ".service", "", "")
+	service.Filename = unitInfo.ServiceFileName()
+
+	addDefaultDependencies(service, isUser)
 
 	if container.Path != "" {
 		service.Add(UnitGroup, "SourcePath", container.Path)
@@ -300,6 +540,9 @@ func ConvertContainer(container *parser.UnitFile, isUser bool) (*parser.UnitFile
 	// Rename old Container group to x-Container so that systemd ignores it
 	service.RenameGroup(ContainerGroup, XContainerGroup)
 
+	// Rename common quadlet group
+	service.RenameGroup(QuadletGroup, XQuadletGroup)
+
 	// One image or rootfs must be specified for the container
 	image, _ := container.Lookup(ContainerGroup, KeyImage)
 	rootfs, _ := container.Lookup(ContainerGroup, KeyRootfs)
@@ -310,11 +553,14 @@ func ConvertContainer(container *parser.UnitFile, isUser bool) (*parser.UnitFile
 		return nil, fmt.Errorf("the Image And Rootfs keys conflict can not be specified together")
 	}
 
-	containerName, ok := container.Lookup(ContainerGroup, KeyContainerName)
-	if !ok || len(containerName) == 0 {
-		// By default, We want to name the container by the service name
-		containerName = "systemd-%N"
+	if len(image) > 0 {
+		var err error
+		if image, err = handleImageSource(image, service, unitsInfoMap); err != nil {
+			return nil, err
+		}
 	}
+
+	containerName := getContainerName(container)
 
 	// Set PODMAN_SYSTEMD_UNIT so that podman auto-update can restart the service.
 	service.Add(ServiceGroup, "Environment", "PODMAN_SYSTEMD_UNIT=%n")
@@ -338,16 +584,21 @@ func ConvertContainer(container *parser.UnitFile, isUser bool) (*parser.UnitFile
 
 	// If conmon exited uncleanly it may not have removed the container, so
 	// force it, -i makes it ignore non-existing files.
-	service.Add(ServiceGroup, "ExecStop", podmanBinary()+" rm -f -i --cidfile=%t/%N.cid")
+	serviceStopCmd := createBasePodmanCommand(container, ContainerGroup)
+	serviceStopCmd.add("rm", "-v", "-f", "-i", "--cidfile=%t/%N.cid")
+	service.AddCmdline(ServiceGroup, "ExecStop", serviceStopCmd.Args)
 	// The ExecStopPost is needed when the main PID (i.e., conmon) gets killed.
 	// In that case, ExecStop is not executed but *Post only.  If both are
 	// fired in sequence, *Post will exit when detecting that the --cidfile
 	// has already been removed by the previous `rm`..
-	service.Add(ServiceGroup, "ExecStopPost", "-"+podmanBinary()+" rm -f -i --cidfile=%t/%N.cid")
+	serviceStopCmd.Args[0] = fmt.Sprintf("-%s", serviceStopCmd.Args[0])
+	service.AddCmdline(ServiceGroup, "ExecStopPost", serviceStopCmd.Args)
 
-	podman := NewPodmanCmdline("run")
+	podman := createBasePodmanCommand(container, ContainerGroup)
 
-	podman.addf("--name=%s", containerName)
+	podman.add("run")
+
+	podman.add("--name", containerName)
 
 	podman.add(
 		// We store the container id so we can clean it up in case of failure
@@ -361,22 +612,53 @@ func ConvertContainer(container *parser.UnitFile, isUser bool) (*parser.UnitFile
 	)
 
 	handleLogDriver(container, ContainerGroup, podman)
+	handleLogOpt(container, ContainerGroup, podman)
 
 	// We delegate groups to the runtime
 	service.Add(ServiceGroup, "Delegate", "yes")
-	podman.add("--cgroups=split")
 
-	timezone, ok := container.Lookup(ContainerGroup, KeyTimezone)
-	if ok && len(timezone) > 0 {
-		podman.addf("--tz=%s", timezone)
+	if cgroupsMode, ok := container.Lookup(ContainerGroup, KeyCgroupsMode); ok && len(cgroupsMode) > 0 {
+		podman.add("--cgroups", cgroupsMode)
+	} else {
+		podman.add("--cgroups=split")
 	}
 
-	addNetworks(container, ContainerGroup, service, podman)
+	stringKeys := map[string]string{
+		KeyTimezone:    "--tz",
+		KeyPidsLimit:   "--pids-limit",
+		KeyShmSize:     "--shm-size",
+		KeyEntrypoint:  "--entrypoint",
+		KeyWorkingDir:  "--workdir",
+		KeyIP:          "--ip",
+		KeyIP6:         "--ip6",
+		KeyHostName:    "--hostname",
+		KeyStopSignal:  "--stop-signal",
+		KeyStopTimeout: "--stop-timeout",
+		KeyPull:        "--pull",
+	}
+	lookupAndAddString(container, ContainerGroup, stringKeys, podman)
 
-	// Run with a pid1 init to reap zombies by default (as most apps don't do that)
-	runInit, ok := container.LookupBoolean(ContainerGroup, KeyRunInit)
-	if ok {
-		podman.addBool("--init", runInit)
+	allStringsKeys := map[string]string{
+		KeyNetworkAlias: "--network-alias",
+		KeyUlimit:       "--ulimit",
+		KeyDNS:          "--dns",
+		KeyDNSOption:    "--dns-option",
+		KeyDNSSearch:    "--dns-search",
+		KeyGroupAdd:     "--group-add",
+		KeyAddHost:      "--add-host",
+		KeyTmpfs:        "--tmpfs",
+	}
+	lookupAndAddAllStrings(container, ContainerGroup, allStringsKeys, podman)
+
+	boolKeys := map[string]string{
+		KeyRunInit:         "--init",
+		KeyEnvironmentHost: "--env-host",
+		KeyReadOnlyTmpfs:   "--read-only-tmpfs",
+	}
+	lookupAndAddBoolean(container, ContainerGroup, boolKeys, podman)
+
+	if err := addNetworks(container, ContainerGroup, service, unitsInfoMap, podman); err != nil {
+		return nil, err
 	}
 
 	serviceType, ok := service.Lookup(ServiceGroup, "Type")
@@ -387,10 +669,13 @@ func ConvertContainer(container *parser.UnitFile, isUser bool) (*parser.UnitFile
 	if serviceType != "oneshot" {
 		// If we're not in oneshot mode always use some form of sd-notify, normally via conmon,
 		// but we also allow passing it to the container by setting Notify=yes
-		notify := container.LookupBooleanWithDefault(ContainerGroup, KeyNotify, false)
-		if notify {
+		notify, ok := container.Lookup(ContainerGroup, KeyNotify)
+		switch {
+		case ok && strings.EqualFold(notify, "healthy"):
+			podman.add("--sdnotify=healthy")
+		case container.LookupBooleanWithDefault(ContainerGroup, KeyNotify, false):
 			podman.add("--sdnotify=container")
-		} else {
+		default:
 			podman.add("--sdnotify=conmon")
 		}
 		service.Setv(ServiceGroup,
@@ -413,40 +698,39 @@ func ConvertContainer(container *parser.UnitFile, isUser bool) (*parser.UnitFile
 
 	securityLabelDisable := container.LookupBooleanWithDefault(ContainerGroup, KeySecurityLabelDisable, false)
 	if securityLabelDisable {
-		podman.add("--security-opt", "label:disable")
+		podman.add("--security-opt", "label=disable")
 	}
 
 	securityLabelNested := container.LookupBooleanWithDefault(ContainerGroup, KeySecurityLabelNested, false)
 	if securityLabelNested {
-		podman.add("--security-opt", "label:nested")
+		podman.add("--security-opt", "label=nested")
 	}
 
-	securityLabelType, _ := container.Lookup(ContainerGroup, KeySecurityLabelType)
-	if len(securityLabelType) > 0 {
+	securityLabelType, ok := container.Lookup(ContainerGroup, KeySecurityLabelType)
+	if ok && len(securityLabelType) > 0 {
 		podman.add("--security-opt", fmt.Sprintf("label=type:%s", securityLabelType))
 	}
 
-	securityLabelFileType, _ := container.Lookup(ContainerGroup, KeySecurityLabelFileType)
-	if len(securityLabelFileType) > 0 {
+	securityLabelFileType, ok := container.Lookup(ContainerGroup, KeySecurityLabelFileType)
+	if ok && len(securityLabelFileType) > 0 {
 		podman.add("--security-opt", fmt.Sprintf("label=filetype:%s", securityLabelFileType))
 	}
 
-	securityLabelLevel, _ := container.Lookup(ContainerGroup, KeySecurityLabelLevel)
-	if len(securityLabelLevel) > 0 {
+	securityLabelLevel, ok := container.Lookup(ContainerGroup, KeySecurityLabelLevel)
+	if ok && len(securityLabelLevel) > 0 {
 		podman.add("--security-opt", fmt.Sprintf("label=level:%s", securityLabelLevel))
 	}
 
-	// But allow overrides with AddCapability
 	devices := container.LookupAllStrv(ContainerGroup, KeyAddDevice)
 	for _, device := range devices {
 		if device[0] == '-' {
 			device = device[1:]
-			_, err := os.Stat(strings.Split(device, ":")[0])
+			err := fileutils.Exists(strings.Split(device, ":")[0])
 			if errors.Is(err, os.ErrNotExist) {
 				continue
 			}
 		}
-		podman.addf("--device=%s", device)
+		podman.add("--device", device)
 	}
 
 	// Default to no higher level privileges or caps
@@ -458,91 +742,48 @@ func ConvertContainer(container *parser.UnitFile, isUser bool) (*parser.UnitFile
 	dropCaps := container.LookupAllStrv(ContainerGroup, KeyDropCapability)
 
 	for _, caps := range dropCaps {
-		podman.addf("--cap-drop=%s", strings.ToLower(caps))
+		podman.add("--cap-drop", strings.ToLower(caps))
 	}
 
 	// But allow overrides with AddCapability
 	addCaps := container.LookupAllStrv(ContainerGroup, KeyAddCapability)
 	for _, caps := range addCaps {
-		podman.addf("--cap-add=%s", strings.ToLower(caps))
+		podman.add("--cap-add", strings.ToLower(caps))
 	}
 
+	sysctl := container.LookupAllStrv(ContainerGroup, KeySysctl)
+	for _, sysctlItem := range sysctl {
+		podman.add("--sysctl", sysctlItem)
+	}
+
+	// This was not moved to the generic handling since readOnly is used also with volatileTmp
 	readOnly, ok := container.LookupBoolean(ContainerGroup, KeyReadOnly)
 	if ok {
 		podman.addBool("--read-only", readOnly)
 	}
 
 	volatileTmp := container.LookupBooleanWithDefault(ContainerGroup, KeyVolatileTmp, false)
-	if volatileTmp {
-		/* Read only mode already has a tmpfs by default */
-		if !readOnly {
-			podman.add("--tmpfs", "/tmp:rw,size=512M,mode=1777")
-		}
-	} else if readOnly {
-		/* !volatileTmp, disable the default tmpfs from --read-only */
-		podman.add("--read-only-tmpfs=false")
+	if volatileTmp && !readOnly {
+		podman.add("--tmpfs", "/tmp:rw,size=512M,mode=1777")
 	}
 
-	hasUser := container.HasKey(ContainerGroup, KeyUser)
-	hasGroup := container.HasKey(ContainerGroup, KeyGroup)
-	if hasUser || hasGroup {
-		uid := container.LookupUint32(ContainerGroup, KeyUser, 0)
-		gid := container.LookupUint32(ContainerGroup, KeyGroup, 0)
-
-		podman.add("--user")
-		if hasGroup {
-			podman.addf("%d:%d", uid, gid)
-		} else {
-			podman.addf("%d", uid)
-		}
-	}
-
-	if err := handleUserRemap(container, ContainerGroup, podman, isUser, true); err != nil {
+	if err := handleUser(container, ContainerGroup, podman); err != nil {
 		return nil, err
 	}
 
-	handleUserNS(container, ContainerGroup, podman)
-
-	tmpfsValues := container.LookupAll(ContainerGroup, KeyTmpfs)
-	for _, tmpfs := range tmpfsValues {
-		if strings.Count(tmpfs, ":") > 1 {
-			return nil, fmt.Errorf("invalid tmpfs format '%s'", tmpfs)
-		}
-
-		podman.add("--tmpfs", tmpfs)
+	if err := handleUserMappings(container, ContainerGroup, podman, true); err != nil {
+		return nil, err
 	}
 
-	volumes := container.LookupAll(ContainerGroup, KeyVolume)
-	for _, volume := range volumes {
-		parts := strings.SplitN(volume, ":", 3)
+	if err := addVolumes(container, service, ContainerGroup, unitsInfoMap, podman); err != nil {
+		return nil, err
+	}
 
-		source := ""
-		var dest string
-		options := ""
-		if len(parts) >= 2 {
-			source = parts[0]
-			dest = parts[1]
-		} else {
-			dest = parts[0]
-		}
-		if len(parts) >= 3 {
-			options = ":" + parts[2]
-		}
-
-		if source != "" {
-			var err error
-			source, err = handleStorageSource(container, service, source)
-			if err != nil {
-				return nil, err
-			}
-		}
-
-		podman.add("-v")
-		if source == "" {
-			podman.add(dest)
-		} else {
-			podman.addf("%s:%s%s", source, dest, options)
-		}
+	update, ok := container.Lookup(ContainerGroup, KeyAutoUpdate)
+	if ok && len(update) > 0 {
+		podman.addLabels(map[string]string{
+			autoUpdateLabel: update,
+		})
 	}
 
 	exposedPorts := container.LookupAll(ContainerGroup, KeyExposeHostPort)
@@ -553,30 +794,28 @@ func ConvertContainer(container *parser.UnitFile, isUser bool) (*parser.UnitFile
 			return nil, fmt.Errorf("invalid port format '%s'", exposedPort)
 		}
 
-		podman.addf("--expose=%s", exposedPort)
+		podman.add("--expose", exposedPort)
 	}
 
-	if err := handlePublishPorts(container, ContainerGroup, podman); err != nil {
-		return nil, err
-	}
+	handlePublishPorts(container, ContainerGroup, podman)
 
 	podman.addEnv(podmanEnv)
-
-	ip, ok := container.Lookup(ContainerGroup, KeyIP)
-	if ok && len(ip) > 0 {
-		podman.add("--ip", ip)
-	}
-
-	ip6, ok := container.Lookup(ContainerGroup, KeyIP6)
-	if ok && len(ip6) > 0 {
-		podman.add("--ip6", ip6)
-	}
 
 	labels := container.LookupAllKeyVal(ContainerGroup, KeyLabel)
 	podman.addLabels(labels)
 
 	annotations := container.LookupAllKeyVal(ContainerGroup, KeyAnnotation)
 	podman.addAnnotations(annotations)
+
+	masks := container.LookupAllArgs(ContainerGroup, KeyMask)
+	for _, mask := range masks {
+		podman.add("--security-opt", fmt.Sprintf("mask=%s", mask))
+	}
+
+	unmasks := container.LookupAllArgs(ContainerGroup, KeyUnmask)
+	for _, unmask := range unmasks {
+		podman.add("--security-opt", fmt.Sprintf("unmask=%s", unmask))
+	}
 
 	envFiles := container.LookupAllArgs(ContainerGroup, KeyEnvironmentFile)
 	for _, envFile := range envFiles {
@@ -587,10 +826,6 @@ func ConvertContainer(container *parser.UnitFile, isUser bool) (*parser.UnitFile
 		podman.add("--env-file", filePath)
 	}
 
-	if envHost, ok := container.LookupBoolean(ContainerGroup, KeyEnvironmentHost); ok {
-		podman.addBool("--env-host", envHost)
-	}
-
 	secrets := container.LookupAllArgs(ContainerGroup, KeySecret)
 	for _, secret := range secrets {
 		podman.add("--secret", secret)
@@ -598,45 +833,17 @@ func ConvertContainer(container *parser.UnitFile, isUser bool) (*parser.UnitFile
 
 	mounts := container.LookupAllArgs(ContainerGroup, KeyMount)
 	for _, mount := range mounts {
-		params := strings.Split(mount, ",")
-		paramsMap := make(map[string]string, len(params))
-		for _, param := range params {
-			kv := strings.Split(param, "=")
-			paramsMap[kv[0]] = kv[1]
+		mountStr, err := resolveContainerMountParams(container, service, mount, unitsInfoMap)
+		if err != nil {
+			return nil, err
 		}
-		if paramType, ok := paramsMap["type"]; ok {
-			if paramType == "volume" || paramType == "bind" {
-				var err error
-				if paramSource, ok := paramsMap["source"]; ok {
-					paramsMap["source"], err = handleStorageSource(container, service, paramSource)
-				} else if paramSource, ok = paramsMap["src"]; ok {
-					paramsMap["src"], err = handleStorageSource(container, service, paramSource)
-				}
-				if err != nil {
-					return nil, err
-				}
-			}
-		}
-		paramsArray := make([]string, 0, len(params))
-		paramsArray = append(paramsArray, fmt.Sprintf("%s=%s", "type", paramsMap["type"]))
-		for k, v := range paramsMap {
-			if k != "type" {
-				paramsArray = append(paramsArray, fmt.Sprintf("%s=%s", k, v))
-			}
-		}
-		mountStr := strings.Join(paramsArray, ",")
 		podman.add("--mount", mountStr)
 	}
 
 	handleHealth(container, ContainerGroup, podman)
 
-	if hostname, ok := container.Lookup(ContainerGroup, KeyHostName); ok {
-		podman.add("--hostname", hostname)
-	}
-
-	pull, ok := container.Lookup(ContainerGroup, KeyPull)
-	if ok && len(pull) > 0 {
-		podman.add("--pull", pull)
+	if err := handlePod(container, service, ContainerGroup, unitsInfoMap, podman); err != nil {
+		return nil, err
 	}
 
 	handlePodmanArgs(container, ContainerGroup, podman)
@@ -657,13 +864,71 @@ func ConvertContainer(container *parser.UnitFile, isUser bool) (*parser.UnitFile
 	return service, nil
 }
 
+// Get the unresolved container name that may contain '%'.
+func getContainerName(container *parser.UnitFile) string {
+	containerName, ok := container.Lookup(ContainerGroup, KeyContainerName)
+	if !ok || len(containerName) == 0 {
+		// By default, We want to name the container by the service name.
+		if strings.Contains(container.Filename, "@") {
+			containerName = "systemd-%p_%i"
+		} else {
+			containerName = "systemd-%N"
+		}
+	}
+	return containerName
+}
+
+// Get the resolved container name that contains no '%'.
+// Returns an empty string if not resolvable.
+func GetContainerResourceName(container *parser.UnitFile) string {
+	containerName := getContainerName(container)
+
+	// XXX: only %N is handled.
+	// it is difficult to properly implement specifiers handling without consulting systemd.
+	resourceName := strings.ReplaceAll(containerName, "%N", GetContainerServiceName(container))
+
+	if !strings.Contains(resourceName, "%") {
+		return resourceName
+	} else {
+		return ""
+	}
+}
+
+func defaultOneshotServiceGroup(service *parser.UnitFile, remainAfterExit bool) {
+	// The default syslog identifier is the exec basename (podman) which isn't very useful here
+	if _, ok := service.Lookup(ServiceGroup, "SyslogIdentifier"); !ok {
+		service.Set(ServiceGroup, "SyslogIdentifier", "%N")
+	}
+	if _, ok := service.Lookup(ServiceGroup, "Type"); !ok {
+		service.Set(ServiceGroup, "Type", "oneshot")
+	}
+	if remainAfterExit {
+		if _, ok := service.Lookup(ServiceGroup, "RemainAfterExit"); !ok {
+			service.Set(ServiceGroup, "RemainAfterExit", "yes")
+		}
+	}
+}
+
 // Convert a quadlet network file (unit file with a Network group) to a systemd
 // service file (unit file with Service group) based on the options in the
 // Network group.
 // The original Network group is kept around as X-Network.
-func ConvertNetwork(network *parser.UnitFile, name string) (*parser.UnitFile, error) {
+// Also returns the canonical network name, either auto-generated or user-defined via the
+// NetworkName key-value.
+func ConvertNetwork(network *parser.UnitFile, name string, unitsInfoMap map[string]*UnitInfo, isUser bool) (*parser.UnitFile, error) {
+	unitInfo, ok := unitsInfoMap[network.Filename]
+	if !ok {
+		return nil, fmt.Errorf("internal error while processing network %s", network.Filename)
+	}
+
 	service := network.Dup()
-	service.Filename = replaceExtension(network.Filename, ".service", "", "-network")
+	service.Filename = unitInfo.ServiceFileName()
+
+	addDefaultDependencies(service, isUser)
+
+	if network.Path != "" {
+		service.Add(UnitGroup, "SourcePath", network.Path)
+	}
 
 	if err := checkForUnknownKeys(network, NetworkGroup, supportedNetworkKeys); err != nil {
 		return nil, err
@@ -672,25 +937,43 @@ func ConvertNetwork(network *parser.UnitFile, name string) (*parser.UnitFile, er
 	/* Rename old Network group to x-Network so that systemd ignores it */
 	service.RenameGroup(NetworkGroup, XNetworkGroup)
 
-	networkName := replaceExtension(name, "", "systemd-", "")
+	// Rename common quadlet group
+	service.RenameGroup(QuadletGroup, XQuadletGroup)
+
+	// Derive network name from unit name (with added prefix), or use user-provided name.
+	networkName, ok := network.Lookup(NetworkGroup, KeyNetworkName)
+	if !ok || len(networkName) == 0 {
+		networkName = removeExtension(name, "systemd-", "")
+	}
 
 	// Need the containers filesystem mounted to start podman
 	service.Add(UnitGroup, "RequiresMountsFor", "%t/containers")
 
-	podman := NewPodmanCmdline("network", "create", "--ignore")
+	podman := createBasePodmanCommand(network, NetworkGroup)
 
-	if disableDNS := network.LookupBooleanWithDefault(NetworkGroup, KeyNetworkDisableDNS, false); disableDNS {
-		podman.add("--disable-dns")
+	podman.add("network", "create", "--ignore")
+
+	boolKeys := map[string]string{
+		KeyDisableDNS: "--disable-dns",
+		KeyInternal:   "--internal",
+		KeyIPv6:       "--ipv6",
 	}
+	lookupAndAddBoolean(network, NetworkGroup, boolKeys, podman)
 
-	driver, ok := network.Lookup(NetworkGroup, KeyNetworkDriver)
-	if ok && len(driver) > 0 {
-		podman.addf("--driver=%s", driver)
+	stringKeys := map[string]string{
+		KeyDriver:     "--driver",
+		KeyIPAMDriver: "--ipam-driver",
 	}
+	lookupAndAddString(network, NetworkGroup, stringKeys, podman)
 
-	subnets := network.LookupAll(NetworkGroup, KeyNetworkSubnet)
-	gateways := network.LookupAll(NetworkGroup, KeyNetworkGateway)
-	ipRanges := network.LookupAll(NetworkGroup, KeyNetworkIPRange)
+	allStringKeys := map[string]string{
+		KeyDNS: "--dns",
+	}
+	lookupAndAddAllStrings(network, NetworkGroup, allStringKeys, podman)
+
+	subnets := network.LookupAll(NetworkGroup, KeySubnet)
+	gateways := network.LookupAll(NetworkGroup, KeyGateway)
+	ipRanges := network.LookupAll(NetworkGroup, KeyIPRange)
 	if len(subnets) > 0 {
 		if len(gateways) > len(subnets) {
 			return nil, fmt.Errorf("cannot set more gateways than subnets")
@@ -699,31 +982,19 @@ func ConvertNetwork(network *parser.UnitFile, name string) (*parser.UnitFile, er
 			return nil, fmt.Errorf("cannot set more ranges than subnets")
 		}
 		for i := range subnets {
-			podman.addf("--subnet=%s", subnets[i])
+			podman.add("--subnet", subnets[i])
 			if len(gateways) > i {
-				podman.addf("--gateway=%s", gateways[i])
+				podman.add("--gateway", gateways[i])
 			}
 			if len(ipRanges) > i {
-				podman.addf("--ip-range=%s", ipRanges[i])
+				podman.add("--ip-range", ipRanges[i])
 			}
 		}
 	} else if len(ipRanges) > 0 || len(gateways) > 0 {
 		return nil, fmt.Errorf("cannot set gateway or range without subnet")
 	}
 
-	if internal := network.LookupBooleanWithDefault(NetworkGroup, KeyNetworkInternal, false); internal {
-		podman.add("--internal")
-	}
-
-	if ipamDriver, ok := network.Lookup(NetworkGroup, KeyNetworkIPAMDriver); ok && len(ipamDriver) > 0 {
-		podman.addf("--ipam-driver=%s", ipamDriver)
-	}
-
-	if ipv6 := network.LookupBooleanWithDefault(NetworkGroup, KeyNetworkIPv6, false); ipv6 {
-		podman.add("--ipv6")
-	}
-
-	networkOptions := network.LookupAllKeyVal(NetworkGroup, KeyNetworkOptions)
+	networkOptions := network.LookupAllKeyVal(NetworkGroup, KeyOptions)
 	if len(networkOptions) > 0 {
 		podman.addKeys("--opt", networkOptions)
 	}
@@ -738,13 +1009,10 @@ func ConvertNetwork(network *parser.UnitFile, name string) (*parser.UnitFile, er
 
 	service.AddCmdline(ServiceGroup, "ExecStart", podman.Args)
 
-	service.Setv(ServiceGroup,
-		"Type", "oneshot",
-		"RemainAfterExit", "yes",
+	defaultOneshotServiceGroup(service, true)
 
-		// The default syslog identifier is the exec basename (podman) which isn't very useful here
-		"SyslogIdentifier", "%N")
-
+	// Store the name of the created resource
+	unitInfo.ResourceName = networkName
 	return service, nil
 }
 
@@ -752,9 +1020,22 @@ func ConvertNetwork(network *parser.UnitFile, name string) (*parser.UnitFile, er
 // service file (unit file with Service group) based on the options in the
 // Volume group.
 // The original Volume group is kept around as X-Volume.
-func ConvertVolume(volume *parser.UnitFile, name string) (*parser.UnitFile, error) {
+// Also returns the canonical volume name, either auto-generated or user-defined via the VolumeName
+// key-value.
+func ConvertVolume(volume *parser.UnitFile, name string, unitsInfoMap map[string]*UnitInfo, isUser bool) (*parser.UnitFile, error) {
+	unitInfo, ok := unitsInfoMap[volume.Filename]
+	if !ok {
+		return nil, fmt.Errorf("internal error while processing network %s", volume.Filename)
+	}
+
 	service := volume.Dup()
-	service.Filename = replaceExtension(volume.Filename, ".service", "", "-volume")
+	service.Filename = unitInfo.ServiceFileName()
+
+	addDefaultDependencies(service, isUser)
+
+	if volume.Path != "" {
+		service.Add(UnitGroup, "SourcePath", volume.Path)
+	}
 
 	if err := checkForUnknownKeys(volume, VolumeGroup, supportedVolumeKeys); err != nil {
 		return nil, err
@@ -763,69 +1044,99 @@ func ConvertVolume(volume *parser.UnitFile, name string) (*parser.UnitFile, erro
 	/* Rename old Volume group to x-Volume so that systemd ignores it */
 	service.RenameGroup(VolumeGroup, XVolumeGroup)
 
-	volumeName := replaceExtension(name, "", "systemd-", "")
+	// Rename common quadlet group
+	service.RenameGroup(QuadletGroup, XQuadletGroup)
+
+	// Derive volume name from unit name (with added prefix), or use user-provided name.
+	volumeName, ok := volume.Lookup(VolumeGroup, KeyVolumeName)
+	if !ok || len(volumeName) == 0 {
+		volumeName = removeExtension(name, "systemd-", "")
+	}
 
 	// Need the containers filesystem mounted to start podman
 	service.Add(UnitGroup, "RequiresMountsFor", "%t/containers")
 
 	labels := volume.LookupAllKeyVal(VolumeGroup, "Label")
 
-	podman := NewPodmanCmdline("volume", "create", "--ignore")
+	podman := createBasePodmanCommand(volume, VolumeGroup)
+
+	podman.add("volume", "create", "--ignore")
+
+	driver, ok := volume.Lookup(VolumeGroup, KeyDriver)
+	if ok {
+		podman.add("--driver", driver)
+	}
 
 	var opts strings.Builder
-	opts.WriteString("o=")
 
-	if volume.HasKey(VolumeGroup, "User") {
-		uid := volume.LookupUint32(VolumeGroup, "User", 0)
-		if opts.Len() > 2 {
-			opts.WriteString(",")
+	if driver == "image" {
+		opts.WriteString("image=")
+
+		imageName, ok := volume.Lookup(VolumeGroup, KeyImage)
+		if !ok {
+			return nil, fmt.Errorf("the key %s is mandatory when using the image driver", KeyImage)
 		}
-		opts.WriteString(fmt.Sprintf("uid=%d", uid))
-	}
-
-	if volume.HasKey(VolumeGroup, "Group") {
-		gid := volume.LookupUint32(VolumeGroup, "Group", 0)
-		if opts.Len() > 2 {
-			opts.WriteString(",")
+		imageName, err := handleImageSource(imageName, service, unitsInfoMap)
+		if err != nil {
+			return nil, err
 		}
-		opts.WriteString(fmt.Sprintf("gid=%d", gid))
-	}
 
-	copy, ok := volume.LookupBoolean(VolumeGroup, KeyCopy)
-	if ok {
-		if copy {
-			podman.add("--opt", "copy")
-		} else {
-			podman.add("--opt", "nocopy")
-		}
-	}
+		opts.WriteString(imageName)
+	} else {
+		opts.WriteString("o=")
 
-	devValid := false
-
-	dev, ok := volume.Lookup(VolumeGroup, KeyDevice)
-	if ok && len(dev) != 0 {
-		podman.add("--opt", fmt.Sprintf("device=%s", dev))
-		devValid = true
-	}
-
-	devType, ok := volume.Lookup(VolumeGroup, KeyType)
-	if ok && len(devType) != 0 {
-		if devValid {
-			podman.add("--opt", fmt.Sprintf("type=%s", devType))
-		} else {
-			return nil, fmt.Errorf("key Type can't be used without Device")
-		}
-	}
-
-	mountOpts, ok := volume.Lookup(VolumeGroup, KeyOptions)
-	if ok && len(mountOpts) != 0 {
-		if devValid {
+		if volume.HasKey(VolumeGroup, "User") {
+			uid := volume.LookupUint32(VolumeGroup, "User", 0)
 			if opts.Len() > 2 {
 				opts.WriteString(",")
 			}
-			opts.WriteString(mountOpts)
-		} else {
-			return nil, fmt.Errorf("key Options can't be used without Device")
+			opts.WriteString(fmt.Sprintf("uid=%d", uid))
+		}
+
+		if volume.HasKey(VolumeGroup, "Group") {
+			gid := volume.LookupUint32(VolumeGroup, "Group", 0)
+			if opts.Len() > 2 {
+				opts.WriteString(",")
+			}
+			opts.WriteString(fmt.Sprintf("gid=%d", gid))
+		}
+
+		copy, ok := volume.LookupBoolean(VolumeGroup, KeyCopy)
+		if ok {
+			if copy {
+				podman.add("--opt", "copy")
+			} else {
+				podman.add("--opt", "nocopy")
+			}
+		}
+
+		devValid := false
+
+		dev, ok := volume.Lookup(VolumeGroup, KeyDevice)
+		if ok && len(dev) != 0 {
+			podman.add("--opt", fmt.Sprintf("device=%s", dev))
+			devValid = true
+		}
+
+		devType, ok := volume.Lookup(VolumeGroup, KeyType)
+		if ok && len(devType) != 0 {
+			if devValid {
+				podman.add("--opt", fmt.Sprintf("type=%s", devType))
+			} else {
+				return nil, fmt.Errorf("key Type can't be used without Device")
+			}
+		}
+
+		mountOpts, ok := volume.Lookup(VolumeGroup, KeyOptions)
+		if ok && len(mountOpts) != 0 {
+			if devValid {
+				if opts.Len() > 2 {
+					opts.WriteString(",")
+				}
+				opts.WriteString(mountOpts)
+			} else {
+				return nil, fmt.Errorf("key Options can't be used without Device")
+			}
 		}
 	}
 
@@ -841,19 +1152,24 @@ func ConvertVolume(volume *parser.UnitFile, name string) (*parser.UnitFile, erro
 
 	service.AddCmdline(ServiceGroup, "ExecStart", podman.Args)
 
-	service.Setv(ServiceGroup,
-		"Type", "oneshot",
-		"RemainAfterExit", "yes",
+	defaultOneshotServiceGroup(service, true)
 
-		// The default syslog identifier is the exec basename (podman) which isn't very useful here
-		"SyslogIdentifier", "%N")
+	// Store the name of the created resource
+	unitInfo.ResourceName = volumeName
 
 	return service, nil
 }
 
-func ConvertKube(kube *parser.UnitFile, isUser bool) (*parser.UnitFile, error) {
+func ConvertKube(kube *parser.UnitFile, unitsInfoMap map[string]*UnitInfo, isUser bool) (*parser.UnitFile, error) {
+	unitInfo, ok := unitsInfoMap[kube.Filename]
+	if !ok {
+		return nil, fmt.Errorf("internal error while processing network %s", kube.Filename)
+	}
+
 	service := kube.Dup()
-	service.Filename = replaceExtension(kube.Filename, ".service", "", "")
+	service.Filename = unitInfo.ServiceFileName()
+
+	addDefaultDependencies(service, isUser)
 
 	if kube.Path != "" {
 		service.Add(UnitGroup, "SourcePath", kube.Path)
@@ -865,6 +1181,9 @@ func ConvertKube(kube *parser.UnitFile, isUser bool) (*parser.UnitFile, error) {
 
 	// Rename old Kube group to x-Kube so that systemd ignores it
 	service.RenameGroup(KubeGroup, XKubeGroup)
+
+	// Rename common quadlet group
+	service.RenameGroup(QuadletGroup, XQuadletGroup)
 
 	yamlPath, ok := kube.Lookup(KubeGroup, KeyYaml)
 	if !ok || len(yamlPath) == 0 {
@@ -893,15 +1212,25 @@ func ConvertKube(kube *parser.UnitFile, isUser bool) (*parser.UnitFile, error) {
 	// Need the containers filesystem mounted to start podman
 	service.Add(UnitGroup, "RequiresMountsFor", "%t/containers")
 
-	service.Setv(ServiceGroup,
-		"Type", "notify",
-		"NotifyAccess", "all")
+	// Allow users to set the Service Type to oneshot to allow resources only kube yaml
+	serviceType, ok := service.Lookup(ServiceGroup, "Type")
+	if ok && serviceType != "notify" && serviceType != "oneshot" {
+		return nil, fmt.Errorf("invalid service Type '%s'", serviceType)
+	}
+
+	if serviceType != "oneshot" {
+		service.Setv(ServiceGroup,
+			"Type", "notify",
+			"NotifyAccess", "all")
+	}
 
 	if !kube.HasKey(ServiceGroup, "SyslogIdentifier") {
 		service.Set(ServiceGroup, "SyslogIdentifier", "%N")
 	}
 
-	execStart := NewPodmanCmdline("kube", "play")
+	execStart := createBasePodmanCommand(kube, KubeGroup)
+
+	execStart.add("kube", "play")
 
 	execStart.add(
 		// Replace any previous container with the same name, not fail
@@ -916,14 +1245,27 @@ func ConvertKube(kube *parser.UnitFile, isUser bool) (*parser.UnitFile, error) {
 	}
 
 	handleLogDriver(kube, KubeGroup, execStart)
+	handleLogOpt(kube, KubeGroup, execStart)
 
-	if err := handleUserRemap(kube, KubeGroup, execStart, isUser, false); err != nil {
+	if err := handleUserMappings(kube, KubeGroup, execStart, false); err != nil {
 		return nil, err
 	}
 
-	handleUserNS(kube, KubeGroup, execStart)
+	if err := addNetworks(kube, KubeGroup, service, unitsInfoMap, execStart); err != nil {
+		return nil, err
+	}
 
-	addNetworks(kube, KubeGroup, service, execStart)
+	updateMaps := kube.LookupAllStrv(KubeGroup, KeyAutoUpdate)
+	for _, update := range updateMaps {
+		annotation := fmt.Sprintf("--annotation=%s", autoUpdateLabel)
+		updateType := update
+		annoValue, typ, hasSlash := strings.Cut(update, "/")
+		if hasSlash {
+			annotation = annotation + "/" + annoValue
+			updateType = typ
+		}
+		execStart.addf("%s=%s", annotation, updateType)
+	}
 
 	configMaps := kube.LookupAllStrv(KubeGroup, KeyConfigMap)
 	for _, configMap := range configMaps {
@@ -934,9 +1276,7 @@ func ConvertKube(kube *parser.UnitFile, isUser bool) (*parser.UnitFile, error) {
 		execStart.add("--configmap", configMapPath)
 	}
 
-	if err := handlePublishPorts(kube, KubeGroup, execStart); err != nil {
-		return nil, err
-	}
+	handlePublishPorts(kube, KubeGroup, execStart)
 
 	handlePodmanArgs(kube, KubeGroup, execStart)
 
@@ -946,21 +1286,457 @@ func ConvertKube(kube *parser.UnitFile, isUser bool) (*parser.UnitFile, error) {
 
 	// Use `ExecStopPost` to make sure cleanup happens even in case of
 	// errors; otherwise containers, pods, etc. would be left behind.
-	execStop := NewPodmanCmdline("kube", "down")
+	execStop := createBasePodmanCommand(kube, KubeGroup)
+
+	execStop.add("kube", "down")
+
+	if kubeDownForce, ok := kube.LookupBoolean(KubeGroup, KeyKubeDownForce); ok {
+		execStop.addBool("--force", kubeDownForce)
+	}
+
 	execStop.add(yamlPath)
 	service.AddCmdline(ServiceGroup, "ExecStopPost", execStop.Args)
+
+	_, err = handleSetWorkingDirectory(kube, service, KubeGroup)
+	if err != nil {
+		return nil, err
+	}
 
 	return service, nil
 }
 
-func handleUserRemap(unitFile *parser.UnitFile, groupName string, podman *PodmanCmdline, isUser, supportManual bool) error {
-	// ignore Remap keys if UserNS is set
-	if userns, ok := unitFile.Lookup(groupName, KeyUserNS); ok && len(userns) > 0 {
+func ConvertImage(image *parser.UnitFile, unitsInfoMap map[string]*UnitInfo, isUser bool) (*parser.UnitFile, error) {
+	unitInfo, ok := unitsInfoMap[image.Filename]
+	if !ok {
+		return nil, fmt.Errorf("internal error while processing network %s", image.Filename)
+	}
+
+	service := image.Dup()
+	service.Filename = unitInfo.ServiceFileName()
+
+	addDefaultDependencies(service, isUser)
+
+	if image.Path != "" {
+		service.Add(UnitGroup, "SourcePath", image.Path)
+	}
+
+	if err := checkForUnknownKeys(image, ImageGroup, supportedImageKeys); err != nil {
+		return nil, err
+	}
+
+	imageName, ok := image.Lookup(ImageGroup, KeyImage)
+	if !ok || len(imageName) == 0 {
+		return nil, fmt.Errorf("no Image key specified")
+	}
+
+	/* Rename old Network group to x-Network so that systemd ignores it */
+	service.RenameGroup(ImageGroup, XImageGroup)
+
+	// Rename common quadlet group
+	service.RenameGroup(QuadletGroup, XQuadletGroup)
+
+	// Need the containers filesystem mounted to start podman
+	service.Add(UnitGroup, "RequiresMountsFor", "%t/containers")
+
+	podman := createBasePodmanCommand(image, ImageGroup)
+
+	podman.add("image", "pull")
+
+	stringKeys := map[string]string{
+		KeyArch:          "--arch",
+		KeyAuthFile:      "--authfile",
+		KeyCertDir:       "--cert-dir",
+		KeyCreds:         "--creds",
+		KeyDecryptionKey: "--decryption-key",
+		KeyOS:            "--os",
+		KeyVariant:       "--variant",
+	}
+	lookupAndAddString(image, ImageGroup, stringKeys, podman)
+
+	boolKeys := map[string]string{
+		KeyAllTags:   "--all-tags",
+		KeyTLSVerify: "--tls-verify",
+	}
+	lookupAndAddBoolean(image, ImageGroup, boolKeys, podman)
+
+	handlePodmanArgs(image, ImageGroup, podman)
+
+	podman.add(imageName)
+
+	service.AddCmdline(ServiceGroup, "ExecStart", podman.Args)
+
+	defaultOneshotServiceGroup(service, true)
+
+	if name, ok := image.Lookup(ImageGroup, KeyImageTag); ok && len(name) > 0 {
+		imageName = name
+	}
+
+	// Store the name of the created resource
+	unitInfo.ResourceName = imageName
+
+	return service, nil
+}
+
+func ConvertBuild(build *parser.UnitFile, unitsInfoMap map[string]*UnitInfo, isUser bool) (*parser.UnitFile, error) {
+	unitInfo, ok := unitsInfoMap[build.Filename]
+	if !ok {
+		return nil, fmt.Errorf("internal error while processing network %s", build.Filename)
+	}
+
+	// Fast fail is ResouceName is not set
+	if len(unitInfo.ResourceName) == 0 {
+		return nil, fmt.Errorf("no ImageTag key specified")
+	}
+
+	service := build.Dup()
+	service.Filename = unitInfo.ServiceFileName()
+
+	addDefaultDependencies(service, isUser)
+
+	/* Rename old Build group to X-Build so that systemd ignores it */
+	service.RenameGroup(BuildGroup, XBuildGroup)
+
+	// Rename common quadlet group
+	service.RenameGroup(QuadletGroup, XQuadletGroup)
+
+	// Need the containers filesystem mounted to start podman
+	service.Add(UnitGroup, "RequiresMountsFor", "%t/containers")
+
+	if build.Path != "" {
+		service.Add(UnitGroup, "SourcePath", build.Path)
+	}
+
+	if err := checkForUnknownKeys(build, BuildGroup, supportedBuildKeys); err != nil {
+		return nil, err
+	}
+
+	podman := createBasePodmanCommand(build, BuildGroup)
+	podman.add("build")
+
+	// The `--pull` flag has to be handled separately and the `=` sign must be present
+	// See https://github.com/containers/podman/issues/24599 for details
+	if val, ok := build.Lookup(BuildGroup, KeyPull); ok && len(val) > 0 {
+		podman.addf("--pull=%s", val)
+	}
+
+	stringKeys := map[string]string{
+		KeyArch:     "--arch",
+		KeyAuthFile: "--authfile",
+		KeyTarget:   "--target",
+		KeyVariant:  "--variant",
+	}
+	lookupAndAddString(build, BuildGroup, stringKeys, podman)
+
+	boolKeys := map[string]string{
+		KeyTLSVerify: "--tls-verify",
+		KeyForceRM:   "--force-rm",
+	}
+	lookupAndAddBoolean(build, BuildGroup, boolKeys, podman)
+
+	allStringKeys := map[string]string{
+		KeyDNS:       "--dns",
+		KeyDNSOption: "--dns-option",
+		KeyDNSSearch: "--dns-search",
+		KeyGroupAdd:  "--group-add",
+		KeyImageTag:  "--tag",
+	}
+	lookupAndAddAllStrings(build, BuildGroup, allStringKeys, podman)
+
+	annotations := build.LookupAllKeyVal(BuildGroup, KeyAnnotation)
+	podman.addAnnotations(annotations)
+
+	podmanEnv := build.LookupAllKeyVal(BuildGroup, KeyEnvironment)
+	podman.addEnv(podmanEnv)
+
+	labels := build.LookupAllKeyVal(BuildGroup, KeyLabel)
+	podman.addLabels(labels)
+
+	if err := addNetworks(build, BuildGroup, service, unitsInfoMap, podman); err != nil {
+		return nil, err
+	}
+
+	secrets := build.LookupAllArgs(BuildGroup, KeySecret)
+	for _, secret := range secrets {
+		podman.add("--secret", secret)
+	}
+
+	if err := addVolumes(build, service, BuildGroup, unitsInfoMap, podman); err != nil {
+		return nil, err
+	}
+
+	// In order to build an image locally, we need either a File key pointing directly at a
+	// Containerfile, or we need a context or WorkingDirectory containing all required files.
+	// SetWorkingDirectory= can also be a path, a URL to either a Containerfile, a Git repo, or
+	// an archive.
+	context, err := handleSetWorkingDirectory(build, service, BuildGroup)
+	if err != nil {
+		return nil, err
+	}
+
+	workingDirectory, okWD := service.Lookup(ServiceGroup, ServiceKeyWorkingDirectory)
+	filePath, okFile := build.Lookup(BuildGroup, KeyFile)
+	if (!okWD || len(workingDirectory) == 0) && (!okFile || len(filePath) == 0) && len(context) == 0 {
+		return nil, fmt.Errorf("neither SetWorkingDirectory, nor File key specified")
+	}
+
+	if len(filePath) > 0 {
+		podman.add("--file", filePath)
+	}
+
+	handlePodmanArgs(build, BuildGroup, podman)
+
+	// Context or WorkingDirectory has to be last argument
+	if len(context) > 0 {
+		podman.add(context)
+	} else if !filepath.IsAbs(filePath) && !isURL(filePath) {
+		// Special handling for relative filePaths
+		if len(workingDirectory) == 0 {
+			return nil, fmt.Errorf("relative path in File key requires SetWorkingDirectory key to be set")
+		}
+		podman.add(workingDirectory)
+	}
+
+	service.AddCmdline(ServiceGroup, "ExecStart", podman.Args)
+
+	defaultOneshotServiceGroup(service, false)
+	return service, nil
+}
+
+func GetBuiltImageName(buildUnit *parser.UnitFile) string {
+	imageTags := buildUnit.LookupAll(BuildGroup, KeyImageTag)
+	if len(imageTags) > 0 {
+		return imageTags[0]
+	}
+	return ""
+}
+
+func GetContainerServiceName(podUnit *parser.UnitFile) string {
+	return getServiceName(podUnit, ContainerGroup, "")
+}
+
+func GetKubeServiceName(podUnit *parser.UnitFile) string {
+	return getServiceName(podUnit, KubeGroup, "")
+}
+
+func GetVolumeServiceName(podUnit *parser.UnitFile) string {
+	return getServiceName(podUnit, VolumeGroup, "-volume")
+}
+
+func GetNetworkServiceName(podUnit *parser.UnitFile) string {
+	return getServiceName(podUnit, NetworkGroup, "-network")
+}
+
+func GetImageServiceName(podUnit *parser.UnitFile) string {
+	return getServiceName(podUnit, ImageGroup, "-image")
+}
+
+func GetBuildServiceName(podUnit *parser.UnitFile) string {
+	return getServiceName(podUnit, BuildGroup, "-build")
+}
+
+func GetPodServiceName(podUnit *parser.UnitFile) string {
+	return getServiceName(podUnit, PodGroup, "-pod")
+}
+
+func getServiceName(quadletUnitFile *parser.UnitFile, groupName string, defaultExtraSuffix string) string {
+	if serviceName, ok := quadletUnitFile.Lookup(groupName, KeyServiceName); ok {
+		return serviceName
+	}
+	return removeExtension(quadletUnitFile.Filename, "", defaultExtraSuffix)
+}
+
+func ConvertPod(podUnit *parser.UnitFile, name string, unitsInfoMap map[string]*UnitInfo, isUser bool) (*parser.UnitFile, error) {
+	unitInfo, ok := unitsInfoMap[podUnit.Filename]
+	if !ok {
+		return nil, fmt.Errorf("internal error while processing pod %s", podUnit.Filename)
+	}
+
+	service := podUnit.Dup()
+	service.Filename = unitInfo.ServiceFileName()
+
+	addDefaultDependencies(service, isUser)
+
+	if podUnit.Path != "" {
+		service.Add(UnitGroup, "SourcePath", podUnit.Path)
+	}
+
+	if err := checkForUnknownKeys(podUnit, PodGroup, supportedPodKeys); err != nil {
+		return nil, err
+	}
+
+	// Derive pod name from unit name (with added prefix), or use user-provided name.
+	podName, ok := podUnit.Lookup(PodGroup, KeyPodName)
+	if !ok || len(podName) == 0 {
+		podName = removeExtension(name, "systemd-", "")
+	}
+
+	/* Rename old Pod group to x-Pod so that systemd ignores it */
+	service.RenameGroup(PodGroup, XPodGroup)
+
+	// Rename common quadlet group
+	service.RenameGroup(QuadletGroup, XQuadletGroup)
+
+	// Need the containers filesystem mounted to start podman
+	service.Add(UnitGroup, "RequiresMountsFor", "%t/containers")
+
+	for _, containerService := range unitInfo.ContainersToStart {
+		service.Add(UnitGroup, "Wants", containerService)
+		service.Add(UnitGroup, "Before", containerService)
+	}
+
+	if !podUnit.HasKey(ServiceGroup, "SyslogIdentifier") {
+		service.Set(ServiceGroup, "SyslogIdentifier", "%N")
+	}
+
+	execStart := createBasePodmanCommand(podUnit, PodGroup)
+	execStart.add("pod", "start", "--pod-id-file=%t/%N.pod-id")
+	service.AddCmdline(ServiceGroup, "ExecStart", execStart.Args)
+
+	execStop := createBasePodmanCommand(podUnit, PodGroup)
+	execStop.add("pod", "stop")
+	execStop.add(
+		"--pod-id-file=%t/%N.pod-id",
+		"--ignore",
+		"--time=10",
+	)
+	service.AddCmdline(ServiceGroup, "ExecStop", execStop.Args)
+
+	execStopPost := createBasePodmanCommand(podUnit, PodGroup)
+	execStopPost.add("pod", "rm")
+	execStopPost.add(
+		"--pod-id-file=%t/%N.pod-id",
+		"--ignore",
+		"--force",
+	)
+	service.AddCmdline(ServiceGroup, "ExecStopPost", execStopPost.Args)
+
+	execStartPre := createBasePodmanCommand(podUnit, PodGroup)
+	execStartPre.add("pod", "create")
+	execStartPre.add(
+		"--infra-conmon-pidfile=%t/%N.pid",
+		"--pod-id-file=%t/%N.pod-id",
+		"--exit-policy=stop",
+		"--replace",
+	)
+
+	if err := handleUserMappings(podUnit, PodGroup, execStartPre, true); err != nil {
+		return nil, err
+	}
+
+	handlePublishPorts(podUnit, PodGroup, execStartPre)
+
+	if err := addNetworks(podUnit, PodGroup, service, unitsInfoMap, execStartPre); err != nil {
+		return nil, err
+	}
+
+	stringsKeys := map[string]string{
+		KeyIP:      "--ip",
+		KeyIP6:     "--ip6",
+		KeyShmSize: "--shm-size",
+	}
+	lookupAndAddString(podUnit, PodGroup, stringsKeys, execStartPre)
+
+	allStringsKeys := map[string]string{
+		KeyNetworkAlias: "--network-alias",
+		KeyDNS:          "--dns",
+		KeyDNSOption:    "--dns-option",
+		KeyDNSSearch:    "--dns-search",
+		KeyAddHost:      "--add-host",
+	}
+	lookupAndAddAllStrings(podUnit, PodGroup, allStringsKeys, execStartPre)
+
+	if err := addVolumes(podUnit, service, PodGroup, unitsInfoMap, execStartPre); err != nil {
+		return nil, err
+	}
+
+	execStartPre.add("--infra-name", fmt.Sprintf("%s-infra", podName))
+	execStartPre.add("--name", podName)
+
+	handlePodmanArgs(podUnit, PodGroup, execStartPre)
+
+	service.AddCmdline(ServiceGroup, "ExecStartPre", execStartPre.Args)
+
+	service.Setv(ServiceGroup,
+		"Environment", "PODMAN_SYSTEMD_UNIT=%n",
+		"Type", "forking",
+		"Restart", "on-failure",
+		"PIDFile", "%t/%N.pid",
+	)
+
+	return service, nil
+}
+
+func handleUser(unitFile *parser.UnitFile, groupName string, podman *PodmanCmdline) error {
+	user, hasUser := unitFile.Lookup(groupName, KeyUser)
+	okUser := hasUser && len(user) > 0
+
+	group, hasGroup := unitFile.Lookup(groupName, KeyGroup)
+	okGroup := hasGroup && len(group) > 0
+
+	if !okUser {
+		if okGroup {
+			return fmt.Errorf("invalid Group set without User")
+		}
 		return nil
 	}
 
-	uidMaps := unitFile.LookupAllStrv(groupName, KeyRemapUID)
-	gidMaps := unitFile.LookupAllStrv(groupName, KeyRemapGID)
+	var userGroupStr string
+	if !okGroup {
+		userGroupStr = user
+	} else {
+		userGroupStr = fmt.Sprintf("%s:%s", user, group)
+	}
+	podman.add("--user", userGroupStr)
+
+	return nil
+}
+
+func handleUserMappings(unitFile *parser.UnitFile, groupName string, podman *PodmanCmdline, supportManual bool) error {
+	mappingsDefined := false
+
+	if userns, ok := unitFile.Lookup(groupName, KeyUserNS); ok && len(userns) > 0 {
+		podman.add("--userns", userns)
+		mappingsDefined = true
+	}
+
+	uidMaps := unitFile.LookupAllStrv(groupName, KeyUIDMap)
+	mappingsDefined = mappingsDefined || len(uidMaps) > 0
+	for _, uidMap := range uidMaps {
+		podman.add("--uidmap", uidMap)
+	}
+
+	gidMaps := unitFile.LookupAllStrv(groupName, KeyGIDMap)
+	mappingsDefined = mappingsDefined || len(gidMaps) > 0
+	for _, gidMap := range gidMaps {
+		podman.add("--gidmap", gidMap)
+	}
+
+	if subUIDMap, ok := unitFile.Lookup(groupName, KeySubUIDMap); ok && len(subUIDMap) > 0 {
+		podman.add("--subuidname", subUIDMap)
+		mappingsDefined = true
+	}
+
+	if subGIDMap, ok := unitFile.Lookup(groupName, KeySubGIDMap); ok && len(subGIDMap) > 0 {
+		podman.add("--subgidname", subGIDMap)
+		mappingsDefined = true
+	}
+
+	if mappingsDefined {
+		_, hasRemapUID := unitFile.Lookup(groupName, KeyRemapUid)
+		_, hasRemapGID := unitFile.Lookup(groupName, KeyRemapGid)
+		_, RemapUsers := unitFile.LookupLast(groupName, KeyRemapUsers)
+		if hasRemapUID || hasRemapGID || RemapUsers {
+			return fmt.Errorf("deprecated Remap keys are set along with explicit mapping keys")
+		}
+		return nil
+	}
+
+	return handleUserRemap(unitFile, groupName, podman, supportManual)
+}
+
+func handleUserRemap(unitFile *parser.UnitFile, groupName string, podman *PodmanCmdline, supportManual bool) error {
+	uidMaps := unitFile.LookupAllStrv(groupName, KeyRemapUid)
+	gidMaps := unitFile.LookupAllStrv(groupName, KeyRemapGid)
 	remapUsers, _ := unitFile.LookupLast(groupName, KeyRemapUsers)
 	switch remapUsers {
 	case "":
@@ -973,10 +1749,10 @@ func handleUserRemap(unitFile *parser.UnitFile, groupName string, podman *Podman
 	case "manual":
 		if supportManual {
 			for _, uidMap := range uidMaps {
-				podman.addf("--uidmap=%s", uidMap)
+				podman.add("--uidmap", uidMap)
 			}
 			for _, gidMap := range gidMaps {
-				podman.addf("--gidmap=%s", gidMap)
+				podman.add("--gidmap", gidMap)
 			}
 		} else {
 			return fmt.Errorf("RemapUsers=manual is not supported")
@@ -989,17 +1765,13 @@ func handleUserRemap(unitFile *parser.UnitFile, groupName string, podman *Podman
 		for _, gidMap := range gidMaps {
 			autoOpts = append(autoOpts, "gidmapping="+gidMap)
 		}
-		uidSize := unitFile.LookupUint32(groupName, KeyRemapUIDSize, 0)
+		uidSize := unitFile.LookupUint32(groupName, KeyRemapUidSize, 0)
 		if uidSize > 0 {
 			autoOpts = append(autoOpts, fmt.Sprintf("size=%v", uidSize))
 		}
 
-		podman.addf("--userns=" + usernsOpts("auto", autoOpts))
+		podman.add("--userns", usernsOpts("auto", autoOpts))
 	case "keep-id":
-		if !isUser {
-			return fmt.Errorf("RemapUsers=keep-id is unsupported for system units")
-		}
-
 		keepidOpts := make([]string, 0)
 		if len(uidMaps) > 0 {
 			if len(uidMaps) > 1 {
@@ -1014,7 +1786,7 @@ func handleUserRemap(unitFile *parser.UnitFile, groupName string, podman *Podman
 			keepidOpts = append(keepidOpts, "gid="+gidMaps[0])
 		}
 
-		podman.addf("--userns=" + usernsOpts("keep-id", keepidOpts))
+		podman.add("--userns", usernsOpts("keep-id", keepidOpts))
 
 	default:
 		return fmt.Errorf("unsupported RemapUsers option '%s'", remapUsers)
@@ -1023,37 +1795,50 @@ func handleUserRemap(unitFile *parser.UnitFile, groupName string, podman *Podman
 	return nil
 }
 
-func handleUserNS(unitFile *parser.UnitFile, groupName string, podman *PodmanCmdline) {
-	if userns, ok := unitFile.Lookup(groupName, KeyUserNS); ok && len(userns) > 0 {
-		podman.add("--userns", userns)
-	}
-}
-
-func addNetworks(quadletUnitFile *parser.UnitFile, groupName string, serviceUnitFile *parser.UnitFile, podman *PodmanCmdline) {
+func addNetworks(quadletUnitFile *parser.UnitFile, groupName string, serviceUnitFile *parser.UnitFile, unitsInfoMap map[string]*UnitInfo, podman *PodmanCmdline) error {
 	networks := quadletUnitFile.LookupAll(groupName, KeyNetwork)
 	for _, network := range networks {
 		if len(network) > 0 {
 			quadletNetworkName, options, found := strings.Cut(network, ":")
-			if strings.HasSuffix(quadletNetworkName, ".network") {
-				// the podman network name is systemd-$name
-				networkName := replaceExtension(quadletNetworkName, "", "systemd-", "")
 
-				// the systemd unit name is $name-network.service
-				networkServiceName := replaceExtension(quadletNetworkName, ".service", "", "-network")
+			isNetworkUnit := strings.HasSuffix(quadletNetworkName, ".network")
+			isContainerUnit := strings.HasSuffix(quadletNetworkName, ".container")
 
-				serviceUnitFile.Add(UnitGroup, "Requires", networkServiceName)
-				serviceUnitFile.Add(UnitGroup, "After", networkServiceName)
+			if isNetworkUnit || isContainerUnit {
+				unitInfo, ok := unitsInfoMap[quadletNetworkName]
+				if !ok {
+					return fmt.Errorf("requested Quadlet unit %s was not found", quadletNetworkName)
+				}
+
+				// XXX: this is usually because a '@' in service name
+				if len(unitInfo.ResourceName) == 0 {
+					return fmt.Errorf("cannot get the resource name of %s", quadletNetworkName)
+				}
+
+				// the systemd unit name is $serviceName.service
+				serviceFileName := unitInfo.ServiceFileName()
+
+				serviceUnitFile.Add(UnitGroup, "Requires", serviceFileName)
+				serviceUnitFile.Add(UnitGroup, "After", serviceFileName)
 
 				if found {
-					network = fmt.Sprintf("%s:%s", networkName, options)
+					if isContainerUnit {
+						return fmt.Errorf("extra options are not supported when joining another container's network")
+					}
+					network = fmt.Sprintf("%s:%s", unitInfo.ResourceName, options)
 				} else {
-					network = networkName
+					if isContainerUnit {
+						network = fmt.Sprintf("container:%s", unitInfo.ResourceName)
+					} else {
+						network = unitInfo.ResourceName
+					}
 				}
 			}
 
-			podman.addf("--network=%s", network)
+			podman.add("--network", network)
 		}
 	}
+	return nil
 }
 
 // Systemd Specifiers start with % with the exception of %%
@@ -1085,68 +1870,11 @@ func getAbsolutePath(quadletUnitFile *parser.UnitFile, filePath string) (string,
 	return filePath, nil
 }
 
-func handlePublishPorts(unitFile *parser.UnitFile, groupName string, podman *PodmanCmdline) error {
+func handlePublishPorts(unitFile *parser.UnitFile, groupName string, podman *PodmanCmdline) {
 	publishPorts := unitFile.LookupAll(groupName, KeyPublishPort)
 	for _, publishPort := range publishPorts {
-		publishPort = strings.TrimSpace(publishPort) // Allow whitespace after
-
-		// IP address could have colons in it. For example: "[::]:8080:80/tcp, so use custom splitter
-		parts := splitPorts(publishPort)
-
-		var containerPort string
-		ip := ""
-		hostPort := ""
-
-		// format (from podman run):
-		// ip:hostPort:containerPort | ip::containerPort | hostPort:containerPort | containerPort
-		//
-		// ip could be IPv6 with minimum of these chars "[::]"
-		// containerPort can have a suffix of "/tcp" or "/udp"
-		//
-
-		switch len(parts) {
-		case 1:
-			containerPort = parts[0]
-
-		case 2:
-			hostPort = parts[0]
-			containerPort = parts[1]
-
-		case 3:
-			ip = parts[0]
-			hostPort = parts[1]
-			containerPort = parts[2]
-
-		default:
-			return fmt.Errorf("invalid published port '%s'", publishPort)
-		}
-
-		if ip == "0.0.0.0" {
-			ip = ""
-		}
-
-		if len(hostPort) > 0 && !isPortRange(hostPort) {
-			return fmt.Errorf("invalid port format '%s'", hostPort)
-		}
-
-		if len(containerPort) > 0 && !isPortRange(containerPort) {
-			return fmt.Errorf("invalid port format '%s'", containerPort)
-		}
-
-		podman.add("--publish")
-		switch {
-		case len(ip) > 0 && len(hostPort) > 0:
-			podman.addf("%s:%s:%s", ip, hostPort, containerPort)
-		case len(ip) > 0:
-			podman.addf("%s::%s", ip, containerPort)
-		case len(hostPort) > 0:
-			podman.addf("%s:%s", hostPort, containerPort)
-		default:
-			podman.addf("%s", containerPort)
-		}
+		podman.add("--publish", publishPort)
 	}
-
-	return nil
 }
 
 func handleLogDriver(unitFile *parser.UnitFile, groupName string, podman *PodmanCmdline) {
@@ -1156,7 +1884,14 @@ func handleLogDriver(unitFile *parser.UnitFile, groupName string, podman *Podman
 	}
 }
 
-func handleStorageSource(quadletUnitFile, serviceUnitFile *parser.UnitFile, source string) (string, error) {
+func handleLogOpt(unitFile *parser.UnitFile, groupName string, podman *PodmanCmdline) {
+	logOpts := unitFile.LookupAllStrv(groupName, KeyLogOpt)
+	for _, logOpt := range logOpts {
+		podman.add("--log-opt", logOpt)
+	}
+}
+
+func handleStorageSource(quadletUnitFile, serviceUnitFile *parser.UnitFile, source string, unitsInfoMap map[string]*UnitInfo, checkImage bool) (string, error) {
 	if source[0] == '.' {
 		var err error
 		source, err = getAbsolutePath(quadletUnitFile, source)
@@ -1167,17 +1902,18 @@ func handleStorageSource(quadletUnitFile, serviceUnitFile *parser.UnitFile, sour
 	if source[0] == '/' {
 		// Absolute path
 		serviceUnitFile.Add(UnitGroup, "RequiresMountsFor", source)
-	} else if strings.HasSuffix(source, ".volume") {
-		// the podman volume name is systemd-$name
-		volumeName := replaceExtension(source, "", "systemd-", "")
+	} else if strings.HasSuffix(source, ".volume") || (checkImage && strings.HasSuffix(source, ".image")) {
+		sourceUnitInfo, ok := unitsInfoMap[source]
+		if !ok {
+			return "", fmt.Errorf("requested Quadlet source %s was not found", source)
+		}
 
-		// the systemd unit name is $name-volume.service
-		volumeServiceName := replaceExtension(source, ".service", "", "-volume")
+		// the systemd unit name is $serviceName.service
+		sourceServiceName := sourceUnitInfo.ServiceFileName()
+		serviceUnitFile.Add(UnitGroup, "Requires", sourceServiceName)
+		serviceUnitFile.Add(UnitGroup, "After", sourceServiceName)
 
-		source = volumeName
-
-		serviceUnitFile.Add(UnitGroup, "Requires", volumeServiceName)
-		serviceUnitFile.Add(UnitGroup, "After", volumeServiceName)
+		source = sourceUnitInfo.ResourceName
 	}
 
 	return source, nil
@@ -1188,6 +1924,9 @@ func handleHealth(unitFile *parser.UnitFile, groupName string, podman *PodmanCmd
 		{KeyHealthCmd, "cmd"},
 		{KeyHealthInterval, "interval"},
 		{KeyHealthOnFailure, "on-failure"},
+		{KeyHealthLogDestination, "log-destination"},
+		{KeyHealthMaxLogCount, "max-log-count"},
+		{KeyHealthMaxLogSize, "max-log-size"},
 		{KeyHealthRetries, "retries"},
 		{KeyHealthStartPeriod, "start-period"},
 		{KeyHealthTimeout, "timeout"},
@@ -1211,5 +1950,273 @@ func handlePodmanArgs(unitFile *parser.UnitFile, groupName string, podman *Podma
 	podmanArgs := unitFile.LookupAllArgs(groupName, KeyPodmanArgs)
 	if len(podmanArgs) > 0 {
 		podman.add(podmanArgs...)
+	}
+}
+
+func handleSetWorkingDirectory(quadletUnitFile, serviceUnitFile *parser.UnitFile, quadletGroup string) (string, error) {
+	setWorkingDirectory, ok := quadletUnitFile.Lookup(quadletGroup, KeySetWorkingDirectory)
+	if !ok || len(setWorkingDirectory) == 0 {
+		return "", nil
+	}
+
+	var relativeToFile string
+	var context string
+	switch strings.ToLower(setWorkingDirectory) {
+	case "yaml":
+		if quadletGroup != KubeGroup {
+			return "", fmt.Errorf("SetWorkingDirectory=%s is only supported in .kube files", setWorkingDirectory)
+		}
+
+		relativeToFile, ok = quadletUnitFile.Lookup(quadletGroup, KeyYaml)
+		if !ok {
+			return "", fmt.Errorf("no Yaml key specified")
+		}
+	case "file":
+		if quadletGroup != BuildGroup {
+			return "", fmt.Errorf("SetWorkingDirectory=%s is only supported in .build files", setWorkingDirectory)
+		}
+
+		relativeToFile, ok = quadletUnitFile.Lookup(quadletGroup, KeyFile)
+		if !ok {
+			return "", fmt.Errorf("no File key specified")
+		}
+	case "unit":
+		relativeToFile = quadletUnitFile.Path
+	default:
+		// Path / URL handling is for .build files only
+		if quadletGroup != BuildGroup {
+			return "", fmt.Errorf("unsupported value for %s: %s ", ServiceKeyWorkingDirectory, setWorkingDirectory)
+		}
+
+		// Any value other than the above cases will be returned as context
+		context = setWorkingDirectory
+
+		// If we have a relative path, set the WorkingDirectory to that of the
+		// quadletUnitFile
+		if !filepath.IsAbs(context) {
+			relativeToFile = quadletUnitFile.Path
+		}
+	}
+
+	if len(relativeToFile) > 0 && !isURL(context) {
+		// If WorkingDirectory is already set in the Service section do not change it
+		workingDir, ok := quadletUnitFile.Lookup(ServiceGroup, ServiceKeyWorkingDirectory)
+		if ok && len(workingDir) > 0 {
+			return "", nil
+		}
+
+		fileInWorkingDir, err := getAbsolutePath(quadletUnitFile, relativeToFile)
+		if err != nil {
+			return "", err
+		}
+
+		serviceUnitFile.Add(ServiceGroup, ServiceKeyWorkingDirectory, filepath.Dir(fileInWorkingDir))
+	}
+
+	return context, nil
+}
+
+func lookupAndAddString(unit *parser.UnitFile, group string, keys map[string]string, podman *PodmanCmdline) {
+	for key, flag := range keys {
+		if val, ok := unit.Lookup(group, key); ok && len(val) > 0 {
+			podman.add(flag, val)
+		}
+	}
+}
+
+func lookupAndAddAllStrings(unit *parser.UnitFile, group string, keys map[string]string, podman *PodmanCmdline) {
+	for key, flag := range keys {
+		values := unit.LookupAll(group, key)
+		for _, val := range values {
+			podman.add(flag, val)
+		}
+	}
+}
+
+func lookupAndAddBoolean(unit *parser.UnitFile, group string, keys map[string]string, podman *PodmanCmdline) {
+	for key, flag := range keys {
+		if val, ok := unit.LookupBoolean(group, key); ok {
+			podman.addBool(flag, val)
+		}
+	}
+}
+
+func handleImageSource(quadletImageName string, serviceUnitFile *parser.UnitFile, unitsInfoMap map[string]*UnitInfo) (string, error) {
+	for _, suffix := range []string{".build", ".image"} {
+		if strings.HasSuffix(quadletImageName, suffix) {
+			// since there is no default name conversion, the actual image name must exist in the names map
+			unitInfo, ok := unitsInfoMap[quadletImageName]
+			if !ok {
+				return "", fmt.Errorf("requested Quadlet image %s was not found", quadletImageName)
+			}
+
+			// the systemd unit name is $name-$suffix.service
+			imageServiceName := unitInfo.ServiceFileName()
+
+			serviceUnitFile.Add(UnitGroup, "Requires", imageServiceName)
+			serviceUnitFile.Add(UnitGroup, "After", imageServiceName)
+
+			quadletImageName = unitInfo.ResourceName
+		}
+	}
+
+	return quadletImageName, nil
+}
+
+func resolveContainerMountParams(containerUnitFile, serviceUnitFile *parser.UnitFile, mount string, unitsInfoMap map[string]*UnitInfo) (string, error) {
+	mountType, tokens, err := specgenutilexternal.FindMountType(mount)
+	if err != nil {
+		return "", err
+	}
+
+	// Source resolution is required only for these types of mounts
+	sourceResultionRequired := map[string]struct{}{
+		"volume": {},
+		"bind":   {},
+		"glob":   {},
+		"image":  {},
+	}
+	if _, ok := sourceResultionRequired[mountType]; !ok {
+		return mount, nil
+	}
+
+	sourceIndex := -1
+	originalSource := ""
+	for i, token := range tokens {
+		key, val, hasVal := strings.Cut(token, "=")
+		if key == "source" || key == "src" {
+			if !hasVal {
+				return "", fmt.Errorf("source parameter does not include a value")
+			}
+			sourceIndex = i
+			originalSource = val
+		}
+	}
+
+	resolvedSource, err := handleStorageSource(containerUnitFile, serviceUnitFile, originalSource, unitsInfoMap, true)
+	if err != nil {
+		return "", err
+	}
+	tokens[sourceIndex] = fmt.Sprintf("source=%s", resolvedSource)
+
+	tokens = append([]string{fmt.Sprintf("type=%s", mountType)}, tokens...)
+
+	return convertToCSV(tokens)
+}
+
+func convertToCSV(s []string) (string, error) {
+	var buf bytes.Buffer
+	writer := csv.NewWriter(&buf)
+
+	err := writer.Write(s)
+	if err != nil {
+		return "", err
+	}
+	writer.Flush()
+
+	ret := buf.String()
+	if ret[len(ret)-1] == '\n' {
+		ret = ret[:len(ret)-1]
+	}
+
+	return ret, nil
+}
+
+func createBasePodmanCommand(unitFile *parser.UnitFile, groupName string) *PodmanCmdline {
+	podman := NewPodmanCmdline()
+
+	containersConfModules := unitFile.LookupAll(groupName, KeyContainersConfModule)
+	for _, containersConfModule := range containersConfModules {
+		podman.addf("--module=%s", containersConfModule)
+	}
+
+	globalArgs := unitFile.LookupAllArgs(groupName, KeyGlobalArgs)
+	if len(globalArgs) > 0 {
+		podman.add(globalArgs...)
+	}
+
+	return podman
+}
+
+func handlePod(quadletUnitFile, serviceUnitFile *parser.UnitFile, groupName string, unitsInfoMap map[string]*UnitInfo, podman *PodmanCmdline) error {
+	pod, ok := quadletUnitFile.Lookup(groupName, KeyPod)
+	if ok && len(pod) > 0 {
+		if !strings.HasSuffix(pod, ".pod") {
+			return fmt.Errorf("pod %s is not Quadlet based", pod)
+		}
+
+		podInfo, ok := unitsInfoMap[pod]
+		if !ok {
+			return fmt.Errorf("quadlet pod unit %s does not exist", pod)
+		}
+
+		podman.add("--pod-id-file", fmt.Sprintf("%%t/%s.pod-id", podInfo.ServiceName))
+
+		podServiceName := podInfo.ServiceFileName()
+		serviceUnitFile.Add(UnitGroup, "BindsTo", podServiceName)
+		serviceUnitFile.Add(UnitGroup, "After", podServiceName)
+
+		// If we want to start the container with the pod, we add it to this list.
+		// This creates corresponding Wants=/Before= statements in the pod service.
+		if quadletUnitFile.LookupBooleanWithDefault(groupName, KeyStartWithPod, true) {
+			podInfo.ContainersToStart = append(podInfo.ContainersToStart, serviceUnitFile.Filename)
+		}
+	}
+	return nil
+}
+
+func addVolumes(quadletUnitFile, serviceUnitFile *parser.UnitFile, groupName string, unitsInfoMap map[string]*UnitInfo, podman *PodmanCmdline) error {
+	volumes := quadletUnitFile.LookupAll(groupName, KeyVolume)
+	for _, volume := range volumes {
+		parts := strings.SplitN(volume, ":", 3)
+
+		source := ""
+		var dest string
+		options := ""
+		if len(parts) >= 2 {
+			source = parts[0]
+			dest = parts[1]
+		} else {
+			dest = parts[0]
+		}
+		if len(parts) >= 3 {
+			options = ":" + parts[2]
+		}
+
+		if source != "" {
+			var err error
+			source, err = handleStorageSource(quadletUnitFile, serviceUnitFile, source, unitsInfoMap, false)
+			if err != nil {
+				return err
+			}
+		}
+
+		podman.add("-v")
+		if source == "" {
+			podman.add(dest)
+		} else {
+			podman.addf("%s:%s%s", source, dest, options)
+		}
+	}
+
+	return nil
+}
+
+func addDefaultDependencies(service *parser.UnitFile, isUser bool) {
+	// Add a dependency on network-online.target so the image pull container startup
+	// does not happen before network is ready.
+	// https://github.com/containers/podman/issues/21873
+	if service.LookupBooleanWithDefault(QuadletGroup, KeyDefaultDependencies, true) {
+		networkUnit := "network-online.target"
+		// network-online.target only exists as root and user session cannot wait for it
+		// https://github.com/systemd/systemd/issues/3312
+		// Given this is a bad problem with pasta which can fail to start or use the
+		// wrong interface if the network is not fully set up we need to work around
+		// that: https://github.com/containers/podman/issues/22197.
+		if isUser {
+			networkUnit = "podman-user-wait-network-online.service"
+		}
+		service.PrependUnitLine(UnitGroup, "After", networkUnit)
+		service.PrependUnitLine(UnitGroup, "Wants", networkUnit)
 	}
 }

@@ -1,6 +1,7 @@
 package utils
 
 import (
+	"fmt"
 	"net/url"
 	"strings"
 
@@ -34,8 +35,22 @@ func ToLibpodFilters(f url.Values) (filters []string) {
 func ToURLValues(f []string) (filters url.Values) {
 	filters = make(url.Values)
 	for _, v := range f {
-		t := strings.SplitN(v, "=", 2)
-		filters.Add(t[0], t[1])
+		key, val, _ := strings.Cut(v, "=")
+		filters.Add(key, val)
 	}
 	return
+}
+
+// ParseAnnotations takes a string slice of options, expected to be "key=val" and returns
+// a string map where the map index is the key and points to the value
+func ParseAnnotations(options []string) (map[string]string, error) {
+	annotations := make(map[string]string)
+	for _, annotationSpec := range options {
+		key, val, hasVal := strings.Cut(annotationSpec, "=")
+		if !hasVal {
+			return nil, fmt.Errorf("no value given for annotation %q", key)
+		}
+		annotations[key] = val
+	}
+	return annotations, nil
 }

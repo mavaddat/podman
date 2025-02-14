@@ -9,10 +9,10 @@ import (
 	"strings"
 	"time"
 
-	"github.com/containers/podman/v4/libpod/define"
-	. "github.com/containers/podman/v4/pkg/bindings"
-	"github.com/containers/podman/v4/pkg/bindings/containers"
-	"github.com/containers/podman/v4/pkg/specgen"
+	"github.com/containers/podman/v5/libpod/define"
+	. "github.com/containers/podman/v5/pkg/bindings"
+	"github.com/containers/podman/v5/pkg/bindings/containers"
+	"github.com/containers/podman/v5/pkg/specgen"
 	"github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 	. "github.com/onsi/gomega/gexec"
@@ -203,7 +203,8 @@ func (b *bindingTest) restoreImageFromCache(i testImage) {
 // and add or append the alpine image to it
 func (b *bindingTest) RunTopContainer(containerName *string, podName *string) (string, error) {
 	s := specgen.NewSpecGenerator(alpine.name, false)
-	s.Terminal = false
+	terminal := false
+	s.Terminal = &terminal
 	s.Command = []string{"/usr/bin/top"}
 	if containerName != nil {
 		s.Name = *containerName
@@ -244,17 +245,6 @@ func (b *bindingTest) PodcreateAndExpose(name *string, port *string) {
 		command = append(command, "--publish", podport)
 	}
 	b.runPodman(command).Wait(45)
-}
-
-// StringInSlice returns a boolean based on whether a given
-// string is in a given slice
-func StringInSlice(s string, sl []string) bool {
-	for _, val := range sl {
-		if s == val {
-			return true
-		}
-	}
-	return false
 }
 
 var _ = ginkgo.SynchronizedBeforeSuite(func() []byte {

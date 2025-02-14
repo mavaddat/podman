@@ -1,3 +1,5 @@
+//go:build !remote
+
 package libpod
 
 import (
@@ -11,9 +13,9 @@ import (
 	"github.com/containers/buildah/imagebuildah"
 	"github.com/containers/common/libimage"
 	"github.com/containers/image/v5/docker/reference"
-	"github.com/containers/podman/v4/libpod/define"
-	"github.com/containers/podman/v4/libpod/events"
-	"github.com/containers/podman/v4/pkg/util"
+	"github.com/containers/podman/v5/libpod/define"
+	"github.com/containers/podman/v5/libpod/events"
+	"github.com/containers/podman/v5/pkg/util"
 	"github.com/sirupsen/logrus"
 )
 
@@ -42,11 +44,15 @@ func (r *Runtime) RemoveContainersForImageCallback(ctx context.Context) libimage
 				if err != nil {
 					return fmt.Errorf("container %s is in pod %s, but pod cannot be retrieved: %w", ctr.ID(), ctr.config.Pod, err)
 				}
-				if err := r.removePod(ctx, pod, true, true, timeout); err != nil {
+				if _, err := r.removePod(ctx, pod, true, true, timeout); err != nil {
 					return fmt.Errorf("removing image %s: container %s using image could not be removed: %w", imageID, ctr.ID(), err)
 				}
 			} else {
-				if err := r.removeContainer(ctx, ctr, true, false, false, false, timeout); err != nil {
+				opts := ctrRmOpts{
+					Force:   true,
+					Timeout: timeout,
+				}
+				if _, _, err := r.removeContainer(ctx, ctr, opts); err != nil {
 					return fmt.Errorf("removing image %s: container %s using image could not be removed: %w", imageID, ctr.ID(), err)
 				}
 			}
@@ -99,7 +105,7 @@ func (r *Runtime) IsExternalContainerCallback(_ context.Context) libimage.IsExte
 	}
 }
 
-// newBuildEvent creates a new event based on completion of a built image
+// newImageBuildCompleteEvent creates a new event based on completion of a built image
 func (r *Runtime) newImageBuildCompleteEvent(idOrName string) {
 	e := events.NewEvent(events.Build)
 	e.Type = events.Image
@@ -114,6 +120,8 @@ func (r *Runtime) Build(ctx context.Context, options buildahDefine.BuildOptions,
 	if options.Runtime == "" {
 		options.Runtime = r.GetOCIRuntimePath()
 	}
+	options.NoPivotRoot = r.config.Engine.NoPivotRoot
+
 	// share the network interface between podman and buildah
 	options.NetworkInterface = r.network
 	id, ref, err := imagebuildah.BuildDockerfiles(ctx, r.store, options, dockerfiles...)

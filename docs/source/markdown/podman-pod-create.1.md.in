@@ -80,11 +80,15 @@ Set the exit policy of the pod when the last container exits.  Supported policie
 
 @@option gidmap.pod
 
+@@option gpus
+
 #### **--help**, **-h**
 
 Print usage statement.
 
 @@option hostname.pod
+
+@@option hosts-file
 
 #### **--infra**
 
@@ -123,6 +127,8 @@ Assign a name to the pod.
 Invalid if using **--dns**, **--dns-option**, or **--dns-search** with **--network** set to **none** or **container:**_id_.
 
 @@option network-alias
+
+@@option no-hostname
 
 @@option no-hosts
 
@@ -181,29 +187,53 @@ Note: This option conflicts with the **--share=cgroup** option since that option
 
 ## EXAMPLES
 
+Create a named pod.
 ```
 $ podman pod create --name test
+```
 
+Create a named pod.
+```
 $ podman pod create mypod
+```
 
+Create a pod without an infra container.
+```
 $ podman pod create --infra=false
+```
 
+Create a named pod with infra container command to run.
+```
 $ podman pod create --infra-command /top toppod
+```
 
+Create a pod with published ports on the host.
+```
 $ podman pod create --publish 8443:443
+```
 
+Create a pod with the specified network configuration.
+```
 $ podman pod create --network slirp4netns:outbound_addr=127.0.0.1,allow_host_loopback=true
+```
 
-$ podman pod create --network slirp4netns:cidr=192.168.0.0/24
-
+Create a pod with the specified network.
+```
 $ podman pod create --network pasta
+```
 
+Create a pod on two networks.
+```
 $ podman pod create --network net1:ip=10.89.1.5 --network net2:ip=10.89.10.10
 ```
 
 ## SEE ALSO
 **[podman(1)](podman.1.md)**, **[podman-pod(1)](podman-pod.1.md)**, **[podman-kube-play(1)](podman-kube-play.1.md)**, **containers.conf(1)**, **[cgroups(7)](https://man7.org/linux/man-pages/man7/cgroups.7.html)**
 
+### Troubleshooting
+
+See [podman-troubleshooting(7)](https://github.com/containers/podman/blob/main/troubleshooting.md)
+for solutions to common issues.
 
 ## HISTORY
 July 2018, Originally compiled by Peter Hunt <pehunt@redhat.com>

@@ -1,5 +1,4 @@
 //go:build darwin
-// +build darwin
 
 package main
 
@@ -47,7 +46,7 @@ var rootCmd = &cobra.Command{
 
 func main() {
 	if os.Geteuid() != 0 {
-		fmt.Printf("This command must be ran as root via sudo or osascript\n")
+		fmt.Printf("This command must be run as root via sudo or as a script\n")
 		os.Exit(1)
 	}
 
@@ -73,7 +72,7 @@ func getUserInfo(name string) (string, string, string, error) {
 	entry := readCapped(output)
 	elements := strings.Split(entry, ":")
 	if len(elements) < 9 || elements[0] != name {
-		return "", "", "", errors.New("Could not look up user")
+		return "", "", "", errors.New("could not look up user")
 	}
 
 	return elements[0], elements[2], elements[8], nil

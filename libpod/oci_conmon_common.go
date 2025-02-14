@@ -1,5 +1,4 @@
-//go:build linux || freebsd
-// +build linux freebsd
+//go:build !remote && (linux || freebsd)
 
 package libpod
 
@@ -23,18 +22,19 @@ import (
 	"time"
 
 	"github.com/containers/common/pkg/config"
+	"github.com/containers/common/pkg/detach"
 	"github.com/containers/common/pkg/resize"
-	cutil "github.com/containers/common/pkg/util"
+	"github.com/containers/common/pkg/version"
 	conmonConfig "github.com/containers/conmon/runner/config"
-	"github.com/containers/podman/v4/libpod/define"
-	"github.com/containers/podman/v4/libpod/logs"
-	"github.com/containers/podman/v4/pkg/checkpoint/crutils"
-	"github.com/containers/podman/v4/pkg/errorhandling"
-	"github.com/containers/podman/v4/pkg/rootless"
-	"github.com/containers/podman/v4/pkg/specgenutil"
-	"github.com/containers/podman/v4/pkg/util"
-	"github.com/containers/podman/v4/utils"
-	"github.com/containers/storage/pkg/homedir"
+	"github.com/containers/podman/v5/libpod/define"
+	"github.com/containers/podman/v5/libpod/logs"
+	"github.com/containers/podman/v5/pkg/checkpoint/crutils"
+	"github.com/containers/podman/v5/pkg/errorhandling"
+	"github.com/containers/podman/v5/pkg/rootless"
+	"github.com/containers/podman/v5/pkg/specgenutil"
+	"github.com/containers/podman/v5/pkg/util"
+	"github.com/containers/podman/v5/utils"
+	"github.com/containers/storage/pkg/idtools"
 	spec "github.com/opencontainers/runtime-spec/specs-go"
 	"github.com/sirupsen/logrus"
 	"golang.org/x/sys/unix"
@@ -65,6 +65,7 @@ type ConmonOCIRuntime struct {
 	supportsKVM       bool
 	supportsNoCgroups bool
 	enableKeyring     bool
+	persistDir        string
 }
 
 // Make a new Conmon-based OCI runtime with the given options.
@@ -79,16 +80,16 @@ func newConmonOCIRuntime(name string, paths []string, conmonPath string, runtime
 	}
 
 	// Make lookup tables for runtime support
-	supportsJSON := make(map[string]bool, len(runtimeCfg.Engine.RuntimeSupportsJSON))
-	supportsNoCgroups := make(map[string]bool, len(runtimeCfg.Engine.RuntimeSupportsNoCgroups))
-	supportsKVM := make(map[string]bool, len(runtimeCfg.Engine.RuntimeSupportsKVM))
-	for _, r := range runtimeCfg.Engine.RuntimeSupportsJSON {
+	supportsJSON := make(map[string]bool, len(runtimeCfg.Engine.RuntimeSupportsJSON.Get()))
+	supportsNoCgroups := make(map[string]bool, len(runtimeCfg.Engine.RuntimeSupportsNoCgroups.Get()))
+	supportsKVM := make(map[string]bool, len(runtimeCfg.Engine.RuntimeSupportsKVM.Get()))
+	for _, r := range runtimeCfg.Engine.RuntimeSupportsJSON.Get() {
 		supportsJSON[r] = true
 	}
-	for _, r := range runtimeCfg.Engine.RuntimeSupportsNoCgroups {
+	for _, r := range runtimeCfg.Engine.RuntimeSupportsNoCgroups.Get() {
 		supportsNoCgroups[r] = true
 	}
-	for _, r := range runtimeCfg.Engine.RuntimeSupportsKVM {
+	for _, r := range runtimeCfg.Engine.RuntimeSupportsKVM.Get() {
 		supportsKVM[r] = true
 	}
 
@@ -97,7 +98,7 @@ func newConmonOCIRuntime(name string, paths []string, conmonPath string, runtime
 	runtime.conmonPath = conmonPath
 	runtime.runtimeFlags = runtimeFlags
 
-	runtime.conmonEnv = runtimeCfg.Engine.ConmonEnvVars
+	runtime.conmonEnv = runtimeCfg.Engine.ConmonEnvVars.Get()
 	runtime.tmpDir = runtimeCfg.Engine.TmpDir
 	runtime.logSizeMax = runtimeCfg.Containers.LogSizeMax
 	runtime.noPivot = runtimeCfg.Engine.NoPivotRoot
@@ -144,13 +145,15 @@ func newConmonOCIRuntime(name string, paths []string, conmonPath string, runtime
 	}
 
 	runtime.exitsDir = filepath.Join(runtime.tmpDir, "exits")
+	// The persist-dir is where conmon writes the exit file and oom file (if oom killed), we join the container ID to this path later on
+	runtime.persistDir = filepath.Join(runtime.tmpDir, "persist")
 
 	// Create the exit files and attach sockets directories
 	if err := os.MkdirAll(runtime.exitsDir, 0750); err != nil {
-		// The directory is allowed to exist
-		if !os.IsExist(err) {
-			return nil, fmt.Errorf("creating OCI runtime exit files directory: %w", err)
-		}
+		return nil, fmt.Errorf("creating OCI runtime exit files directory: %w", err)
+	}
+	if err := os.MkdirAll(runtime.persistDir, 0750); err != nil {
+		return nil, fmt.Errorf("creating OCI runtime persist directory: %w", err)
 	}
 	return runtime, nil
 }
@@ -170,126 +173,33 @@ func hasCurrentUserMapped(ctr *Container) bool {
 	if len(ctr.config.IDMappings.UIDMap) == 0 && len(ctr.config.IDMappings.GIDMap) == 0 {
 		return true
 	}
-	uid := os.Geteuid()
-	for _, m := range ctr.config.IDMappings.UIDMap {
-		if uid >= m.HostID && uid < m.HostID+m.Size {
-			return true
+	containsID := func(id int, mappings []idtools.IDMap) bool {
+		for _, m := range mappings {
+			if id >= m.HostID && id < m.HostID+m.Size {
+				return true
+			}
 		}
+		return false
 	}
-	return false
+	return containsID(os.Geteuid(), ctr.config.IDMappings.UIDMap) && containsID(os.Getegid(), ctr.config.IDMappings.GIDMap)
 }
 
 // CreateContainer creates a container.
 func (r *ConmonOCIRuntime) CreateContainer(ctr *Container, restoreOptions *ContainerCheckpointOptions) (int64, error) {
-	// always make the run dir accessible to the current user so that the PID files can be read without
-	// being in the rootless user namespace.
-	if err := makeAccessible(ctr.state.RunDir, 0, 0); err != nil {
-		return 0, err
-	}
-	if !hasCurrentUserMapped(ctr) {
-		for _, i := range []string{ctr.state.RunDir, ctr.runtime.config.Engine.TmpDir, ctr.config.StaticDir, ctr.state.Mountpoint, ctr.runtime.config.Engine.VolumePath} {
-			if err := makeAccessible(i, ctr.RootUID(), ctr.RootGID()); err != nil {
-				return 0, err
-			}
-		}
-
+	if !hasCurrentUserMapped(ctr) || ctr.config.RootfsMapping != nil {
 		// if we are running a non privileged container, be sure to umount some kernel paths so they are not
 		// bind mounted inside the container at all.
-		if !ctr.config.Privileged && !rootless.IsRootless() {
-			return r.createRootlessContainer(ctr, restoreOptions)
-		}
+		hideFiles := !ctr.config.Privileged && !rootless.IsRootless()
+		return r.createRootlessContainer(ctr, restoreOptions, hideFiles)
 	}
 	return r.createOCIContainer(ctr, restoreOptions)
-}
-
-// UpdateContainerStatus retrieves the current status of the container from the
-// runtime. It updates the container's state but does not save it.
-// If useRuntime is false, we will not directly hit runc to see the container's
-// status, but will instead only check for the existence of the conmon exit file
-// and update state to stopped if it exists.
-func (r *ConmonOCIRuntime) UpdateContainerStatus(ctr *Container) error {
-	runtimeDir, err := util.GetRuntimeDir()
-	if err != nil {
-		return err
-	}
-
-	// Store old state so we know if we were already stopped
-	oldState := ctr.state.State
-
-	state := new(spec.State)
-
-	cmd := exec.Command(r.path, "state", ctr.ID())
-	cmd.Env = append(cmd.Env, fmt.Sprintf("XDG_RUNTIME_DIR=%s", runtimeDir))
-
-	outPipe, err := cmd.StdoutPipe()
-	if err != nil {
-		return fmt.Errorf("getting stdout pipe: %w", err)
-	}
-	errPipe, err := cmd.StderrPipe()
-	if err != nil {
-		return fmt.Errorf("getting stderr pipe: %w", err)
-	}
-
-	if err := cmd.Start(); err != nil {
-		out, err2 := io.ReadAll(errPipe)
-		if err2 != nil {
-			return fmt.Errorf("getting container %s state: %w", ctr.ID(), err)
-		}
-		if strings.Contains(string(out), "does not exist") || strings.Contains(string(out), "No such file") {
-			if err := ctr.removeConmonFiles(); err != nil {
-				logrus.Debugf("unable to remove conmon files for container %s", ctr.ID())
-			}
-			ctr.state.ExitCode = -1
-			ctr.state.FinishedTime = time.Now()
-			ctr.state.State = define.ContainerStateExited
-			return ctr.runtime.state.AddContainerExitCode(ctr.ID(), ctr.state.ExitCode)
-		}
-		return fmt.Errorf("getting container %s state. stderr/out: %s: %w", ctr.ID(), out, err)
-	}
-	defer func() {
-		_ = cmd.Wait()
-	}()
-
-	if err := errPipe.Close(); err != nil {
-		return err
-	}
-	out, err := io.ReadAll(outPipe)
-	if err != nil {
-		return fmt.Errorf("reading stdout: %s: %w", ctr.ID(), err)
-	}
-	if err := json.NewDecoder(bytes.NewReader(out)).Decode(state); err != nil {
-		return fmt.Errorf("decoding container status for container %s: %w", ctr.ID(), err)
-	}
-	ctr.state.PID = state.Pid
-
-	switch state.Status {
-	case "created":
-		ctr.state.State = define.ContainerStateCreated
-	case "paused":
-		ctr.state.State = define.ContainerStatePaused
-	case "running":
-		ctr.state.State = define.ContainerStateRunning
-	case "stopped":
-		ctr.state.State = define.ContainerStateStopped
-	default:
-		return fmt.Errorf("unrecognized status returned by runtime for container %s: %s: %w",
-			ctr.ID(), state.Status, define.ErrInternal)
-	}
-
-	// Handle ContainerStateStopping - keep it unless the container
-	// transitioned to no longer running.
-	if oldState == define.ContainerStateStopping && (ctr.state.State == define.ContainerStatePaused || ctr.state.State == define.ContainerStateRunning) {
-		ctr.state.State = define.ContainerStateStopping
-	}
-
-	return nil
 }
 
 // StartContainer starts the given container.
 // Sets time the container was started, but does not save it.
 func (r *ConmonOCIRuntime) StartContainer(ctr *Container) error {
 	// TODO: streams should probably *not* be our STDIN/OUT/ERR - redirect to buffers?
-	runtimeDir, err := util.GetRuntimeDir()
+	runtimeDir, err := util.GetRootlessRuntimeDir()
 	if err != nil {
 		return err
 	}
@@ -308,7 +218,7 @@ func (r *ConmonOCIRuntime) StartContainer(ctr *Container) error {
 
 // UpdateContainer updates the given container's cgroup configuration
 func (r *ConmonOCIRuntime) UpdateContainer(ctr *Container, resources *spec.LinuxResources) error {
-	runtimeDir, err := util.GetRuntimeDir()
+	runtimeDir, err := util.GetRootlessRuntimeDir()
 	if err != nil {
 		return err
 	}
@@ -338,12 +248,13 @@ func generateResourceFile(res *spec.LinuxResources) (string, []string, error) {
 	if err != nil {
 		return "", nil, err
 	}
+	defer f.Close()
 
 	j, err := json.Marshal(res)
 	if err != nil {
 		return "", nil, err
 	}
-	_, err = f.WriteString(string(j))
+	_, err = f.Write(j)
 	if err != nil {
 		return "", nil, err
 	}
@@ -356,32 +267,52 @@ func generateResourceFile(res *spec.LinuxResources) (string, []string, error) {
 // If all is set, send to all PIDs in the container.
 // All is only supported if the container created cgroups.
 func (r *ConmonOCIRuntime) KillContainer(ctr *Container, signal uint, all bool) error {
-	logrus.Debugf("Sending signal %d to container %s", signal, ctr.ID())
-	runtimeDir, err := util.GetRuntimeDir()
-	if err != nil {
+	if _, err := r.killContainer(ctr, signal, all, false); err != nil {
 		return err
+	}
+
+	return nil
+}
+
+// If captureStderr is requested, OCI runtime STDERR will be captured as a
+// *bytes.buffer and returned; otherwise, it is set to os.Stderr.
+// IMPORTANT: Thus function is called from an unlocked container state in
+// the stop() code path so do not modify the state here.
+func (r *ConmonOCIRuntime) killContainer(ctr *Container, signal uint, all, captureStderr bool) (*bytes.Buffer, error) {
+	logrus.Debugf("Sending signal %d to container %s", signal, ctr.ID())
+	runtimeDir, err := util.GetRootlessRuntimeDir()
+	if err != nil {
+		return nil, err
 	}
 	env := []string{fmt.Sprintf("XDG_RUNTIME_DIR=%s", runtimeDir)}
 	var args []string
 	args = append(args, r.runtimeFlags...)
 	if all {
-		args = append(args, "kill", "--all", ctr.ID(), fmt.Sprintf("%d", signal))
+		args = append(args, "kill", "--all", ctr.ID(), strconv.FormatUint(uint64(signal), 10))
 	} else {
-		args = append(args, "kill", ctr.ID(), fmt.Sprintf("%d", signal))
+		args = append(args, "kill", ctr.ID(), strconv.FormatUint(uint64(signal), 10))
 	}
-	if err := utils.ExecCmdWithStdStreams(os.Stdin, os.Stdout, os.Stderr, env, r.path, args...); err != nil {
-		// Update container state - there's a chance we failed because
-		// the container exited in the meantime.
-		if err2 := r.UpdateContainerStatus(ctr); err2 != nil {
-			logrus.Infof("Error updating status for container %s: %v", ctr.ID(), err2)
+	var (
+		stderr       io.Writer = os.Stderr
+		stderrBuffer *bytes.Buffer
+	)
+	if captureStderr {
+		stderrBuffer = new(bytes.Buffer)
+		stderr = stderrBuffer
+	}
+	if err := utils.ExecCmdWithStdStreams(os.Stdin, os.Stdout, stderr, env, r.path, args...); err != nil {
+		rErr := err
+		// quick check if ctr pid is still alive
+		if err := unix.Kill(ctr.state.PID, 0); err == unix.ESRCH {
+			// pid already dead so signal sending fails logically, set error to ErrCtrStateInvalid
+			// This is needed for the ProxySignals() function which already ignores the error to not cause flakes
+			// when the ctr process just exited.
+			rErr = define.ErrCtrStateInvalid
 		}
-		if ctr.ensureState(define.ContainerStateStopped, define.ContainerStateExited) {
-			return fmt.Errorf("%w: %s", define.ErrCtrStateInvalid, ctr.state.State)
-		}
-		return fmt.Errorf("sending signal to container %s: %w", ctr.ID(), err)
+		return stderrBuffer, fmt.Errorf("sending signal to container %s: %w", ctr.ID(), rErr)
 	}
 
-	return nil
+	return stderrBuffer, nil
 }
 
 // StopContainer stops a container, first using its given stop signal (or
@@ -390,6 +321,8 @@ func (r *ConmonOCIRuntime) KillContainer(ctr *Container, signal uint, all bool) 
 // immediately kill with SIGKILL.
 // Does not set finished time for container, assumes you will run updateStatus
 // after to pull the exit code.
+// IMPORTANT: Thus function is called from an unlocked container state in
+// the stop() code path so do not modify the state here.
 func (r *ConmonOCIRuntime) StopContainer(ctr *Container, timeout uint, all bool) error {
 	logrus.Debugf("Stopping container %s (PID %d)", ctr.ID(), ctr.state.PID)
 
@@ -400,53 +333,79 @@ func (r *ConmonOCIRuntime) StopContainer(ctr *Container, timeout uint, all bool)
 		return nil
 	}
 
-	if timeout > 0 {
-		stopSignal := ctr.config.StopSignal
-		if stopSignal == 0 {
-			stopSignal = uint(syscall.SIGTERM)
-		}
-		if err := r.KillContainer(ctr, stopSignal, all); err != nil {
+	killCtr := func(signal uint) (bool, error) {
+		stderr, err := r.killContainer(ctr, signal, all, true)
+		if err != nil {
+			// There's an inherent race with the cleanup process (see
+			// #16142, #17142). If the container has already been marked as
+			// stopped or exited by the cleanup process, we can return
+			// immediately.
+			if errors.Is(err, define.ErrCtrStateInvalid) && ctr.ensureState(define.ContainerStateStopped, define.ContainerStateExited) {
+				return true, nil
+			}
+
+			// If the PID is 0, then the container is already stopped.
+			if ctr.state.PID == 0 {
+				return true, nil
+			}
+
 			// Is the container gone?
 			// If so, it probably died between the first check and
 			// our sending the signal
 			// The container is stopped, so exit cleanly
 			err := unix.Kill(ctr.state.PID, 0)
 			if err == unix.ESRCH {
-				return nil
+				return true, nil
 			}
 
-			return err
+			return false, err
 		}
 
-		if err := waitContainerStop(ctr, time.Duration(timeout)*time.Second); err != nil {
-			logrus.Debugf("Timed out stopping container %s with %s, resorting to SIGKILL: %v", ctr.ID(), unix.SignalName(syscall.Signal(stopSignal)), err)
-			logrus.Warnf("StopSignal %s failed to stop container %s in %d seconds, resorting to SIGKILL", unix.SignalName(syscall.Signal(stopSignal)), ctr.Name(), timeout)
+		// Before handling error from KillContainer, convert STDERR to a []string
+		// (one string per line of output) and print it.
+		stderrLines := strings.Split(stderr.String(), "\n")
+		for _, line := range stderrLines {
+			if line != "" {
+				fmt.Fprintf(os.Stderr, "%s\n", line)
+			}
+		}
+
+		return false, nil
+	}
+
+	if timeout > 0 {
+		stopSignal := ctr.config.StopSignal
+		if stopSignal == 0 {
+			stopSignal = uint(syscall.SIGTERM)
+		}
+
+		stopped, err := killCtr(stopSignal)
+		if err != nil {
+			return err
+		}
+		if stopped {
+			return nil
+		}
+
+		if err := waitContainerStop(ctr, time.Duration(util.ConvertTimeout(int(timeout)))*time.Second); err != nil {
+			sigName := unix.SignalName(syscall.Signal(stopSignal))
+			if sigName == "" {
+				sigName = fmt.Sprintf("(%d)", stopSignal)
+			}
+			logrus.Debugf("Timed out stopping container %s with %s, resorting to SIGKILL: %v", ctr.ID(), sigName, err)
+			logrus.Warnf("StopSignal %s failed to stop container %s in %d seconds, resorting to SIGKILL", sigName, ctr.Name(), timeout)
 		} else {
 			// No error, the container is dead
 			return nil
 		}
 	}
 
-	// If the timeout was set to 0 or if stopping the container with the
-	// specified signal did not work, use the big hammer with SIGKILL.
-	if err := r.KillContainer(ctr, uint(unix.SIGKILL), all); err != nil {
-		// There's an inherent race with the cleanup process (see
-		// #16142, #17142). If the container has already been marked as
-		// stopped or exited by the cleanup process, we can return
-		// immediately.
-		if errors.Is(err, define.ErrCtrStateInvalid) && ctr.ensureState(define.ContainerStateStopped, define.ContainerStateExited) {
-			return nil
-		}
-
-		// If the PID is 0, then the container is already stopped.
-		if ctr.state.PID == 0 {
-			return nil
-		}
-		// Again, check if the container is gone. If it is, exit cleanly.
-		if aliveErr := unix.Kill(ctr.state.PID, 0); errors.Is(aliveErr, unix.ESRCH) {
-			return nil
-		}
+	stopped, err := killCtr(uint(unix.SIGKILL))
+	if err != nil {
 		return fmt.Errorf("sending SIGKILL to container %s: %w", ctr.ID(), err)
+	}
+	if stopped {
+		return nil
 	}
 
 	// Give runtime a few seconds to make it happen
@@ -459,7 +418,7 @@ func (r *ConmonOCIRuntime) StopContainer(ctr *Container, timeout uint, all bool)
 
 // DeleteContainer deletes a container from the OCI runtime.
 func (r *ConmonOCIRuntime) DeleteContainer(ctr *Container) error {
-	runtimeDir, err := util.GetRuntimeDir()
+	runtimeDir, err := util.GetRootlessRuntimeDir()
 	if err != nil {
 		return err
 	}
@@ -469,7 +428,7 @@ func (r *ConmonOCIRuntime) DeleteContainer(ctr *Container) error {
 
 // PauseContainer pauses the given container.
 func (r *ConmonOCIRuntime) PauseContainer(ctr *Container) error {
-	runtimeDir, err := util.GetRuntimeDir()
+	runtimeDir, err := util.GetRootlessRuntimeDir()
 	if err != nil {
 		return err
 	}
@@ -479,7 +438,7 @@ func (r *ConmonOCIRuntime) PauseContainer(ctr *Container) error {
 
 // UnpauseContainer unpauses the given container.
 func (r *ConmonOCIRuntime) UnpauseContainer(ctr *Container) error {
-	runtimeDir, err := util.GetRuntimeDir()
+	runtimeDir, err := util.GetRootlessRuntimeDir()
 	if err != nil {
 		return err
 	}
@@ -539,7 +498,7 @@ func (r *ConmonOCIRuntime) HTTPAttach(ctr *Container, req *http.Request, w http.
 	if detachKeys != nil {
 		detachString = *detachKeys
 	}
-	detach, err := processDetachKeys(detachString)
+	isDetach, err := processDetachKeys(detachString)
 	if err != nil {
 		return err
 	}
@@ -568,7 +527,7 @@ func (r *ConmonOCIRuntime) HTTPAttach(ctr *Container, req *http.Request, w http.
 
 	hijackDone <- true
 
-	writeHijackHeader(req, httpBuf)
+	writeHijackHeader(req, httpBuf, isTerminal)
 
 	// Force a flush after the header is written.
 	if err := httpBuf.Flush(); err != nil {
@@ -691,7 +650,7 @@ func (r *ConmonOCIRuntime) HTTPAttach(ctr *Container, req *http.Request, w http.
 	// Next, STDIN. Avoid entirely if attachStdin unset.
 	if attachStdin {
 		go func() {
-			_, err := cutil.CopyDetachable(conn, httpBuf, detach)
+			_, err := detach.Copy(conn, httpBuf, isDetach)
 			logrus.Debugf("STDIN copy completed")
 			stdinChan <- err
 		}()
@@ -806,7 +765,7 @@ func (r *ConmonOCIRuntime) CheckpointContainer(ctr *Container, options Container
 	args = append(args, ctr.ID())
 	logrus.Debugf("the args to checkpoint: %s %s", r.path, strings.Join(args, " "))
 
-	runtimeDir, err := util.GetRuntimeDir()
+	runtimeDir, err := util.GetRootlessRuntimeDir()
 	if err != nil {
 		return 0, err
 	}
@@ -897,10 +856,21 @@ func (r *ConmonOCIRuntime) ExitFilePath(ctr *Container) (string, error) {
 	return filepath.Join(r.exitsDir, ctr.ID()), nil
 }
 
+// OOMFilePath is the path to a container's oom file.
+// The oom file will only exist if the container was oom killed.
+func (r *ConmonOCIRuntime) OOMFilePath(ctr *Container) (string, error) {
+	return filepath.Join(r.persistDir, ctr.ID(), "oom"), nil
+}
+
+// PersistDirectoryPath is the path to the container's persist directory.
+func (r *ConmonOCIRuntime) PersistDirectoryPath(ctr *Container) (string, error) {
+	return filepath.Join(r.persistDir, ctr.ID()), nil
+}
+
 // RuntimeInfo provides information on the runtime.
 func (r *ConmonOCIRuntime) RuntimeInfo() (*define.ConmonInfo, *define.OCIRuntimeInfo, error) {
-	runtimePackage := packageVersion(r.path)
-	conmonPackage := packageVersion(r.conmonPath)
+	runtimePackage := version.Package(r.path)
+	conmonPackage := version.Package(r.conmonPath)
 	runtimeVersion, err := r.getOCIRuntimeVersion()
 	if err != nil {
 		return nil, nil, fmt.Errorf("getting version of OCI runtime %s: %w", r.name, err)
@@ -924,28 +894,6 @@ func (r *ConmonOCIRuntime) RuntimeInfo() (*define.ConmonInfo, *define.OCIRuntime
 	return &conmon, &ocirt, nil
 }
 
-// makeAccessible changes the path permission and each parent directory to have --x--x--x
-func makeAccessible(path string, uid, gid int) error {
-	for ; path != "/"; path = filepath.Dir(path) {
-		st, err := os.Stat(path)
-		if err != nil {
-			if os.IsNotExist(err) {
-				return nil
-			}
-			return err
-		}
-		if int(st.Sys().(*syscall.Stat_t).Uid) == uid && int(st.Sys().(*syscall.Stat_t).Gid) == gid {
-			continue
-		}
-		if st.Mode()&0111 != 0111 {
-			if err := os.Chmod(path, st.Mode()|0111); err != nil {
-				return err
-			}
-		}
-	}
-	return nil
-}
-
 // Wait for a container which has been sent a signal to stop
 func waitContainerStop(ctr *Container, timeout time.Duration) error {
 	return waitPidStop(ctr.state.PID, timeout)
@@ -954,6 +902,7 @@ func waitContainerStop(ctr *Container, timeout time.Duration) error {
 // Wait for a given PID to stop
 func waitPidStop(pid int, timeout time.Duration) error {
 	timer := time.NewTimer(timeout)
+	defer timer.Stop()
 	for {
 		select {
 		case <-timer.C:
@@ -992,14 +941,42 @@ func (r *ConmonOCIRuntime) getLogTag(ctr *Container) (string, error) {
 	return b.String(), nil
 }
 
+func getPreserveFdExtraFiles(preserveFD []uint, preserveFDs uint) (uint, []*os.File, []*os.File, error) {
+	var filesToClose []*os.File
+	var extraFiles []*os.File
+
+	preserveFDsMap := make(map[uint]struct{})
+	for _, i := range preserveFD {
+		if i < 3 {
+			return 0, nil, nil, fmt.Errorf("cannot preserve FD %d, consider using the passthrough log-driver to pass STDIO streams into the container: %w", i, define.ErrInvalidArg)
+		}
+		if i-2 > preserveFDs {
+			// preserveFDs is the number of FDs above 2 to keep around.
+			// e.g. if the user specified FD=3, then preserveFDs must be 1.
+			preserveFDs = i - 2
+		}
+		preserveFDsMap[i] = struct{}{}
+	}
+
+	if preserveFDs > 0 {
+		for fd := 3; fd < int(3+preserveFDs); fd++ {
+			if len(preserveFDsMap) > 0 {
+				if _, ok := preserveFDsMap[uint(fd)]; !ok {
+					extraFiles = append(extraFiles, nil)
+					continue
+				}
+			}
+			f := os.NewFile(uintptr(fd), fmt.Sprintf("fd-%d", fd))
+			filesToClose = append(filesToClose, f)
+			extraFiles = append(extraFiles, f)
+		}
+	}
+	return preserveFDs, filesToClose, extraFiles, nil
+}
+
 // createOCIContainer generates this container's main conmon instance and prepares it for starting
 func (r *ConmonOCIRuntime) createOCIContainer(ctr *Container, restoreOptions *ContainerCheckpointOptions) (int64, error) {
 	var stderrBuf bytes.Buffer
-
-	runtimeDir, err := util.GetRuntimeDir()
-	if err != nil {
-		return 0, err
-	}
 
 	parentSyncPipe, childSyncPipe, err := newPipe()
 	if err != nil {
@@ -1025,7 +1002,7 @@ func (r *ConmonOCIRuntime) createOCIContainer(ctr *Container, restoreOptions *Co
 	}
 
 	if ctr.config.CgroupsMode == cgroupSplit {
-		if err := utils.MoveUnderCgroupSubtree("runtime"); err != nil {
+		if err := moveToRuntimeCgroup(); err != nil {
 			return 0, err
 		}
 	}
@@ -1035,7 +1012,11 @@ func (r *ConmonOCIRuntime) createOCIContainer(ctr *Container, restoreOptions *Co
 		pidfile = filepath.Join(ctr.state.RunDir, "pidfile")
 	}
 
-	args := r.sharedConmonArgs(ctr, ctr.ID(), ctr.bundlePath(), pidfile, ctr.LogPath(), r.exitsDir, ociLog, ctr.LogDriver(), logTag)
+	persistDir := filepath.Join(r.persistDir, ctr.ID())
+	args, err := r.sharedConmonArgs(ctr, ctr.ID(), ctr.bundlePath(), pidfile, ctr.LogPath(), r.exitsDir, persistDir, ociLog, ctr.LogDriver(), logTag)
+	if err != nil {
+		return 0, err
+	}
 
 	if ctr.config.SdNotifyMode == define.SdNotifyModeContainer && ctr.config.SdNotifySocket != "" {
 		args = append(args, fmt.Sprintf("--sdnotify-socket=%s", ctr.config.SdNotifySocket))
@@ -1062,7 +1043,7 @@ func (r *ConmonOCIRuntime) createOCIContainer(ctr *Container, restoreOptions *Co
 		args = append(args, "--no-pivot")
 	}
 
-	exitCommand, err := specgenutil.CreateExitCommandArgs(ctr.runtime.storageConfig, ctr.runtime.config, logrus.IsLevelEnabled(logrus.DebugLevel), ctr.AutoRemove(), false)
+	exitCommand, err := specgenutil.CreateExitCommandArgs(ctr.runtime.storageConfig, ctr.runtime.config, ctr.runtime.syslog || logrus.IsLevelEnabled(logrus.DebugLevel), ctr.AutoRemove(), ctr.AutoRemoveImage(), false)
 	if err != nil {
 		return 0, err
 	}
@@ -1073,10 +1054,11 @@ func (r *ConmonOCIRuntime) createOCIContainer(ctr *Container, restoreOptions *Co
 		args = append(args, []string{"--exit-command-arg", arg}...)
 	}
 
-	// Pass down the LISTEN_* environment (see #10443).
 	preserveFDs := ctr.config.PreserveFDs
+
+	// Pass down the LISTEN_* environment (see #10443).
 	if val := os.Getenv("LISTEN_FDS"); val != "" {
-		if ctr.config.PreserveFDs > 0 {
+		if preserveFDs > 0 || len(ctr.config.PreserveFD) > 0 {
 			logrus.Warnf("Ignoring LISTEN_FDS to preserve custom user-specified FDs")
 		} else {
 			fds, err := strconv.Atoi(val)
@@ -1087,8 +1069,12 @@ func (r *ConmonOCIRuntime) createOCIContainer(ctr *Container, restoreOptions *Co
 		}
 	}
 
+	preserveFDs, filesToClose, extraFiles, err := getPreserveFdExtraFiles(ctr.config.PreserveFD, preserveFDs)
+	if err != nil {
+		return 0, err
+	}
 	if preserveFDs > 0 {
-		args = append(args, formatRuntimeOpts("--preserve-fds", fmt.Sprintf("%d", preserveFDs))...)
+		args = append(args, formatRuntimeOpts("--preserve-fds", strconv.FormatUint(uint64(preserveFDs), 10))...)
 	}
 
 	if restoreOptions != nil {
@@ -1143,16 +1129,12 @@ func (r *ConmonOCIRuntime) createOCIContainer(ctr *Container, restoreOptions *Co
 	}
 
 	// 0, 1 and 2 are stdin, stdout and stderr
-	conmonEnv := r.configureConmonEnv(runtimeDir)
-
-	var filesToClose []*os.File
-	if preserveFDs > 0 {
-		for fd := 3; fd < int(3+preserveFDs); fd++ {
-			f := os.NewFile(uintptr(fd), fmt.Sprintf("fd-%d", fd))
-			filesToClose = append(filesToClose, f)
-			cmd.ExtraFiles = append(cmd.ExtraFiles, f)
-		}
+	conmonEnv, err := r.configureConmonEnv()
+	if err != nil {
+		return 0, fmt.Errorf("configuring conmon env: %w", err)
 	}
+
+	cmd.ExtraFiles = extraFiles
 
 	cmd.Env = r.conmonEnv
 	// we don't want to step on users fds they asked to preserve
@@ -1161,17 +1143,22 @@ func (r *ConmonOCIRuntime) createOCIContainer(ctr *Container, restoreOptions *Co
 	cmd.Env = append(cmd.Env, conmonEnv...)
 	cmd.ExtraFiles = append(cmd.ExtraFiles, childSyncPipe, childStartPipe)
 
-	if r.reservePorts && !rootless.IsRootless() && !ctr.config.NetMode.IsSlirp4netns() {
-		ports, err := bindPorts(ctr.convertPortMappings())
+	if ctr.config.PostConfigureNetNS {
+		// netns was not setup yet but we have to bind ports now so we can leak the fd to conmon
+		ports, err := ctr.bindPorts()
 		if err != nil {
 			return 0, err
 		}
 		filesToClose = append(filesToClose, ports...)
-
 		// Leak the port we bound in the conmon process.  These fd's won't be used
 		// by the container and conmon will keep the ports busy so that another
 		// process cannot use them.
 		cmd.ExtraFiles = append(cmd.ExtraFiles, ports...)
+	} else {
+		// ports were bound in ctr.prepare() as we must do it before the netns setup
+		filesToClose = append(filesToClose, ctr.reservedPorts...)
+		cmd.ExtraFiles = append(cmd.ExtraFiles, ctr.reservedPorts...)
+		ctr.reservedPorts = nil
 	}
 
 	if ctr.config.NetMode.IsSlirp4netns() || rootless.IsRootless() {
@@ -1187,16 +1174,13 @@ func (r *ConmonOCIRuntime) createOCIContainer(ctr *Container, restoreOptions *Co
 			if err != nil {
 				return 0, fmt.Errorf("failed to create rootless network sync pipe: %w", err)
 			}
-		} else {
-			if ctr.rootlessSlirpSyncR != nil {
-				defer errorhandling.CloseQuiet(ctr.rootlessSlirpSyncR)
-			}
-			if ctr.rootlessSlirpSyncW != nil {
-				defer errorhandling.CloseQuiet(ctr.rootlessSlirpSyncW)
-			}
 		}
-		// Leak one end in conmon, the other one will be leaked into slirp4netns
-		cmd.ExtraFiles = append(cmd.ExtraFiles, ctr.rootlessSlirpSyncW)
+
+		if ctr.rootlessSlirpSyncW != nil {
+			defer errorhandling.CloseQuiet(ctr.rootlessSlirpSyncW)
+			// Leak one end in conmon, the other one will be leaked into slirp4netns
+			cmd.ExtraFiles = append(cmd.ExtraFiles, ctr.rootlessSlirpSyncW)
+		}
 
 		if ctr.rootlessPortSyncW != nil {
 			defer errorhandling.CloseQuiet(ctr.rootlessPortSyncW)
@@ -1208,7 +1192,7 @@ func (r *ConmonOCIRuntime) createOCIContainer(ctr *Container, restoreOptions *Co
 	if restoreOptions != nil {
 		runtimeRestoreStarted = time.Now()
 	}
-	err = startCommand(cmd, ctr)
+	err = cmd.Start()
 
 	// regardless of whether we errored or not, we no longer need the children pipes
 	childSyncPipe.Close()
@@ -1217,12 +1201,20 @@ func (r *ConmonOCIRuntime) createOCIContainer(ctr *Container, restoreOptions *Co
 		return 0, err
 	}
 	if err := r.moveConmonToCgroupAndSignal(ctr, cmd, parentStartPipe); err != nil {
-		return 0, err
+		// The child likely already exited in which case the cmd.Wait() below should return the proper error.
+		// EPIPE is expected if the child already exited so not worth to log and kill the process.
+		if !errors.Is(err, syscall.EPIPE) {
+			logrus.Errorf("Failed to signal conmon to start: %v", err)
+			if err := cmd.Process.Kill(); err != nil && !errors.Is(err, syscall.ESRCH) {
+				logrus.Errorf("Failed to kill conmon after error: %v", err)
+			}
+		}
 	}
+
 	/* Wait for initial setup and fork, and reap child */
 	err = cmd.Wait()
 	if err != nil {
-		return 0, err
+		return 0, fmt.Errorf("conmon failed: %w", err)
 	}
 
 	pid, err := readConmonPipeData(r.name, parentSyncPipe, ociLog)
@@ -1260,36 +1252,41 @@ func (r *ConmonOCIRuntime) createOCIContainer(ctr *Container, restoreOptions *Co
 }
 
 // configureConmonEnv gets the environment values to add to conmon's exec struct
-// TODO this may want to be less hardcoded/more configurable in the future
-func (r *ConmonOCIRuntime) configureConmonEnv(runtimeDir string) []string {
-	var env []string
-	for _, e := range os.Environ() {
-		if strings.HasPrefix(e, "LC_") {
-			env = append(env, e)
+func (r *ConmonOCIRuntime) configureConmonEnv() ([]string, error) {
+	env := os.Environ()
+	res := make([]string, 0, len(env))
+	for _, v := range env {
+		if strings.HasPrefix(v, "NOTIFY_SOCKET=") {
+			// The NOTIFY_SOCKET must not leak into the environment.
+			continue
 		}
+		if strings.HasPrefix(v, "DBUS_SESSION_BUS_ADDRESS=") && !rootless.IsRootless() {
+			// The DBUS_SESSION_BUS_ADDRESS must not leak into the environment when running as root.
+			// This is because we want to use the system session for root containers, not the user session.
+			continue
+		}
+		res = append(res, v)
 	}
-	if path, ok := os.LookupEnv("PATH"); ok {
-		env = append(env, fmt.Sprintf("PATH=%s", path))
-	}
-	if conf, ok := os.LookupEnv("CONTAINERS_CONF"); ok {
-		env = append(env, fmt.Sprintf("CONTAINERS_CONF=%s", conf))
-	}
-	if conf, ok := os.LookupEnv("CONTAINERS_HELPER_BINARY_DIR"); ok {
-		env = append(env, fmt.Sprintf("CONTAINERS_HELPER_BINARY_DIR=%s", conf))
-	}
-	env = append(env, fmt.Sprintf("XDG_RUNTIME_DIR=%s", runtimeDir))
-	env = append(env, fmt.Sprintf("_CONTAINERS_USERNS_CONFIGURED=%s", os.Getenv("_CONTAINERS_USERNS_CONFIGURED")))
-	env = append(env, fmt.Sprintf("_CONTAINERS_ROOTLESS_UID=%s", os.Getenv("_CONTAINERS_ROOTLESS_UID")))
-	home := homedir.Get()
-	if home != "" {
-		env = append(env, fmt.Sprintf("HOME=%s", home))
+	runtimeDir, err := util.GetRootlessRuntimeDir()
+	if err != nil {
+		return nil, err
 	}
 
-	return env
+	res = append(res, "XDG_RUNTIME_DIR="+runtimeDir)
+	return res, nil
 }
 
 // sharedConmonArgs takes common arguments for exec and create/restore and formats them for the conmon CLI
-func (r *ConmonOCIRuntime) sharedConmonArgs(ctr *Container, cuuid, bundlePath, pidPath, logPath, exitDir, ociLogPath, logDriver, logTag string) []string {
+// func (r *ConmonOCIRuntime) sharedConmonArgs(ctr *Container, cuuid, bundlePath, pidPath, logPath, exitDir, persistDir, ociLogPath, logDriver, logTag string) ([]string, error) {
+func (r *ConmonOCIRuntime) sharedConmonArgs(ctr *Container, cuuid, bundlePath, pidPath, logPath, exitDir, persistDir, ociLogPath, logDriver, logTag string) ([]string, error) {
+	// Make the persists directory for the container after the ctr ID is appended to it in the caller
+	// This is needed as conmon writes the exit and oom file in the given persist directory path as just "exit" and "oom"
+	// So creating a directory with the container ID under the persist dir will help keep track of which container the
+	// exit and oom files belong to.
+	if err := os.MkdirAll(persistDir, 0750); err != nil {
+		return nil, fmt.Errorf("creating OCI runtime oom files directory for ctr %q: %w", ctr.ID(), err)
+	}
+
 	// set the conmon API version to be able to use the correct sync struct keys
 	args := []string{
 		"--api-version", "1",
@@ -1300,6 +1297,7 @@ func (r *ConmonOCIRuntime) sharedConmonArgs(ctr *Container, cuuid, bundlePath, p
 		"-p", pidPath,
 		"-n", ctr.Name(),
 		"--exit-dir", exitDir,
+		"--persist-dir", persistDir,
 		"--full-attach",
 	}
 	if len(r.runtimeFlags) > 0 {
@@ -1320,7 +1318,7 @@ func (r *ConmonOCIRuntime) sharedConmonArgs(ctr *Container, cuuid, bundlePath, p
 		logDriverArg = define.JournaldLogging
 	case define.NoLogging:
 		logDriverArg = define.NoLogging
-	case define.PassthroughLogging:
+	case define.PassthroughLogging, define.PassthroughTTYLogging:
 		logDriverArg = define.PassthroughLogging
 	//lint:ignore ST1015 the default case has to be here
 	default: //nolint:gocritic
@@ -1341,17 +1339,15 @@ func (r *ConmonOCIRuntime) sharedConmonArgs(ctr *Container, cuuid, bundlePath, p
 	logLevel := logrus.GetLevel()
 	args = append(args, "--log-level", logLevel.String())
 
-	if logLevel == logrus.DebugLevel {
-		logrus.Debugf("%s messages will be logged to syslog", r.conmonPath)
-		args = append(args, "--syslog")
-	}
+	logrus.Debugf("%s messages will be logged to syslog", r.conmonPath)
+	args = append(args, "--syslog")
 
 	size := r.logSizeMax
 	if ctr.config.LogSize > 0 {
 		size = ctr.config.LogSize
 	}
 	if size > 0 {
-		args = append(args, "--log-size-max", fmt.Sprintf("%v", size))
+		args = append(args, "--log-size-max", strconv.FormatInt(size, 10))
 	}
 
 	if ociLogPath != "" {
@@ -1364,26 +1360,7 @@ func (r *ConmonOCIRuntime) sharedConmonArgs(ctr *Container, cuuid, bundlePath, p
 		logrus.Debugf("Running with no Cgroups")
 		args = append(args, "--runtime-arg", "--cgroup-manager", "--runtime-arg", "disabled")
 	}
-	return args
-}
-
-func startCommand(cmd *exec.Cmd, ctr *Container) error {
-	// Make sure to unset the NOTIFY_SOCKET and reset it afterwards if needed.
-	switch ctr.config.SdNotifyMode {
-	case define.SdNotifyModeContainer, define.SdNotifyModeIgnore:
-		if prev := os.Getenv("NOTIFY_SOCKET"); prev != "" {
-			if err := os.Unsetenv("NOTIFY_SOCKET"); err != nil {
-				logrus.Warnf("Error unsetting NOTIFY_SOCKET %v", err)
-			}
-			defer func() {
-				if err := os.Setenv("NOTIFY_SOCKET", prev); err != nil {
-					logrus.Errorf("Resetting NOTIFY_SOCKET=%s", prev)
-				}
-			}()
-		}
-	}
-
-	return cmd.Start()
+	return args, nil
 }
 
 // newPipe creates a unix socket pair for communication.
@@ -1444,7 +1421,7 @@ func readConmonPipeData(runtimeName string, pipe *os.File, ociLog string) (int, 
 		ch <- syncStruct{si: si}
 	}()
 
-	data := -1
+	var data int
 	select {
 	case ss := <-ch:
 		if ss.err != nil {

@@ -1,3 +1,5 @@
+//go:build !remote
+
 package libpod
 
 import (
@@ -11,8 +13,7 @@ import (
 	"time"
 
 	"github.com/containers/common/libnetwork/types"
-	"github.com/containers/podman/v4/libpod/define"
-	"github.com/containers/podman/v4/pkg/rootless"
+	"github.com/containers/podman/v5/libpod/define"
 	"github.com/containers/storage"
 	"github.com/sirupsen/logrus"
 
@@ -49,11 +50,14 @@ const (
 
 // NewSqliteState creates a new SQLite-backed state database.
 func NewSqliteState(runtime *Runtime) (_ State, defErr error) {
+	logrus.Info("Using sqlite as database backend")
 	state := new(SQLiteState)
 
 	basePath := runtime.storageConfig.GraphRoot
 	if runtime.storageConfig.TransientStore {
 		basePath = runtime.storageConfig.RunRoot
+	} else if !runtime.storageSet.StaticDirSet {
+		basePath = runtime.config.Engine.StaticDir
 	}
 
 	// c/storage is set up *after* the DB - so even though we use the c/s
@@ -63,7 +67,18 @@ func NewSqliteState(runtime *Runtime) (_ State, defErr error) {
 		return nil, fmt.Errorf("creating root directory: %w", err)
 	}
 
-	conn, err := sql.Open("sqlite3", filepath.Join(basePath, sqliteOptions))
+	// Make sure busy timeout is set to high value to keep retrying when the db is locked.
+	// Timeout is in ms, so set it to 100s to have enough time to retry the operations.
+	// Some users might want to experiment with different timeout values (#23236)
+	// DO NOT DOCUMENT or recommend PODMAN_SQLITE_BUSY_TIMEOUT outside of testing.
+	busyTimeout := "100000"
+	if env, ok := os.LookupEnv("PODMAN_SQLITE_BUSY_TIMEOUT"); ok {
+		logrus.Debugf("PODMAN_SQLITE_BUSY_TIMEOUT is set to %s", env)
+		busyTimeout = env
+	}
+	sqliteOptionBusyTimeout := "&_busy_timeout=" + busyTimeout
+
+	conn, err := sql.Open("sqlite3", filepath.Join(basePath, sqliteOptions+sqliteOptionBusyTimeout))
 	if err != nil {
 		return nil, fmt.Errorf("initializing sqlite database: %w", err)
 	}
@@ -139,6 +154,9 @@ func (s *SQLiteState) Refresh() (defErr error) {
 
 		ctrStates[id] = string(newJSON)
 	}
+	if err := ctrRows.Err(); err != nil {
+		return err
+	}
 
 	podRows, err := s.conn.Query("SELECT ID, JSON FROM PodState;")
 	if err != nil {
@@ -169,6 +187,9 @@ func (s *SQLiteState) Refresh() (defErr error) {
 		}
 
 		podStates[id] = string(newJSON)
+	}
+	if err := podRows.Err(); err != nil {
+		return err
 	}
 
 	volRows, err := s.conn.Query("SELECT Name, JSON FROM VolumeState;")
@@ -201,6 +222,9 @@ func (s *SQLiteState) Refresh() (defErr error) {
 		}
 
 		volumeStates[name] = string(newJSON)
+	}
+	if err := volRows.Err(); err != nil {
+		return err
 	}
 
 	// Write updated states back to DB, and perform additional maintenance
@@ -284,7 +308,7 @@ func (s *SQLiteState) ValidateDBConfig(runtime *Runtime) (defErr error) {
 		return define.ErrDBClosed
 	}
 
-	storeOpts, err := storage.DefaultStoreOptions(rootless.IsRootless(), rootless.GetRootlessUID())
+	storeOpts, err := storage.DefaultStoreOptions()
 	if err != nil {
 		return err
 	}
@@ -297,14 +321,14 @@ func (s *SQLiteState) ValidateDBConfig(runtime *Runtime) (defErr error) {
         );`
 
 	var (
-		os, staticDir, tmpDir, graphRoot, runRoot, graphDriver, volumePath string
-		runtimeOS                                                          = goruntime.GOOS
-		runtimeStaticDir                                                   = filepath.Clean(s.runtime.config.Engine.StaticDir)
-		runtimeTmpDir                                                      = filepath.Clean(s.runtime.config.Engine.TmpDir)
-		runtimeGraphRoot                                                   = filepath.Clean(s.runtime.StorageConfig().GraphRoot)
-		runtimeRunRoot                                                     = filepath.Clean(s.runtime.StorageConfig().RunRoot)
-		runtimeGraphDriver                                                 = s.runtime.StorageConfig().GraphDriverName
-		runtimeVolumePath                                                  = filepath.Clean(s.runtime.config.Engine.VolumePath)
+		dbOS, staticDir, tmpDir, graphRoot, runRoot, graphDriver, volumePath string
+		runtimeOS                                                            = goruntime.GOOS
+		runtimeStaticDir                                                     = filepath.Clean(s.runtime.config.Engine.StaticDir)
+		runtimeTmpDir                                                        = filepath.Clean(s.runtime.config.Engine.TmpDir)
+		runtimeGraphRoot                                                     = filepath.Clean(s.runtime.StorageConfig().GraphRoot)
+		runtimeRunRoot                                                       = filepath.Clean(s.runtime.StorageConfig().RunRoot)
+		runtimeGraphDriver                                                   = s.runtime.StorageConfig().GraphDriverName
+		runtimeVolumePath                                                    = filepath.Clean(s.runtime.config.Engine.VolumePath)
 	)
 
 	// Some fields may be empty, indicating they are set to the default.
@@ -341,7 +365,7 @@ func (s *SQLiteState) ValidateDBConfig(runtime *Runtime) (defErr error) {
 
 	row := tx.QueryRow("SELECT Os, StaticDir, TmpDir, GraphRoot, RunRoot, GraphDriver, VolumeDir FROM DBConfig;")
 
-	if err := row.Scan(&os, &staticDir, &tmpDir, &graphRoot, &runRoot, &graphDriver, &volumePath); err != nil {
+	if err := row.Scan(&dbOS, &staticDir, &tmpDir, &graphRoot, &runRoot, &graphDriver, &volumePath); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			if _, err := tx.Exec(createRow, 1, schemaVersion, runtimeOS,
 				runtimeStaticDir, runtimeTmpDir, runtimeGraphRoot,
@@ -359,11 +383,53 @@ func (s *SQLiteState) ValidateDBConfig(runtime *Runtime) (defErr error) {
 		return fmt.Errorf("retrieving DB config: %w", err)
 	}
 
-	if err := tx.Commit(); err != nil {
-		return fmt.Errorf("committing database validation row: %w", err)
+	// Sometimes, for as-yet unclear reasons, the database value ends up set
+	// to the empty string. If it does, this evaluation is always going to
+	// fail, and libpod will be unusable.
+	// At this point, the check is effectively meaningless - we don't
+	// actually know the settings we should be checking against. The best
+	// thing we can do (and what BoltDB did in this case) is to compare
+	// against the default, on the assumption that is what was in use.
+	// TODO: We can't remove this code without breaking existing SQLite DBs
+	// that already have incorrect values in the database, but we should
+	// investigate why this is happening and try and prevent the creation of
+	// new databases with these garbage checks.
+	if graphRoot == "" {
+		logrus.Debugf("Database uses empty-string graph root, substituting default %q", storeOpts.GraphRoot)
+		graphRoot = storeOpts.GraphRoot
+	}
+	if runRoot == "" {
+		logrus.Debugf("Database uses empty-string run root, substituting default %q", storeOpts.RunRoot)
+		runRoot = storeOpts.RunRoot
+	}
+	if graphDriver == "" {
+		logrus.Debugf("Database uses empty-string graph driver, substituting default %q", storeOpts.GraphDriverName)
+		graphDriver = storeOpts.GraphDriverName
 	}
 
-	checkField := func(fieldName, dbVal, ourVal string) error {
+	checkField := func(fieldName, dbVal, ourVal string, isPath bool) error {
+		if isPath {
+			// Tolerate symlinks when possible - most relevant for OStree systems
+			// and rootless containers, where we want to put containers in /home,
+			// which is symlinked to /var/home.
+			// Ignore ENOENT as reasonable, as some paths may not exist in early Libpod
+			// init.
+			if dbVal != "" {
+				checkedVal, err := evalSymlinksIfExists(dbVal)
+				if err != nil {
+					return fmt.Errorf("cannot evaluate symlinks on DB %s path %q: %w", fieldName, dbVal, err)
+				}
+				dbVal = checkedVal
+			}
+			if ourVal != "" {
+				checkedVal, err := evalSymlinksIfExists(ourVal)
+				if err != nil {
+					return fmt.Errorf("cannot evaluate symlinks on our %s path %q: %w", fieldName, ourVal, err)
+				}
+				ourVal = checkedVal
+			}
+		}
+
 		if dbVal != ourVal {
 			return fmt.Errorf("database %s %q does not match our %s %q: %w", fieldName, dbVal, fieldName, ourVal, define.ErrDBBadConfig)
 		}
@@ -371,27 +437,33 @@ func (s *SQLiteState) ValidateDBConfig(runtime *Runtime) (defErr error) {
 		return nil
 	}
 
-	if err := checkField("os", os, runtimeOS); err != nil {
+	if err := checkField("os", dbOS, runtimeOS, false); err != nil {
 		return err
 	}
-	if err := checkField("static dir", staticDir, runtimeStaticDir); err != nil {
+	if err := checkField("static dir", staticDir, runtimeStaticDir, true); err != nil {
 		return err
 	}
-	if err := checkField("tmp dir", tmpDir, runtimeTmpDir); err != nil {
+	if err := checkField("tmp dir", tmpDir, runtimeTmpDir, true); err != nil {
 		return err
 	}
-	if err := checkField("graph root", graphRoot, runtimeGraphRoot); err != nil {
+	if err := checkField("graph root", graphRoot, runtimeGraphRoot, true); err != nil {
 		return err
 	}
-	if err := checkField("run root", runRoot, runtimeRunRoot); err != nil {
+	if err := checkField("run root", runRoot, runtimeRunRoot, true); err != nil {
 		return err
 	}
-	if err := checkField("graph driver", graphDriver, runtimeGraphDriver); err != nil {
+	if err := checkField("graph driver", graphDriver, runtimeGraphDriver, false); err != nil {
 		return err
 	}
-	if err := checkField("volume path", volumePath, runtimeVolumePath); err != nil {
+	if err := checkField("volume path", volumePath, runtimeVolumePath, true); err != nil {
 		return err
 	}
+
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("committing database validation row: %w", err)
+	}
+	// Do not return any error after the commit call because the defer will
+	// try to roll back the transaction which results in an logged error.
 
 	return nil
 }
@@ -503,6 +575,9 @@ func (s *SQLiteState) LookupContainerID(idOrName string) (string, error) {
 		}
 		resCount++
 	}
+	if err := rows.Err(); err != nil {
+		return "", err
+	}
 	if resCount == 0 {
 		return "", define.ErrNoSuchCtr
 	} else if resCount > 1 {
@@ -543,6 +618,9 @@ func (s *SQLiteState) LookupContainer(idOrName string) (*Container, error) {
 			break
 		}
 		resCount++
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
 	}
 	if !exactName {
 		if resCount == 0 {
@@ -730,6 +808,9 @@ func (s *SQLiteState) ContainerInUse(ctr *Container) ([]string, error) {
 		}
 		deps = append(deps, dep)
 	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
 
 	return deps, nil
 }
@@ -770,6 +851,9 @@ func (s *SQLiteState) AllContainers(loadState bool) ([]*Container, error) {
 
 			ctrs = append(ctrs, ctr)
 		}
+		if err := rows.Err(); err != nil {
+			return nil, err
+		}
 	} else {
 		rows, err := s.conn.Query("SELECT JSON FROM ContainerConfig;")
 		if err != nil {
@@ -793,6 +877,9 @@ func (s *SQLiteState) AllContainers(loadState bool) ([]*Container, error) {
 			}
 
 			ctrs = append(ctrs, ctr)
+		}
+		if err := rows.Err(); err != nil {
+			return nil, err
 		}
 	}
 
@@ -905,8 +992,7 @@ func (s *SQLiteState) GetContainerExitCode(id string) (int32, error) {
 	}
 
 	row := s.conn.QueryRow("SELECT ExitCode FROM ContainerExitCode WHERE ID=?;", id)
-
-	var exitCode int32
+	var exitCode int32 = -1
 	if err := row.Scan(&exitCode); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return -1, fmt.Errorf("getting exit code of container %s from DB: %w", id, define.ErrNoSuchExitCode)
@@ -943,7 +1029,7 @@ func (s *SQLiteState) GetContainerExitCodeTimeStamp(id string) (*time.Time, erro
 	return &result, nil
 }
 
-// PruneExitCodes removes exit codes older than 5 minutes unless the associated
+// PruneContainerExitCodes removes exit codes older than 5 minutes unless the associated
 // container still exists.
 func (s *SQLiteState) PruneContainerExitCodes() (defErr error) {
 	if !s.valid {
@@ -1094,6 +1180,9 @@ func (s *SQLiteState) GetContainerExecSessions(ctr *Container) ([]string, error)
 			return nil, fmt.Errorf("scanning container %s exec sessions row: %w", ctr.ID(), err)
 		}
 		sessions = append(sessions, session)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
 	}
 
 	return sessions, nil
@@ -1254,7 +1343,7 @@ func (s *SQLiteState) RewriteVolumeConfig(volume *Volume, newCfg *VolumeConfig) 
 		}
 	}()
 
-	results, err := tx.Exec("UPDATE VolumeConfig SET Name=?, JSON=? WHERE ID=?;", newCfg.Name, json, volume.Name())
+	results, err := tx.Exec("UPDATE VolumeConfig SET Name=?, JSON=? WHERE Name=?;", newCfg.Name, json, volume.Name())
 	if err != nil {
 		return fmt.Errorf("updating volume config table with new configuration for volume %s: %w", volume.Name(), err)
 	}
@@ -1331,6 +1420,9 @@ func (s *SQLiteState) LookupPod(idOrName string) (*Pod, error) {
 			break
 		}
 		resCount++
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
 	}
 	if !exactName {
 		if resCount == 0 {
@@ -1421,6 +1513,9 @@ func (s *SQLiteState) PodContainersByID(pod *Pod) ([]string, error) {
 
 		ids = append(ids, id)
 	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
 
 	return ids, nil
 }
@@ -1458,6 +1553,9 @@ func (s *SQLiteState) PodContainers(pod *Pod) ([]*Container, error) {
 		}
 
 		ctrs = append(ctrs, ctr)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
 	}
 
 	for _, ctr := range ctrs {
@@ -1652,6 +1750,13 @@ func (s *SQLiteState) RemovePodContainers(pod *Pod) (defErr error) {
 			return err
 		}
 	}
+	if err := rows.Err(); err != nil {
+		return err
+	}
+
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("committing pod containers %s removal transaction: %w", pod.ID(), err)
+	}
 
 	return nil
 }
@@ -1804,6 +1909,9 @@ func (s *SQLiteState) AllPods() ([]*Pod, error) {
 
 		pods = append(pods, pod)
 	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
 
 	return pods, nil
 }
@@ -1909,6 +2017,9 @@ func (s *SQLiteState) RemoveVolume(volume *Volume) (defErr error) {
 			return fmt.Errorf("error scanning row for containers using volume %s: %w", volume.Name(), err)
 		}
 		ctrs = append(ctrs, ctr)
+	}
+	if err := rows.Err(); err != nil {
+		return err
 	}
 	if len(ctrs) > 0 {
 		return fmt.Errorf("volume %s is in use by containers %s: %w", volume.Name(), strings.Join(ctrs, ","), define.ErrVolumeBeingUsed)
@@ -2045,6 +2156,9 @@ func (s *SQLiteState) AllVolumes() ([]*Volume, error) {
 
 		volumes = append(volumes, vol)
 	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
 
 	return volumes, nil
 }
@@ -2067,6 +2181,7 @@ func (s *SQLiteState) Volume(name string) (*Volume, error) {
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil, define.ErrNoSuchVolume
 		}
+		return nil, fmt.Errorf("querying volume %s: %w", name, err)
 	}
 
 	vol := new(Volume)
@@ -2112,6 +2227,9 @@ func (s *SQLiteState) LookupVolume(name string) (*Volume, error) {
 		if foundName == name {
 			break
 		}
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
 	}
 	if foundName == "" {
 		return nil, fmt.Errorf("no volume with name %q found: %w", name, define.ErrNoSuchVolume)
@@ -2185,6 +2303,9 @@ func (s *SQLiteState) VolumeInUse(volume *Volume) ([]string, error) {
 			return nil, fmt.Errorf("scanning container ID for container using volume %s: %w", volume.Name(), err)
 		}
 		ctrs = append(ctrs, ctr)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
 	}
 
 	return ctrs, nil
