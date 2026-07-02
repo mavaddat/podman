@@ -9,6 +9,8 @@ SCRIPT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
 
 source "$SCRIPT_DIR/lib.sh"
 
+echo "::group::Test Setup"
+
 parse_args "$@"
 
 PRESERVE_ENVS="CI_USE_REGISTRY_CACHE,CI_DESIRED_COMPOSEFS,OCI_RUNTIME,CGROUP_MANAGER,STORAGE_FS,STORAGE_OPTIONS_OVERLAY,STORAGE_OPTIONS_VFS,PODMAN_UPGRADE_FROM"
@@ -127,15 +129,14 @@ fi
 $SUDO git config --global user.name "Podman CI"
 $SUDO git config --global user.email "no-reply@podman.io"
 
+echo "::endgroup::" # Test Setup
+
 ### LOG various relevant things
 
-echo
-echo "#################"
-echo "Setup complete, logging versions"
-echo "#################"
-
+echo "::group::Logging system info"
 "$SCRIPT_DIR/logcollector.sh" packages
 "$SCRIPT_DIR/logcollector.sh" ip
+echo "::endgroup::" # Logging system info
 
 mkdir -p "$SCRIPT_DIR/logs"
 # Log the journal at the end.
@@ -228,9 +229,6 @@ function run_machine() {
     $SUDO make ${MODE}machine
 }
 
-echo
-echo "#################"
 echo "Starting Test"
-echo "#################"
 
 run_$TEST

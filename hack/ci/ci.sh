@@ -20,6 +20,7 @@ IMAGE_URL="https://objectstorage.us-ashburn-1.oraclecloud.com/n/id0lmbbwgcdv/b/p
 
 trap "limactl delete --force $LIMA_VM_NAME" EXIT
 
+echo "::group::Starting VM"
 limactl --yes start --plain --name=$LIMA_VM_NAME --cpus $(nproc) --memory 8 --nested-virt \
     --set ".images=[{\"location\":\"$IMAGE_URL\", \"arch\": \"x86_64\"}]" \
     "$SCRIPT_DIR/template.lima.yml"
@@ -28,12 +29,16 @@ limactl shell $LIMA_VM_NAME mkdir -p /var/tmp/podman-container-tools
 
 limactl copy "$REPO_DIR" $LIMA_VM_NAME:/var/tmp/podman-container-tools/podman
 
+echo "::endgroup::"
+
 set +e
 
 limactl shell --preserve-env --workdir /var/tmp/podman-container-tools/podman $LIMA_VM_NAME ./hack/ci/runner.sh "${@}"
 rc=$?
 
+echo "::group::Collecting logs"
 limactl copy $LIMA_VM_NAME:/var/tmp/podman-container-tools/podman/hack/ci/logs/ $SCRIPT_DIR/logs
+echo "::endgroup::"
 
 # TODO: figure out how to cache the binaries from the build job to the actual test tasks
 # Copy the binaries out of the VM in gh actions so we can upload them as artifact
