@@ -14,32 +14,47 @@ function Get-Podman-Commands-List{
         Write-Host "Retrieving the list of ""podman"" commands."
     }
 
+    $helpLines = @(Invoke-Expression "$podmanClient $podmanHelpCommand")
+
     # Retrieve the list of subcommands of $command
     # e.g. "podman help machine" returns the list of
     #     "podman machine" subcommands: info, init, etc...
     $subCommands = @()
-    $subCommands = Invoke-Expression "$podmanClient $podmanHelpCommand" |
-        Select-String -Pattern "^\s*Available Commands:" -Context 0, 1000 | Out-String -Stream |
-        Select-String -Pattern "^\s+$" -Context 1000, 0 | Out-String -Stream |
-        Select-String -Pattern ">\s*Available Commands:|^>\s*$|^\s*$" -NotMatch | Out-String -Stream |
-        ForEach-Object { $_ -replace '^\s*(\w+)\s+.*$', '$1' } | Where-Object { $_ -ne "" }
-
-    if ($command) {
-        $subCommands = $subCommands | ForEach-Object { "$command $_" }
-    }
-
-    # Recursively get the list of sub-subcommands for each subcommand
-    foreach ($subCommand in $subCommands) {
-
-        $subSubCommands = @()
-        $subSubCommands = Get-Podman-Commands-List -podmanClient "$podmanClient" -command "${subCommand}"
-
-        if ($subSubCommands) {
-            $subCommands += $subSubCommands
+    $inCommands = $false
+    foreach ($line in $helpLines) {
+        if ($line -match "^\s*Available Commands:\s*$") {
+            $inCommands = $true
+            continue
+        }
+        # end of commands list
+        if ($inCommands -and $line -match '^\s*Options:\s*$') {
+            break
+        }
+        if (!$inCommands) {
+            continue
+        }
+        # add command to list
+        $name = ($line.Trim() -Split '\s+')[0]
+        if ($name -and $name -ne 'help') {
+            $subCommands += $name
         }
     }
 
-    return $subCommands
+    if ($command) {
+        $subCommands = @($subCommands | ForEach-Object { "$command $_" })
+    } else {
+        $subCommands = @($subCommands)
+    }
+
+    $allCommands = @($subCommands)
+    foreach ($subCommand in $subCommands) {
+        $subSubCommands = @(Get-Podman-Commands-List -podmanClient "$podmanClient" -command "${subCommand}")
+        if ($subSubCommands) {
+            $allCommands += $subSubCommands
+        }
+    }
+
+    return $allCommands
 }
 
 function Build-Podman-For-Windows-HTML-Page{
