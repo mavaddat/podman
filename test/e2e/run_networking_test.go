@@ -1096,6 +1096,8 @@ EXPOSE 2004-2005/tcp`, ALPINE)
 					if forwarder == "rootlessport" {
 						Skip("rootlessport does not support native IPv6 port forwarding")
 					}
+					// TODO: enable once pasta ships the IPv6 local-mode fix (https://github.com/containers/podman/issues/29268)
+					Skip("pasta IPv6 forwarding requires unreleased pasta patch")
 					SkipIfNoIPv6Route("pesto IPv6 forwarding requires routable IPv6 on the host")
 				}
 				configurePortForwarder(forwarder)
@@ -1193,6 +1195,8 @@ EXPOSE 2004-2005/tcp`, ALPINE)
 
 		It(fmt.Sprintf("podman run bridge dual-stack network IPv4 and IPv6 port forwarding with %s", forwarder), Serial, func() {
 			SkipIfNotRootless("netavark does not support IPv6 port forwarding")
+			// TODO: enable once pasta ships the IPv6 local-mode fix (https://github.com/containers/podman/issues/29268)
+			Skip("pasta IPv6 forwarding requires unreleased pasta patch")
 			SkipIfNoIPv6Route("pesto IPv6 forwarding requires routable IPv6 on the host")
 			configurePortForwarder(forwarder)
 
@@ -1225,6 +1229,8 @@ EXPOSE 2004-2005/tcp`, ALPINE)
 
 	// https://github.com/containers/podman/issues/28771
 	It("podman run bridge dual-stack same port IPv4 and IPv6 route to different containers", func() {
+		// TODO: enable once pasta ships the IPv6 local-mode fix (https://github.com/containers/podman/issues/29268)
+		Skip("pasta IPv6 forwarding requires unreleased pasta patch")
 		SkipIfNoIPv6Route("pesto IPv6 forwarding requires routable IPv6 on the host")
 		configurePortForwarder("pasta")
 		subnet4 := "172.45.0.0/24"
@@ -1361,6 +1367,8 @@ EXPOSE 2004-2005/tcp`, ALPINE)
 
 	// https://github.com/containers/podman/issues/28771
 	It("podman run bridge container with multiple port mappings on different addresses", func() {
+		// TODO: enable once pasta ships the IPv6 local-mode fix (https://github.com/containers/podman/issues/29268)
+		Skip("pasta IPv6 forwarding requires unreleased pasta patch")
 		SkipIfNoIPv6Route("pesto IPv6 forwarding requires routable IPv6 on the host")
 		configurePortForwarder("pasta")
 		subnet4 := "172.46.0.0/24"
@@ -1398,6 +1406,8 @@ EXPOSE 2004-2005/tcp`, ALPINE)
 
 	// https://github.com/containers/podman/issues/28771
 	It("podman run bridge different host and container ports on dual-stack network with pesto", func() {
+		// TODO: enable once pasta ships the IPv6 local-mode fix (https://github.com/containers/podman/issues/29268)
+		Skip("pasta IPv6 forwarding requires unreleased pasta patch")
 		SkipIfNoIPv6Route("pesto IPv6 forwarding requires routable IPv6 on the host")
 		configurePortForwarder("pasta")
 		subnet4 := "172.47.0.0/24"
