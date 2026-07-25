@@ -229,6 +229,14 @@ function run_machine() {
     $SUDO make ${MODE}machine
 }
 
+function run_farm() {
+    # The farm tests add a system connection to ourselves over ssh to localhost
+    # and then talk to the rootless API socket through it.
+    systemctl --user enable --now podman.socket
+
+    $SUDO bats test/farm |& logformatter
+}
+
 echo "Starting Test"
 
 run_$TEST
