@@ -870,6 +870,8 @@ type InspectExecProcess struct {
 }
 
 // DriverData handles the data for a storage driver
+//
+// swagger:model LibpodDriverData
 type DriverData struct {
 	Name string            `json:"Name"`
 	Data map[string]string `json:"Data"`
