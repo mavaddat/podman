@@ -162,9 +162,19 @@ func (r *Runtime) reloadContainerNetwork(ctr *Container) (map[string]types.Statu
 	}
 	logrus.Infof("Going to reload container %s network", ctr.ID())
 
+	// store the old status before unsetting it
+	netStatus := ctr.getNetworkStatus()
 	err := r.teardownNetwork(ctr)
 	if err != nil {
 		logrus.Error(err)
+	}
+	// We must unset the network status here so
+	ctr.state.NetworkStatus = nil
+
+	// always save even when there was an error
+	err = ctr.save()
+	if err != nil {
+		return nil, fmt.Errorf("failed to save container status after network teardown: %w", err)
 	}
 
 	networkOpts, err := ctr.networks()
@@ -173,7 +183,6 @@ func (r *Runtime) reloadContainerNetwork(ctr *Container) (map[string]types.Statu
 	}
 
 	// Set the same network settings as before..
-	netStatus := ctr.getNetworkStatus()
 	newNetworkOpts := make([]types.NamedPerNetworkOptions, 0, len(networkOpts))
 	for _, network := range networkOpts {
 		for name, netInt := range netStatus[network.Name].Interfaces {
@@ -190,7 +199,7 @@ func (r *Runtime) reloadContainerNetwork(ctr *Container) (map[string]types.Statu
 	}
 	ctr.perNetworkOpts = newNetworkOpts
 
-	return r.configureNetNS(ctr, ctr.state.NetNS)
+	return r.configureNetNS(ctr, ctr.state.NetNS, true)
 }
 
 // Produce an InspectNetworkSettings containing information on the container

@@ -18,7 +18,7 @@ import (
 )
 
 // Create and configure a new network namespace for a container
-func (r *Runtime) configureNetNS(ctr *Container, ctrNS string) (status map[string]types.StatusBlock, rerr error) {
+func (r *Runtime) configureNetNS(ctr *Container, ctrNS string, reload bool) (status map[string]types.StatusBlock, rerr error) {
 	if err := r.exposeMachinePorts(ctr.config.PortMappings); err != nil {
 		return nil, err
 	}
@@ -68,7 +68,7 @@ func (r *Runtime) configureNetNS(ctr *Container, ctrNS string) (status map[strin
 		case config.RootlessPortForwarderPasta:
 			// Handled by container-libs netavark Setup()
 		case config.RootlessPortForwarderRootlessport, "":
-			if ctr.getNetworkStatus() == nil {
+			if !reload {
 				err = r.setupRootlessPortMappingViaRLK(ctr, ctrNS, netStatus)
 			}
 		default:
@@ -99,7 +99,7 @@ func (r *Runtime) createNetNS(ctr *Container) (n string, q map[string]types.Stat
 	logrus.Debugf("Made network namespace at %s for container %s", ctrNS.Path(), ctr.ID())
 
 	var networkStatus map[string]types.StatusBlock
-	networkStatus, err = r.configureNetNS(ctr, ctrNS.Path())
+	networkStatus, err = r.configureNetNS(ctr, ctrNS.Path(), false)
 	return ctrNS.Path(), networkStatus, err
 }
 
@@ -111,7 +111,7 @@ func (r *Runtime) setupNetNS(ctr *Container) error {
 		return err
 	}
 
-	networkStatus, err := r.configureNetNS(ctr, nsPath)
+	networkStatus, err := r.configureNetNS(ctr, nsPath, false)
 
 	// Assign NetNS attributes to container
 	ctr.state.NetNS = nsPath
