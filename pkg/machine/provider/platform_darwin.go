@@ -51,11 +51,6 @@ func GetAll() []vmconfigs.VMProvider {
 	return []vmconfigs.VMProvider{new(libkrun.LibKrunStubber), new(applehv.AppleHVStubber)}
 }
 
-// SupportedProviders returns the providers that are supported on the host operating system
-func SupportedProviders() []define.VMType {
-	return []define.VMType{define.AppleHvVirt, define.LibKrun}
-}
-
 func IsInstalled(provider define.VMType) (bool, error) {
 	switch provider {
 	case define.AppleHvVirt:
