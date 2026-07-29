@@ -351,8 +351,8 @@ func PodmanTestCreateUtil(tempDir string, target PodmanTestCreateUtilTarget) *Po
 	}
 
 	storageOptions := STORAGE_OPTIONS
-	if os.Getenv("STORAGE_FS") != "" {
-		storageFs = os.Getenv("STORAGE_FS")
+	if os.Getenv("CI_DESIRED_STORAGE") != "" {
+		storageFs = os.Getenv("CI_DESIRED_STORAGE")
 		storageOptions = "--storage-driver " + storageFs
 
 		// Look for STORAGE_OPTIONS_OVERLAY / STORAGE_OPTIONS_VFS
