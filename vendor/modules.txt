@@ -739,7 +739,7 @@ go.opentelemetry.io/otel/trace
 go.opentelemetry.io/otel/trace/embedded
 go.opentelemetry.io/otel/trace/internal/telemetry
 go.opentelemetry.io/otel/trace/noop
-# go.podman.io/buildah v1.44.1-0.20260723224049-18bf8e35f1a0
+# go.podman.io/buildah v1.45.0
 ## explicit; go 1.25.9
 go.podman.io/buildah
 go.podman.io/buildah/bind
@@ -777,7 +777,7 @@ go.podman.io/buildah/pkg/sshagent
 go.podman.io/buildah/pkg/util
 go.podman.io/buildah/pkg/volumes
 go.podman.io/buildah/util
-# go.podman.io/common v0.68.2-0.20260728161216-e16e000d000d
+# go.podman.io/common v0.69.0
 ## explicit; go 1.25.7
 go.podman.io/common/internal
 go.podman.io/common/libimage
@@ -843,7 +843,7 @@ go.podman.io/common/pkg/umask
 go.podman.io/common/pkg/util
 go.podman.io/common/pkg/version
 go.podman.io/common/version
-# go.podman.io/image/v5 v5.40.1-0.20260728161216-e16e000d000d
+# go.podman.io/image/v5 v5.41.0
 ## explicit; go 1.25.7
 go.podman.io/image/v5/copy
 go.podman.io/image/v5/directory
@@ -920,7 +920,7 @@ go.podman.io/image/v5/transports
 go.podman.io/image/v5/transports/alltransports
 go.podman.io/image/v5/types
 go.podman.io/image/v5/version
-# go.podman.io/storage v1.63.1-0.20260728161216-e16e000d000d
+# go.podman.io/storage v1.64.0
 ## explicit; go 1.25.0
 go.podman.io/storage
 go.podman.io/storage/drivers
