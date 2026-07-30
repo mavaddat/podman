@@ -5598,7 +5598,7 @@ spec:
     spec:
       containers:
       - name: php-redis
-        image: quay.io/libpod/alpine_nginx:latest
+        image: ` + NGINX_IMAGE + `
         ports:
         - containerPort: 1234
           hostPort: 80
