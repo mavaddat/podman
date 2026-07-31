@@ -190,7 +190,6 @@ function run_docker_py() {
 }
 
 function run_unit() {
-    make .install.ginkgo
     $SUDO make localunit
 }
 
