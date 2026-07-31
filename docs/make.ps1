@@ -57,6 +57,22 @@ function Get-Podman-Commands-List{
     return $allCommands
 }
 
+function Invoke-Markdown-Preprocess{
+    $python = Get-Command -Name 'python' -ErrorAction SilentlyContinue
+
+    if (!$python) {
+        Write-Host 'Python not found. Python is required to expand @@option includes in the markdown sources.'
+        Exit 1
+    }
+
+    Write-Host "Expanding @@option includes in markdown sources (using $($python.Source))..."
+    & $python.Source "$PSScriptRoot\..\hack\markdown-preprocess"
+    if ($LASTEXITCODE -ne 0) {
+        Write-Host 'markdown-preprocess failed.'
+        Exit 1
+    }
+}
+
 function Build-Podman-For-Windows-HTML-Page{
     $srcFolder = "$PSScriptRoot\tutorials"
     $srcFile = "$srcFolder\podman-for-windows.md"
@@ -86,6 +102,26 @@ function Build-Podman-Remote-HTML-Page{
     }
 }
 
+# Rename podman-remote.html to podman.html to match remote-docs.sh
+function Rename-Podman-Remote-HTML{
+    $src = "$PSScriptRoot\build\remote\podman-remote.html"
+    $dst = "$PSScriptRoot\build\remote\podman.html"
+    if (!(Test-Path -Path $src -PathType Leaf)) {
+        return
+    }
+
+    $content = Get-Content -Raw -Path $src
+
+    $content = $content -creplace 'Podman\*-remote', 'Podman for Windows'
+    $content = $content -creplace 'podman\*-remote', 'podman'
+    $content = $content -creplace 'Podman-remote', 'Podman for Windows'
+    $content = $content -creplace 'podman-remote', 'podman'
+    $content = $content -creplace 'A remote CLI for Podman: ', ''
+
+    Set-Content -Path $dst -Value $content -NoNewline
+    Remove-Item -Path $src
+}
+
 function Find-Podman-Command-Markdown-File{
     param (
         [string]$command
@@ -96,10 +132,11 @@ function Find-Podman-Command-Markdown-File{
     $srcFileMd = "$markdownFolder\podman-$command.1.md"
     $linkFile = "$markdownFolder\links\podman-$command.1"
 
-    if (Test-Path -Path $srcFileMdIn -PathType Leaf) {
-        return $srcFileMdIn
-    } elseif (Test-Path -Path $srcFileMd -PathType Leaf) {
+    # Use the already-preprocessed .md file over the raw .md.in template
+    if (Test-Path -Path $srcFileMd -PathType Leaf) {
         return $srcFileMd
+    } elseif (Test-Path -Path $srcFileMdIn -PathType Leaf) {
+        return $srcFileMdIn
     } elseif (Test-Path -Path $linkFile -PathType Leaf) {
         # In $linkFile there is a link to a markdown file
         $srcFile = Get-Content -Path $linkFile
@@ -108,10 +145,10 @@ function Find-Podman-Command-Markdown-File{
         $srcFile = $srcFile -replace ".so man1/", ""
         $srcFileMdIn = "$markdownFolder\$srcFile.md.in"
         $srcFileMd = "$markdownFolder\$srcFile.md"
-        if (Test-Path -Path "$srcFileMdIn" -PathType Leaf) {
-            return "$srcFileMdIn"
-        } elseif (Test-Path -Path $srcFileMd -PathType Leaf) {
+        if (Test-Path -Path $srcFileMd -PathType Leaf) {
             return "$srcFileMd"
+        } elseif (Test-Path -Path "$srcFileMdIn" -PathType Leaf) {
+            return "$srcFileMdIn"
         }
     }
     return $null
@@ -139,11 +176,16 @@ function Build-Podman-Command-HTML-Page{
     Write-Host "done."
 }
 
+# Expand @@option includes in the markdown sources
+Invoke-Markdown-Preprocess
+
 # Generate podman-for-windows.html
 Build-Podman-For-Windows-HTML-Page
 
 # Generate podman-remote*.html
 Build-Podman-Remote-HTML-Page
+# Rename the generated podman-remote*.html
+Rename-Podman-Remote-HTML
 
 # Get the list of podman commands on Windows
 if ($args[1]) {
