@@ -724,7 +724,8 @@ Special Cases:
 
 ### `ImageVolume=`
 
-Tells Podman how to handle the builtin image volumes. Default is **bind**.
+Tells Podman how to handle the builtin image volumes. Default is **anonymous**.
+In the past, a **bind** option was accepted as well. This is deprecated, and currently aliased to **anonymous**.
 Equivalent to the Podman `--image-volume` option.
 
 ### `IP=`
