@@ -166,6 +166,7 @@ jobs:
     packages: [podman-fedora]
     dist_git_branches: &fedora_targets
       - fedora-rawhide
+      - fedora-45
 
   - job: koji_build
     trigger: commit
