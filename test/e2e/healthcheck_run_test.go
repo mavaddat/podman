@@ -169,6 +169,7 @@ var _ = Describe("Podman healthcheck run", func() {
 	})
 
 	It("podman healthcheck --ignore-result exits 0 on failing healthcheck", func() {
+		SkipIfNotAMD64() // https://github.com/containers/podman/issues/28269
 		session := podmanTest.Podman([]string{"run", "-q", "-dt", "--name", "hc", "quay.io/libpod/badhealthcheck:latest"})
 		session.WaitWithDefaultTimeout()
 		Expect(session).Should(ExitCleanly())
