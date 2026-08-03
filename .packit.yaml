@@ -103,6 +103,7 @@ jobs:
   - job: tests
     trigger: pull_request
     packages: [podman-fedora]
+    skip_missing_branched_composes: true
     notifications: *packit_generic_failure_notification
     targets:
       - fedora-all
@@ -117,6 +118,7 @@ jobs:
     identifier: cockpit-revdeps
     trigger: pull_request
     packages: [podman-fedora]
+    skip_missing_branched_composes: true
     notifications:
       failure_comment:
         message: "Cockpit tests failed for commit {commit_sha}. @jelly, @mvollmer please check."
