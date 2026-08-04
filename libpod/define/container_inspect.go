@@ -739,8 +739,11 @@ type InspectAdditionalNetwork struct {
 	// Links is presently unused and maintained exclusively for
 	// compatibility.
 	Links []string `json:"Links"`
-	// Aliases are any network aliases the container has in this network.
+	// Aliases are user-provided network aliases the container has in this network.
 	Aliases []string `json:"Aliases,omitempty"`
+	// DNSNames contains the complete list of DNS names that resolve to this
+	// container, including the container name, user aliases, short ID, and hostname.
+	DNSNames []string `json:"DNSNames,omitempty"`
 }
 
 // InspectNetworkSettings holds information about the network settings of the
