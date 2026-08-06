@@ -2006,6 +2006,11 @@ func AutocompleteHealthOnFailure(_ *cobra.Command, _ []string, _ string) ([]stri
 	return define.SupportedHealthCheckOnFailureActions, cobra.ShellCompDirectiveNoFileComp
 }
 
+// AutocompleteKubePlayValidate - autocomplete the values for the kube play --validate flag.
+func AutocompleteKubePlayValidate(_ *cobra.Command, _ []string, _ string) ([]string, cobra.ShellCompDirective) {
+	return entities.KubeValidateModeNames(), cobra.ShellCompDirectiveNoFileComp
+}
+
 // AutocompleteSysctl - autocomplete list all sysctl names
 func AutocompleteSysctl(_ *cobra.Command, _ []string, toComplete string) ([]string, cobra.ShellCompDirective) {
 	var completions []string
