@@ -9,6 +9,8 @@ SCRIPT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
 
 source "$SCRIPT_DIR/lib.sh"
 
+echo "::group::Test Setup"
+
 parse_args "$@"
 
 PRESERVE_ENVS="CI_USE_REGISTRY_CACHE,CI_DESIRED_COMPOSEFS,OCI_RUNTIME,CGROUP_MANAGER,STORAGE_FS,STORAGE_OPTIONS_OVERLAY,STORAGE_OPTIONS_VFS,PODMAN_UPGRADE_FROM"
@@ -127,17 +129,29 @@ fi
 $SUDO git config --global user.name "Podman CI"
 $SUDO git config --global user.email "no-reply@podman.io"
 
+echo "::endgroup::" # Test Setup
+
 ### LOG various relevant things
 
-echo
-echo "#################"
-echo "Setup complete, logging versions"
-echo "#################"
-
+echo "::group::Logging system info"
 "$SCRIPT_DIR/logcollector.sh" packages
 "$SCRIPT_DIR/logcollector.sh" ip
+echo "::endgroup::" # Logging system info
+
+mkdir -p "$SCRIPT_DIR/logs"
+# Log the journal at the end.
+trap "sudo \"$SCRIPT_DIR/logcollector.sh\" journal &> \"$SCRIPT_DIR/logs/journal-$TEST_NAME.log\"" EXIT
 
 ### TEST functions
+
+function logformatter() {
+    # Requires stdin and stderr combined!
+    awk --file "${SCRIPT_DIR}/timestamp.awk" |&
+        (
+            cd "${SCRIPT_DIR}/logs"
+            "${SCRIPT_DIR}/logformatter" "$TEST_NAME"
+        )
+}
 
 function run_build() {
     # Ensure always start from clean-slate with all vendor modules downloaded
@@ -161,24 +175,27 @@ function run_apiv2() {
     source .venv/requests/bin/activate
     pip install --upgrade pip
     pip install --requirement ./test/apiv2/python/requirements.txt
-    $SUDO make localapiv2-bash
-    $SUDO sh -c "source .venv/requests/bin/activate && make localapiv2-python"
+    $SUDO sh -c "(
+        make localapiv2-bash
+        source .venv/requests/bin/activate
+        make localapiv2-python
+    )" |& logformatter
 }
 
 function run_bindings() {
     make .install.ginkgo
-    $SUDO make testbindings
+    $SUDO make testbindings |& logformatter
 }
 
 function run_bud() {
-    $SUDO ./test/buildah-bud/run-buildah-bud-tests
+    $SUDO ./test/buildah-bud/run-buildah-bud-tests |& logformatter
 }
 
 function run_compose_v2() {
     # FIXME do not hard code the version here, and likely it would be best to embed this in the VM image to begin with.
     sudo curl --fail -SL https://github.com/docker/compose/releases/download/v2.32.3/docker-compose-linux-x86_64 -o /usr/local/bin/docker-compose
     sudo chmod +x /usr/local/bin/docker-compose
-    $SUDO ./test/compose/test-compose
+    $SUDO ./test/compose/test-compose |& logformatter
 }
 
 function run_docker_py() {
@@ -186,7 +203,7 @@ function run_docker_py() {
     source .venv/docker-py/bin/activate
     pip install --upgrade pip
     pip install --requirement ./test/python/requirements.txt
-    $SUDO sh -c "source .venv/docker-py/bin/activate && make run-docker-py-tests"
+    $SUDO sh -c "source .venv/docker-py/bin/activate && make run-docker-py-tests" |& logformatter
 }
 
 function run_unit() {
@@ -197,24 +214,21 @@ function run_unit() {
 function run_upgrade() {
     export SUPPRESS_BOLTDB_WARNING=true
     export PODMAN_UPGRADE_FROM=${MODE}
-    $SUDO bats test/upgrade
+    $SUDO bats test/upgrade |& logformatter
 }
 
 function run_int() {
-    $SUDO make ${MODE}integration
+    $SUDO make ${MODE}integration |& logformatter
 }
 
 function run_sys() {
-    $SUDO make ${MODE}system
+    $SUDO make ${MODE}system |& logformatter
 }
 
 function run_machine() {
     $SUDO make ${MODE}machine
 }
 
-echo
-echo "#################"
 echo "Starting Test"
-echo "#################"
 
 run_$TEST
