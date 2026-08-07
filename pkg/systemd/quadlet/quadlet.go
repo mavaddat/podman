@@ -187,6 +187,7 @@ const (
 	KeyUID                   = "UID"
 	KeyUIDMap                = "UIDMap"
 	KeyUlimit                = "Ulimit"
+	KeyUmask                 = "Umask"
 	KeyUnmask                = "Unmask"
 	KeyUser                  = "User"
 	KeyUserNS                = "UserNS"
@@ -337,6 +338,7 @@ var (
 				KeyTmpfs:                 true,
 				KeyUIDMap:                true,
 				KeyUlimit:                true,
+				KeyUmask:                 true,
 				KeyUnmask:                true,
 				KeyUser:                  true,
 				KeyUserNS:                true,
@@ -703,6 +705,7 @@ func ConvertContainer(container *parser.UnitFile, unitsInfoMap map[string]*UnitI
 		KeyRetry:       "--retry",
 		KeyRetryDelay:  "--retry-delay",
 		KeyImageVolume: "--image-volume",
+		KeyUmask:       "--umask",
 	}
 	lookupAndAddString(container, ContainerGroup, stringKeys, podman)
 
