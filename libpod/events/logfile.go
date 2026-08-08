@@ -9,7 +9,6 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"path"
 	"path/filepath"
 	"time"
 
@@ -287,7 +286,7 @@ func truncate(filePath string) error {
 	size := origFinfo.Size()
 	threshold := size / 2
 
-	tmp, err := os.CreateTemp(path.Dir(filePath), "")
+	tmp, err := os.CreateTemp(filepath.Dir(filePath), "")
 	if err != nil {
 		// Retry in /tmp in case creating a tmp file in the same
 		// directory has failed.
