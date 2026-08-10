@@ -263,7 +263,9 @@ func logNeedsRotation(logfile string, content string, limit uint64) (bool, error
 		return false, err
 	}
 	filesize := uint64(file.Size())
-	contentsize := uint64(len([]rune(content)))
+	// writeToFile appends a trailing newline, so include that byte in the
+	// size estimate to keep the comparison consistent with file.Size().
+	contentsize := uint64(len(content)) + 1
 	if filesize+contentsize < limit {
 		return false, nil
 	}
