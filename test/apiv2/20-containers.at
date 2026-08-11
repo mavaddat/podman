@@ -968,17 +968,24 @@ done
 
 # 27998: make sure a created (and not started) container with userns=auto shows
 # UsernsMode = private before being started
+# 27988: make sure creation with "userns": {"nsmode": "auto"} works even without
+# explicit idmappings
 
 t POST libpod/containers/create \
-  image=$IMAGE \
+  Image=$IMAGE \
   UserNS='{"NSMode":"auto"}' \
-  IDMappings='{"AutoUserNs":true,"AutoUserNsOpts":{"AdditionalUIDMappings":[],"AdditionalGIDMappings":[],"PasswdFile":"","GroupFile":"","InitialSize":0,"Size":0}}' \
   201
 cid=$(jq -r '.Id' <<<"$output")
 
 t GET libpod/containers/$cid/json \
   200 \
   .HostConfig.UsernsMode='private'
+
+t POST   libpod/containers/$cid/start 204
+
+t GET libpod/containers/$cid/json \
+  200 \
+  .HostConfig.UsernsMode=private
 
 t DELETE libpod/containers/$cid 200 .[0].Id=$cid
 
