@@ -430,6 +430,7 @@ Valid options for `[Container]` are listed below:
 | Tmpfs=/work                          | --tmpfs /work                                        |
 | UIDMap=0:10000:10                    | --uidmap=0:10000:10                                  |
 | Ulimit=nofile=1000:10000             | --ulimit nofile=1000:10000                           |
+| Umask=0077                           | --umask 0077                                         |
 | Unmask=ALL                           | --security-opt unmask=ALL                            |
 | User=bin                             | --user bin                                           |
 | UserNS=keep-id:uid=200,gid=210       | --userns keep-id:uid=200,gid=210                     |
@@ -1030,6 +1031,12 @@ This key can be listed multiple times.
 Ulimit options. Sets the ulimits values inside of the container.
 
 This key can be listed multiple times.
+
+### `Umask=` (defaults to `0022`)
+
+Set the umask inside the container.
+
+This is equivalent to the Podman `--umask` option.
 
 ### `Unmask=`
 
