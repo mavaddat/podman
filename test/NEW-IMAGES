@@ -12,4 +12,3 @@
 #
 # Format is one FQIN per line. Enumerate them below:
 #
-quay.io/libpod/volume-plugin-test-img:20260807
