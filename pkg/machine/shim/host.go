@@ -905,7 +905,7 @@ func Remove(mc *vmconfigs.MachineConfig, mp vmconfigs.VMProvider, opts machine.R
 	}
 
 	if err := genericRm(); err != nil {
-		return fmt.Errorf("failed to remove machines files: %v", err)
+		return fmt.Errorf("failed to remove machines files: %w", err)
 	}
 	return nil
 }
