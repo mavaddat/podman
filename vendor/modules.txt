@@ -165,7 +165,7 @@ github.com/containers/psgo/internal/process
 ## explicit; go 1.19
 github.com/containers/winquit/pkg/winquit
 github.com/containers/winquit/pkg/winquit/win32
-# github.com/coreos/go-oidc/v3 v3.18.0
+# github.com/coreos/go-oidc/v3 v3.20.0
 ## explicit; go 1.25.0
 github.com/coreos/go-oidc/v3/oidc
 # github.com/coreos/go-systemd v0.0.0-20190719114852-fd7a80b32e1f
@@ -287,7 +287,7 @@ github.com/google/go-cmp/cmp/internal/diff
 github.com/google/go-cmp/cmp/internal/flags
 github.com/google/go-cmp/cmp/internal/function
 github.com/google/go-cmp/cmp/internal/value
-# github.com/google/go-containerregistry v0.21.6
+# github.com/google/go-containerregistry v0.21.7
 ## explicit; go 1.25.0
 github.com/google/go-containerregistry/pkg/name
 github.com/google/go-containerregistry/pkg/v1
@@ -346,7 +346,7 @@ github.com/json-iterator/go
 # github.com/kevinburke/ssh_config v1.5.0
 ## explicit; go 1.18
 github.com/kevinburke/ssh_config
-# github.com/klauspost/compress v1.19.1
+# github.com/klauspost/compress v1.19.2
 ## explicit; go 1.24
 github.com/klauspost/compress
 github.com/klauspost/compress/flate
@@ -615,7 +615,7 @@ github.com/sigstore/fulcio/pkg/certificate
 # github.com/sigstore/protobuf-specs v0.5.1
 ## explicit; go 1.23
 github.com/sigstore/protobuf-specs/gen/pb-go/common/v1
-# github.com/sigstore/sigstore v1.10.8
+# github.com/sigstore/sigstore v1.10.9
 ## explicit; go 1.25.0
 github.com/sigstore/sigstore/pkg/cryptoutils
 github.com/sigstore/sigstore/pkg/oauth
@@ -680,7 +680,7 @@ github.com/vbatts/tar-split/tar/storage
 # github.com/vbauerster/cupwriter v0.0.4
 ## explicit; go 1.25.0
 github.com/vbauerster/cupwriter
-# github.com/vbauerster/mpb/v8 v8.14.0
+# github.com/vbauerster/mpb/v8 v8.15.2
 ## explicit; go 1.25.0
 github.com/vbauerster/mpb/v8
 github.com/vbauerster/mpb/v8/decor
@@ -777,7 +777,7 @@ go.podman.io/buildah/pkg/sshagent
 go.podman.io/buildah/pkg/util
 go.podman.io/buildah/pkg/volumes
 go.podman.io/buildah/util
-# go.podman.io/common v0.69.0
+# go.podman.io/common v0.69.1-0.20260812091434-8c2ac6b8236f
 ## explicit; go 1.25.7
 go.podman.io/common/internal
 go.podman.io/common/libimage
@@ -843,7 +843,7 @@ go.podman.io/common/pkg/umask
 go.podman.io/common/pkg/util
 go.podman.io/common/pkg/version
 go.podman.io/common/version
-# go.podman.io/image/v5 v5.41.0
+# go.podman.io/image/v5 v5.41.1-0.20260812091434-8c2ac6b8236f
 ## explicit; go 1.25.7
 go.podman.io/image/v5/copy
 go.podman.io/image/v5/directory
@@ -920,7 +920,7 @@ go.podman.io/image/v5/transports
 go.podman.io/image/v5/transports/alltransports
 go.podman.io/image/v5/types
 go.podman.io/image/v5/version
-# go.podman.io/storage v1.64.0
+# go.podman.io/storage v1.64.1-0.20260812091434-8c2ac6b8236f
 ## explicit; go 1.25.0
 go.podman.io/storage
 go.podman.io/storage/drivers
@@ -1084,11 +1084,11 @@ golang.org/x/tools/internal/stdlib
 golang.org/x/tools/internal/typeparams
 golang.org/x/tools/internal/typesinternal
 golang.org/x/tools/internal/versions
-# google.golang.org/genproto/googleapis/api v0.0.0-20260526163538-3dc84a4a5aaa
+# google.golang.org/genproto/googleapis/api v0.0.0-20260727163830-6c54dddc4772
 ## explicit; go 1.25.0
 google.golang.org/genproto/googleapis/api
 google.golang.org/genproto/googleapis/api/annotations
-# google.golang.org/genproto/googleapis/rpc v0.0.0-20260526163538-3dc84a4a5aaa
+# google.golang.org/genproto/googleapis/rpc v0.0.0-20260720155508-bb71a54f79dc
 ## explicit; go 1.25.0
 google.golang.org/genproto/googleapis/rpc/status
 # google.golang.org/grpc v1.83.0
