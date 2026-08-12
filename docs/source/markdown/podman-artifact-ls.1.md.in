@@ -8,7 +8,7 @@ podman\-artifact\-ls - List OCI artifacts in local store (alias list)
 
 ## DESCRIPTION
 
-List all local artifacts in your local store.
+List all local artifacts in your local store.  Outputs the following by default: repository name, tag, digest, created time and size.
 
 ## OPTIONS
 
