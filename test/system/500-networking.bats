@@ -1259,4 +1259,25 @@ EOF
     run_podman rm -f -t0 $cid1
 }
 
+# bats test_tags=ci:parallel
+@test "podman run - test force_port_listen containers.conf option" {
+    skip_if_rootless "force_port_listen is only used as root"
+    skip_if_remote "force_port_listen would need to be set on the server side"
+    myport=$(random_free_port)
+    cname="c1-$(safename)"
+
+    containersconf=$PODMAN_TMPDIR/containers.conf
+    cat >$containersconf <<EOF
+[engine]
+force_port_listen = true
+EOF
+
+    CONTAINERS_CONF_OVERRIDE=$containersconf run_podman run -d --name $cname -p $myport:8080 $IMAGE sleep inf
+
+    run -0 ss -Hlpn sport = $myport
+    assert "$output" =~ "tcp[[:blank:]]LISTEN.*\*:$myport" "tcp port should be in LISTEN state"
+
+    run_podman rm -f -t0 $cname
+}
+
 # vim: filetype=sh
