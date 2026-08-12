@@ -253,8 +253,12 @@ func cliOpts(cc handlers.CreateContainerConfig, rtc *config.Config) (*entities.C
 			}
 		case mount.TypeTmpfs:
 			if m.TmpfsOptions != nil {
-				addField(&builder, "tmpfs-size", strconv.FormatInt(m.TmpfsOptions.SizeBytes, 10))
-				addField(&builder, "tmpfs-mode", strconv.FormatUint(uint64(m.TmpfsOptions.Mode), 8))
+				if m.TmpfsOptions.SizeBytes != 0 {
+					addField(&builder, "tmpfs-size", strconv.FormatInt(m.TmpfsOptions.SizeBytes, 10))
+				}
+				if m.TmpfsOptions.Mode != 0 {
+					addField(&builder, "tmpfs-mode", strconv.FormatUint(uint64(m.TmpfsOptions.Mode), 8))
+				}
 			}
 		case mount.TypeVolume:
 			if m.VolumeOptions != nil {
