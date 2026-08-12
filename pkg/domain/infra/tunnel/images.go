@@ -283,6 +283,7 @@ func (ir *ImageEngine) Push(_ context.Context, source string, destination string
 
 	options := new(images.PushOptions)
 	options.WithAll(opts.All).WithCompress(opts.Compress).WithUsername(opts.Username).WithPassword(opts.Password).WithAuthfile(opts.Authfile).WithFormat(opts.Format).WithRemoveSignatures(opts.RemoveSignatures).WithQuiet(opts.Quiet).WithCompressionFormat(opts.CompressionFormat).WithProgressWriter(opts.Writer).WithForceCompressionFormat(opts.ForceCompressionFormat)
+	options.WithOS(opts.OS).WithArch(opts.Arch).WithVariant(opts.Variant)
 
 	if opts.CompressionLevel != nil {
 		options.WithCompressionLevel(*opts.CompressionLevel)

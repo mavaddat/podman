@@ -313,6 +313,12 @@ func (s *APIServer) registerImagesHandlers(r *mux.Router) error {
 	//    description: Require TLS verification.
 	//    type: boolean
 	//    default: true
+	//  - in: query
+	//    name: platform
+	//    type: string
+	//    description: |
+	//      JSON-encoded OCI platform object to select a specific platform from a manifest list.
+	//      For example, {"os":"linux","architecture":"amd64"}.
 	//  - in: header
 	//    name: X-Registry-Auth
 	//    type: string
@@ -851,6 +857,18 @@ func (s *APIServer) registerImagesHandlers(r *mux.Router) error {
 	//    name: retryDelay
 	//    type: string
 	//    description: Delay between retries in case of push failures. Duration format such as "412ms", or "3.5h".
+	//  - in: query
+	//    name: os
+	//    type: string
+	//    description: OS to use for selecting a platform-specific image from a manifest list.
+	//  - in: query
+	//    name: arch
+	//    type: string
+	//    description: Architecture to use for selecting a platform-specific image from a manifest list.
+	//  - in: query
+	//    name: variant
+	//    type: string
+	//    description: Variant to use for selecting a platform-specific image from a manifest list.
 	//  - in: header
 	//    name: X-Registry-Auth
 	//    type: string
