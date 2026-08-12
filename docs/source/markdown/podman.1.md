@@ -138,9 +138,7 @@ Name of the OCI runtime as specified in containers.conf or absolute path to the 
 #### **--runtime-flag**=*flag*
 
 Adds global flags for the container runtime. To list the supported flags, please
-consult the manpages of the selected container runtime (`runc` is the default
-runtime, the manpage to consult is `runc(8)`.  When the machine is configured
-for cgroup V2, the default runtime is `crun`, the manpage to consult is `crun(8)`.).
+consult the manpages of the selected container runtime (the default runtime is `crun`, the manpage to consult is `crun(8)`).
 
 Default runtime flags can be added in containers.conf.
 
