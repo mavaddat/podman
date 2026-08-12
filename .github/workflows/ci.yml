@@ -33,6 +33,7 @@ jobs:
       sys: ${{ steps.filter.outputs.sys }}
       machine: ${{ steps.filter.outputs.machine }}
       upgrade: ${{ steps.filter.outputs.upgrade }}
+      farm: ${{ steps.filter.outputs.farm }}
       windows: ${{ steps.filter.outputs.windows }}
 
     steps:
@@ -413,6 +414,10 @@ jobs:
             distro: fedora-current
             mode: v5.6.2
             priv: root
+          # farm tests only make sense rootless
+          - test: farm
+            distro: fedora-current
+            priv: rootless
 
     uses: ./.github/workflows/lima.yml
     with:
@@ -707,9 +712,6 @@ jobs:
       - name: Post-run cleanup
         if: always()
         run: ./hack/ci/gha_mac_cleanup.sh
-
-### TODO missing
-# Farm, needs extra setup I need to look into
 
   # Merge protection is setup for this job name, do not change it.
   success:
