@@ -123,19 +123,6 @@ var _ = Describe("Podman Info", func() {
 		Expect(session.OutputToString()).To(ContainSubstring("pids"))
 	})
 
-	It("Podman info: check desired runtime", func() {
-		// defined in .cirrus.yml
-		want := os.Getenv("CI_DESIRED_RUNTIME")
-		if want == "" {
-			if os.Getenv("CIRRUS_CI") == "" {
-				Skip("CI_DESIRED_RUNTIME is not set--this is OK because we're not running under Cirrus")
-			}
-			Fail("CIRRUS_CI is set, but CI_DESIRED_RUNTIME is not! See #14912")
-		}
-		session := podmanTest.PodmanExitCleanly("info", "--format", "{{.Host.OCIRuntime.Name}}")
-		Expect(session.OutputToString()).To(Equal(want))
-	})
-
 	It("Podman info: check desired network backend", func() {
 		session := podmanTest.PodmanExitCleanly("info", "--format", "{{.Host.NetworkBackend}}")
 		Expect(session.OutputToString()).To(Equal("netavark"))
@@ -222,13 +209,13 @@ var _ = Describe("Podman Info", func() {
 	})
 
 	It("Podman info: check desired storage driver", func() {
-		// defined in .cirrus.yml
+		// set by hack/ci/runner.sh
 		want := os.Getenv("CI_DESIRED_STORAGE")
 		if want == "" {
-			if os.Getenv("CIRRUS_CI") == "" {
-				Skip("CI_DESIRED_STORAGE is not set--this is OK because we're not running under Cirrus")
+			if os.Getenv("PODMAN_CI") == "" {
+				Skip("CI_DESIRED_STORAGE is not set--this is OK because we're not running in podman CI")
 			}
-			Fail("CIRRUS_CI is set, but CI_DESIRED_STORAGE is not! See #20161")
+			Fail("PODMAN_CI is set, but CI_DESIRED_STORAGE is not! See #20161")
 		}
 		session := podmanTest.PodmanExitCleanly("info", "--format", "{{.Store.GraphDriverName}}")
 		Expect(session.OutputToString()).To(Equal(want), ".Store.GraphDriverName from podman info")

@@ -13,20 +13,20 @@ echo "::group::Test Setup"
 
 parse_args "$@"
 
-PRESERVE_ENVS="CI_USE_REGISTRY_CACHE,CI_DESIRED_COMPOSEFS,OCI_RUNTIME,CGROUP_MANAGER,STORAGE_FS,STORAGE_OPTIONS_OVERLAY,STORAGE_OPTIONS_VFS,PODMAN_UPGRADE_FROM"
+PRESERVE_ENVS="PODMAN_CI,CI_USE_REGISTRY_CACHE,CI_DESIRED_COMPOSEFS,CI_DESIRED_STORAGE,OCI_RUNTIME,CGROUP_MANAGER,STORAGE_OPTIONS_OVERLAY,STORAGE_OPTIONS_VFS,PODMAN_UPGRADE_FROM"
 # run as root or or not
 SUDO=""
 if [[ "$PRIV" == "root" ]]; then
     SUDO="sudo --non-interactive --preserve-env=$PRESERVE_ENVS"
 fi
 
-STORAGE_FS=overlay
+CI_DESIRED_STORAGE=overlay
 
 case "$DISTRO_NAME" in
 fedora-current)
     ;;
 fedora-prior)
-    STORAGE_FS=vfs
+    CI_DESIRED_STORAGE=vfs
     ;;
 fedora-rawhide)
     # On rawhide enable composefs testing
@@ -58,8 +58,18 @@ if [[ -x $LCR ]]; then
 fi
 
 ## Used in tests so we need to export them
-export STORAGE_FS
-export CI_DESIRED_COMPOSEFS
+export CI_DESIRED_STORAGE
+
+# Marker for the tests so they can insist the CI_DESIRED_* values are set
+# instead of silently skipping. GITHUB_ACTIONS is no use here, it is not
+# carried into the VM, and anyone can run our tests under github actions.
+export PODMAN_CI=1
+
+# composefs is only written into the rootful config below, so only tell the
+# tests to expect it when we actually run rootful.
+if [[ "$PRIV" == "root" ]]; then
+    export CI_DESIRED_COMPOSEFS
+fi
 
 ### SETUP HERE
 
@@ -70,7 +80,7 @@ if [[ -e $conf ]]; then
 fi
 sudo tee $conf << EOF
 [storage]
-driver = "$STORAGE_FS"
+driver = "$CI_DESIRED_STORAGE"
 EOF
 
 if [[ -n "$CI_DESIRED_COMPOSEFS" ]]; then
