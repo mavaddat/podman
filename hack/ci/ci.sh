@@ -27,7 +27,7 @@ limactl --yes start --plain --name=$LIMA_VM_NAME --cpus $(nproc) --memory 8 --ne
 
 limactl shell $LIMA_VM_NAME mkdir -p /var/tmp/podman-container-tools
 
-limactl copy "$REPO_DIR" $LIMA_VM_NAME:/var/tmp/podman-container-tools/podman
+limactl copy -r "$REPO_DIR" $LIMA_VM_NAME:/var/tmp/podman-container-tools/podman
 
 echo "::endgroup::"
 
@@ -37,7 +37,7 @@ limactl shell --preserve-env --workdir /var/tmp/podman-container-tools/podman $L
 rc=$?
 
 echo "::group::Collecting logs"
-limactl copy $LIMA_VM_NAME:/var/tmp/podman-container-tools/podman/hack/ci/logs/ $SCRIPT_DIR/logs
+limactl copy -r $LIMA_VM_NAME:/var/tmp/podman-container-tools/podman/hack/ci/logs/ $SCRIPT_DIR/logs
 echo "::endgroup::"
 
 # TODO: figure out how to cache the binaries from the build job to the actual test tasks
