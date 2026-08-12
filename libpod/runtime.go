@@ -1051,6 +1051,17 @@ func (r *Runtime) DefaultOCIRuntime() OCIRuntime {
 	return r.defaultOCIRuntime
 }
 
+// RuntimeFeatures returns the raw output of an OCI runtime's
+// "features" command by its name.
+// It returns an empty string if the runtime doesn't exist or
+// does not support the command.
+func (r *Runtime) RuntimeFeatures(name string) string {
+	if ociRuntime, ok := r.ociRuntimes[name]; ok {
+		return ociRuntime.RuntimeFeatures()
+	}
+	return ""
+}
+
 // StorageConfig retrieves the storage options for the container runtime
 func (r *Runtime) StorageConfig() storage.StoreOptions {
 	return r.storageConfig
