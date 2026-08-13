@@ -3,6 +3,7 @@
 package integration
 
 import (
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -50,6 +51,24 @@ var _ = Describe("Podman artifact", func() {
 		// Make sure the names are what we expect
 		Expect(output).To(ContainElement(artifact1Name))
 		Expect(output).To(ContainElement(artifact2Name))
+
+		// --format=json should work, produce valid json
+		listFormatJsonSession := podmanTest.PodmanExitCleanly("artifact", "ls", "--format", "json")
+		Expect(listFormatJsonSession).Should(ExitCleanly())
+		jsonOutput := listFormatJsonSession.OutputToString()
+		Expect(jsonOutput).To(BeValidJSON())
+
+		// --format=json should contain repository and tag fields
+		jsonArtifactsList := []map[string]any{}
+		jsonUnmarshalErr := json.Unmarshal([]byte(jsonOutput), &jsonArtifactsList)
+
+		Expect(jsonUnmarshalErr).ToNot(HaveOccurred())
+		Expect(jsonArtifactsList).ToNot(BeEmpty())
+
+		for _, image := range jsonArtifactsList {
+			Expect(image).To(HaveKey("Repository"))
+			Expect(image).To(HaveKey("Tag"))
+		}
 
 		// Check default digest length (should be 12)
 		defaultFormatSession := podmanTest.PodmanExitCleanly("artifact", "ls", "--format", "{{.Digest}}")
