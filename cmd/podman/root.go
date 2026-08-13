@@ -491,7 +491,7 @@ func configHook() {
 
 func loggingHook() {
 	if debug {
-		if logLevel != defaultLogLevel {
+		if rootCmd.Flag("log-level").Changed {
 			fmt.Fprintf(os.Stderr, "Setting --log-level and --debug is not allowed\n")
 			os.Exit(1)
 		}
