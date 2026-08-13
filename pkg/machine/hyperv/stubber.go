@@ -661,7 +661,7 @@ func (h HyperVStubber) StopHostNetworking(mc *vmconfigs.MachineConfig, vmType de
 	err := machine.StopWinProxy(mc.Name, vmType)
 	// in podman 4, this was a "soft" error; keeping behavior as such
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "Could not stop API forwarding service (win-sshproxy.exe): %s\n", err.Error())
+		fmt.Fprintf(os.Stderr, "Could not stop API forwarding service (win-sshproxy.exe): %v\n", err)
 	}
 
 	return nil
