@@ -275,6 +275,19 @@ help: ## Print this help message
 .check-ci-yaml:
 	hack/ci/ci_yaml_test.py
 
+# Self-tests that ship next to the tooling they cover. These only need python3,
+# bash and perl, so they can run in validate-source.
+# Not included here:
+#   hack/xref-helpmsgs-manpages.t   needs a built podman and docs, so it belongs
+#                                   with validate-binaries instead
+.PHONY: .check-self-tests
+.check-self-tests:
+	hack/markdown-preprocess.t
+	hack/ci/pr-removes-fixed-skips.t
+	hack/ci/pr-should-include-tests.t
+	hack/ci/logformatter.t
+	test/system/helpers.t
+
 .PHONY: lint
 lint: golangci-lint ## Run all linters (golangci-lint + pre-commit hooks)
 ifeq ($(PRE_COMMIT),)
@@ -323,7 +336,7 @@ codespell:
 
 # Code validation target that **DOES NOT** require building podman binaries
 .PHONY: validate-source
-validate-source: lint shfmt .commit-subject-check .check-ci-yaml swagger-check tests-expect-exit pr-removes-fixed-skips
+validate-source: lint shfmt .commit-subject-check .check-ci-yaml .check-self-tests swagger-check tests-expect-exit pr-removes-fixed-skips
 
 # Code validation target that **DOES** require building podman binaries
 .PHONY: validate-binaries
