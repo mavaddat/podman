@@ -1056,7 +1056,7 @@ func k8sSecretFromSecretManager(name string, secretsManager *secrets.SecretsMana
 		secrets = make(map[string][]byte)
 		var secret v1.Secret
 		if err := yaml.Unmarshal(inputSecret, &secret); err != nil {
-			return nil, fmt.Errorf("secret %v is not valid JSON/YAML: %v", name, err)
+			return nil, fmt.Errorf("secret %v is not valid JSON/YAML: %w", name, err)
 		}
 
 		maps.Copy(secrets, secret.Data)
@@ -1139,7 +1139,7 @@ func envVarValue(env v1.EnvVar, opts *CtrSpecGenOptions) (*string, error) {
 				err = fmt.Errorf("secret %v has not %v key", secKeyRef.Name, secKeyRef.Key)
 			}
 			if secKeyRef.Optional == nil || !*secKeyRef.Optional {
-				return nil, fmt.Errorf("cannot set env %v: %v", env.Name, err)
+				return nil, fmt.Errorf("cannot set env %v: %w", env.Name, err)
 			}
 			return nil, nil
 		}

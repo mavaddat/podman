@@ -129,7 +129,7 @@ func processMultipartQuadlets(tempDir string, r *http.Request) ([]string, error)
 	var filePaths []string
 	for {
 		part, err := reader.NextPart()
-		if err == io.EOF {
+		if errors.Is(err, io.EOF) {
 			break
 		}
 		if err != nil {

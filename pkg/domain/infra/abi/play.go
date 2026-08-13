@@ -1630,7 +1630,7 @@ func splitMultiDocYAML(yamlContent []byte) ([][]byte, error) {
 		var o any
 		// read individual document
 		err := d.Decode(&o)
-		if err == io.EOF {
+		if errors.Is(err, io.EOF) {
 			break
 		}
 		if err != nil {

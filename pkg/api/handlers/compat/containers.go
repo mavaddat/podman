@@ -403,13 +403,13 @@ func LibpodToContainer(l *libpod.Container, sz bool, includeHealth bool) (*handl
 			for _, b := range bindings {
 				hostPortInt, err := strconv.Atoi(b.HostPort)
 				if err != nil {
-					return nil, fmt.Errorf("invalid HostPort: %v", err)
+					return nil, fmt.Errorf("invalid HostPort: %w", err)
 				}
 				addr := netip.Addr{}
 				if b.HostIP != "" {
 					addr, err = netip.ParseAddr(b.HostIP)
 					if err != nil {
-						return nil, fmt.Errorf("invalid HostIP: %v", err)
+						return nil, fmt.Errorf("invalid HostIP: %w", err)
 					}
 				}
 

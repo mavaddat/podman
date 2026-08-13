@@ -721,7 +721,7 @@ func startLocked(mc *vmconfigs.MachineConfig, mp vmconfigs.VMProvider, dirs *mac
 	if !connected {
 		msg := "machine did not transition into running state"
 		if sshError != nil {
-			return fmt.Errorf("%s: ssh error: %v", msg, sshError)
+			return fmt.Errorf("%s: ssh error: %w", msg, sshError)
 		}
 		return errors.New(msg)
 	}

@@ -1001,12 +1001,12 @@ func (c *Container) addCheckpointImageMetadata(importBuilder *buildah.Builder) e
 	// Get information about host environment
 	hostInfo, err := c.Runtime().hostInfo()
 	if err != nil {
-		return fmt.Errorf("getting host info: %v", err)
+		return fmt.Errorf("getting host info: %w", err)
 	}
 
 	criuVersion, err := criu.GetCriuVersion()
 	if err != nil {
-		return fmt.Errorf("getting criu version: %v", err)
+		return fmt.Errorf("getting criu version: %w", err)
 	}
 
 	rootfsImageID, rootfsImageName := c.Image()
@@ -2548,13 +2548,13 @@ func (c *Container) generateCurrentUserGroupEntry() (string, int, error) {
 
 	// Look up group name to see if it exists in the image.
 	_, err = lookup.GetGroup(c.state.Mountpoint, g.Name)
-	if err != runcuser.ErrNoGroupEntries {
+	if !errors.Is(err, runcuser.ErrNoGroupEntries) {
 		return "", 0, err
 	}
 
 	// Look up GID to see if it exists in the image.
 	_, err = lookup.GetGroup(c.state.Mountpoint, g.Gid)
-	if err != runcuser.ErrNoGroupEntries {
+	if !errors.Is(err, runcuser.ErrNoGroupEntries) {
 		return "", 0, err
 	}
 
@@ -2598,7 +2598,7 @@ func (c *Container) generateUserGroupEntry(addedGID int) (string, error) {
 
 	// Check if the group already exists
 	g, err := lookup.GetGroup(c.state.Mountpoint, group)
-	if err != runcuser.ErrNoGroupEntries {
+	if !errors.Is(err, runcuser.ErrNoGroupEntries) {
 		return "", err
 	}
 
@@ -2723,13 +2723,13 @@ func (c *Container) setHomeEnvIfNeeded() error {
 func (c *Container) userPasswdEntry(u *user.User) (string, error) {
 	// Look up the user to see if it exists in the container image.
 	_, err := lookup.GetUser(c.state.Mountpoint, u.Username)
-	if err != runcuser.ErrNoPasswdEntries {
+	if !errors.Is(err, runcuser.ErrNoPasswdEntries) {
 		return "", err
 	}
 
 	// Look up the UID to see if it exists in the container image.
 	_, err = lookup.GetUser(c.state.Mountpoint, u.Uid)
-	if err != runcuser.ErrNoPasswdEntries {
+	if !errors.Is(err, runcuser.ErrNoPasswdEntries) {
 		return "", err
 	}
 
@@ -2788,7 +2788,7 @@ func (c *Container) generateUserPasswdEntry(addedUID int) (string, error) {
 
 	// Look up the user to see if it exists in the container image
 	_, err = lookup.GetUser(c.state.Mountpoint, userspec)
-	if err != runcuser.ErrNoPasswdEntries {
+	if !errors.Is(err, runcuser.ErrNoPasswdEntries) {
 		return "", err
 	}
 

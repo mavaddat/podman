@@ -103,7 +103,7 @@ func ManifestCreate(w http.ResponseWriter, r *http.Request) {
 	}
 
 	status := http.StatusOK
-	if _, err := utils.SupportedVersion(r, "< 4.0.0"); err == apiutil.ErrVersionNotSupported {
+	if _, err := utils.SupportedVersion(r, "< 4.0.0"); errors.Is(err, apiutil.ErrVersionNotSupported) {
 		status = http.StatusCreated
 	}
 

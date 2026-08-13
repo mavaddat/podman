@@ -153,7 +153,8 @@ func stopUserModeNetworking(mc *vmconfigs.MachineConfig) error {
 
 	err = wslPipe(stopUserModeNet, userModeDist, "bash")
 	if err != nil {
-		if exitErr, ok := err.(*exec.ExitError); ok {
+		var exitErr *exec.ExitError
+		if errors.As(err, &exitErr) {
 			switch exitErr.ExitCode() {
 			case 2:
 				err = fmt.Errorf("startup state was missing")
@@ -184,7 +185,8 @@ func launchUserModeNetDist(exeFile string) error {
 	if err := wslPipe(cmdStr, userModeDist, "bash"); err != nil {
 		_ = terminateDist(userModeDist)
 
-		if exitErr, ok := err.(*exec.ExitError); ok {
+		var exitErr *exec.ExitError
+		if errors.As(err, &exitErr) {
 			switch exitErr.ExitCode() {
 			case 2:
 				return fmt.Errorf("another user-mode network is running, only one can be used at a time: shut down all machines and run wsl --shutdown if this is unexpected")
