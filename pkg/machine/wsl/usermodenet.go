@@ -162,7 +162,7 @@ func stopUserModeNetworking(mc *vmconfigs.MachineConfig) error {
 				err = fmt.Errorf("route state is missing a default route")
 			}
 		}
-		logrus.Warnf("problem tearing down user-mode networking cleanly, forcing: %s", err.Error())
+		logrus.Warnf("problem tearing down user-mode networking cleanly, forcing: %v", err)
 	}
 
 	return terminateDist(userModeDist)

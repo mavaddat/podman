@@ -106,7 +106,7 @@ func LaunchWinProxy(opts WinProxyOpts, noInfo bool) {
 	if !noInfo {
 		if err != nil {
 			fmt.Fprintln(os.Stderr, "API forwarding for Docker API clients is not available due to the following startup failures.")
-			fmt.Fprintf(os.Stderr, "\t%s\n", err.Error())
+			fmt.Fprintf(os.Stderr, "\t%v\n", err)
 			fmt.Fprintln(os.Stderr, "\nPodman clients are still able to connect.")
 		} else {
 			fmt.Printf("API forwarding listening on: %s\n", pipeName)
