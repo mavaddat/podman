@@ -11,6 +11,7 @@ import (
 	"math"
 	"net"
 	"os"
+	"path/filepath"
 	"regexp"
 	"runtime"
 	"slices"
@@ -20,6 +21,7 @@ import (
 
 	"github.com/docker/go-units"
 	spec "github.com/opencontainers/runtime-spec/specs-go"
+	"github.com/sirupsen/logrus"
 	"go.podman.io/common/libimage"
 	"go.podman.io/common/libnetwork/types"
 	"go.podman.io/common/pkg/config"
@@ -27,6 +29,7 @@ import (
 	"go.podman.io/common/pkg/secrets"
 	"go.podman.io/image/v5/manifest"
 	itypes "go.podman.io/image/v5/types"
+	"go.podman.io/podman/v6/libpod"
 	"go.podman.io/podman/v6/libpod/define"
 	ann "go.podman.io/podman/v6/pkg/annotations"
 	"go.podman.io/podman/v6/pkg/domain/entities"
@@ -164,8 +167,10 @@ type CtrSpecGenOptions struct {
 	PodInfraID string
 	// ConfigMaps the configuration maps for environment variables
 	ConfigMaps []v1.ConfigMap
-	// SeccompPaths for finding the seccomp profile path
-	SeccompPaths *KubeSeccompPaths
+	// SeccompAnnotationPaths contains deprecated annotation-based seccomp profiles parsed from the pod
+	SeccompAnnotationPaths *SeccompAnnotationPaths
+	// SeccompProfileRoot is the base directory for Localhost seccomp profiles
+	SeccompProfileRoot string
 	// ReadOnly make all containers root file system readonly
 	ReadOnly itypes.OptionalBool
 	// RestartPolicy defines the restart policy of the container
@@ -287,7 +292,11 @@ func ToSpecGen(ctx context.Context, opts *CtrSpecGenOptions) (*specgen.SpecGener
 
 	s.InitContainerType = opts.InitContainerType
 
-	setupSecurityContext(s, opts.Container.SecurityContext, opts.PodSecurityContext)
+	err = setupSecurityContext(s, opts.Container.SecurityContext, opts.PodSecurityContext, opts.SeccompProfileRoot, opts.SeccompAnnotationPaths, opts.Container.Name)
+	if err != nil {
+		return nil, fmt.Errorf("failed to configure securityContext: %w", err)
+	}
+
 	err = setupLivenessProbe(s, opts.Container, opts.RestartPolicy)
 	if err != nil {
 		return nil, fmt.Errorf("failed to configure livenessProbe: %w", err)
@@ -296,11 +305,6 @@ func ToSpecGen(ctx context.Context, opts *CtrSpecGenOptions) (*specgen.SpecGener
 	if err != nil {
 		return nil, fmt.Errorf("failed to configure startupProbe: %w", err)
 	}
-
-	// Since we prefix the container name with pod name to work-around the uniqueness requirement,
-	// the seccomp profile should reference the actual container name from the YAML
-	// but apply to the containers with the prefixed name
-	s.SeccompProfilePath = opts.SeccompPaths.FindForContainer(opts.Container.Name)
 
 	setupContainerResources(s, opts.Container)
 
@@ -957,7 +961,7 @@ func setupContainerDevices(s *specgen.SpecGenerator, containerYAML v1.Container)
 	return nil
 }
 
-func setupSecurityContext(s *specgen.SpecGenerator, securityContext *v1.SecurityContext, podSecurityContext *v1.PodSecurityContext) {
+func setupSecurityContext(s *specgen.SpecGenerator, securityContext *v1.SecurityContext, podSecurityContext *v1.PodSecurityContext, profileRoot string, seccompAnnotationPaths *SeccompAnnotationPaths, ctrName string) error {
 	if securityContext == nil {
 		securityContext = &v1.SecurityContext{}
 	}
@@ -1002,6 +1006,54 @@ func setupSecurityContext(s *specgen.SpecGenerator, securityContext *v1.Security
 			s.SelinuxOpts = append(s.SelinuxOpts, fmt.Sprintf("filetype:%s", seopt.FileType))
 		}
 	}
+
+	seccompProfile := securityContext.SeccompProfile
+	if seccompProfile == nil && seccompAnnotationPaths != nil {
+		// Since we prefix the container name with pod name to work-around the uniqueness requirement,
+		// the seccomp profile should reference the actual container name from the YAML
+		// but apply to the containers with the prefixed name
+		if seccompAnnotationPath, ok := seccompAnnotationPaths.FindForContainer(ctrName); ok {
+			s.SeccompProfilePath = seccompAnnotationPath
+			logrus.Warnf("Container %q: Kubernetes seccomp annotation is deprecated; use securityContext.seccompProfile instead", ctrName)
+		}
+	}
+	if seccompProfile == nil && s.SeccompProfilePath == "" {
+		seccompProfile = podSecurityContext.SeccompProfile
+	}
+	if seccompProfile == nil && s.SeccompProfilePath == "" && seccompAnnotationPaths != nil {
+		if seccompAnnotationPaths.podPath != "" {
+			s.SeccompProfilePath = seccompAnnotationPaths.podPath
+			logrus.Warn("Pod-level Kubernetes seccomp annotation is deprecated; use spec.securityContext.seccompProfile instead")
+		}
+	}
+	if seccompProfile == nil && s.SeccompProfilePath == "" {
+		seccompProfile = &v1.SeccompProfile{Type: v1.SeccompProfileTypeRuntimeDefault}
+	}
+
+	if seccompProfile != nil {
+		switch seccompProfile.Type {
+		case v1.SeccompProfileTypeRuntimeDefault:
+			seccompProfilePath, err := libpod.DefaultSeccompPath()
+			if err != nil {
+				return err
+			}
+			s.SeccompProfilePath = seccompProfilePath
+		case v1.SeccompProfileTypeUnconfined:
+			s.SeccompProfilePath = "unconfined"
+		case v1.SeccompProfileTypeLocalhost:
+			if seccompProfile.LocalhostProfile == nil || *seccompProfile.LocalhostProfile == "" {
+				return fmt.Errorf("seccomp profile type %q requires localhostProfile", seccompProfile.Type)
+			}
+			localhostProfile := *seccompProfile.LocalhostProfile
+			if err := validateSeccompLocalhostProfile(localhostProfile); err != nil {
+				return fmt.Errorf("invalid seccomp profile path %q: %w", localhostProfile, err)
+			}
+			s.SeccompProfilePath = filepath.Join(profileRoot, filepath.FromSlash(localhostProfile))
+		default:
+			return fmt.Errorf("invalid seccomp profile type: %s", seccompProfile.Type)
+		}
+	}
+
 	if caps := securityContext.Capabilities; caps != nil {
 		for _, capability := range caps.Add {
 			s.CapAdd = append(s.CapAdd, string(capability))
@@ -1031,6 +1083,8 @@ func setupSecurityContext(s *specgen.SpecGenerator, securityContext *v1.Security
 	for _, group := range podSecurityContext.SupplementalGroups {
 		s.Groups = append(s.Groups, strconv.FormatInt(group, 10))
 	}
+
+	return nil
 }
 
 func quantityToInt64(quantity *resource.Quantity) int64 {
