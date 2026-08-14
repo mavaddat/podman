@@ -12,12 +12,13 @@ import (
 	"net"
 	"os"
 	"path/filepath"
-	"regexp"
 	"runtime"
 	"slices"
 	"strconv"
 	"strings"
 	"time"
+
+	"go.podman.io/storage/pkg/regexp"
 
 	"github.com/docker/go-units"
 	spec "github.com/opencontainers/runtime-spec/specs-go"
@@ -1210,13 +1211,13 @@ func envVarValue(env v1.EnvVar, opts *CtrSpecGenOptions) (*string, error) {
 	return &env.Value, nil
 }
 
+var (
+	fieldPathLabelRegex      = regexp.Delayed(`^metadata.labels\['(.+)'\]$`)
+	fieldPathAnnotationRegex = regexp.Delayed(`^metadata.annotations\['(.+)'\]$`)
+)
+
 func envVarValueFieldRef(env v1.EnvVar, opts *CtrSpecGenOptions) (*string, error) {
 	fieldRef := env.ValueFrom.FieldRef
-
-	fieldPathLabelPattern := `^metadata.labels\['(.+)'\]$`
-	fieldPathLabelRegex := regexp.MustCompile(fieldPathLabelPattern)
-	fieldPathAnnotationPattern := `^metadata.annotations\['(.+)'\]$`
-	fieldPathAnnotationRegex := regexp.MustCompile(fieldPathAnnotationPattern)
 
 	fieldPath := fieldRef.FieldPath
 
