@@ -321,7 +321,7 @@ func (r *ConmonOCIRuntime) StopContainer(ctr *Container, timeout uint, all bool)
 	// Ping the container to see if it's alive
 	// If it's not, it's already stopped, return
 	err := unix.Kill(ctr.state.PID, 0)
-	if err == unix.ESRCH {
+	if errors.Is(err, unix.ESRCH) {
 		return nil
 	}
 
@@ -1559,7 +1559,7 @@ func httpAttachTerminalCopy(container *net.UnixConn, http *bufio.ReadWriter, cid
 			}
 		}
 		if err != nil {
-			if err == io.EOF {
+			if errors.Is(err, io.EOF) {
 				return nil
 			}
 			return err
@@ -1645,7 +1645,7 @@ func httpAttachNonTerminalCopy(container *net.UnixConn, http *bufio.ReadWriter, 
 			}
 		}
 		if err != nil {
-			if err == io.EOF {
+			if errors.Is(err, io.EOF) {
 				return nil
 			}
 

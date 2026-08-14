@@ -124,7 +124,7 @@ func (h HyperVStubber) CreateVM(_ define.CreateVMOpts, mc *vmconfigs.MachineConf
 		}
 
 		if err := vsock.RemoveAllHVSockRegistryEntries(); err != nil {
-			return fmt.Errorf("unable to remove hvsock registry entries: %q", err)
+			return fmt.Errorf("unable to remove hvsock registry entries: %w", err)
 		}
 
 		return nil
@@ -796,7 +796,7 @@ func resizeDisk(newSize strongunits.GiB, imagePath *define.VMFile) error {
 	resize.Stderr = os.Stderr
 	resize.Env = append(os.Environ(), "IMAGE_PATH="+imagePath.GetPath())
 	if err := resize.Run(); err != nil {
-		return fmt.Errorf("resizing image: %q", err)
+		return fmt.Errorf("resizing image: %w", err)
 	}
 	return nil
 }

@@ -114,7 +114,7 @@ func loadUnitsFromDir(sourcePath string) ([]*parser.UnitFile, error) {
 				if prevError == nil {
 					prevError = err
 				} else {
-					prevError = fmt.Errorf("%s\n%s", prevError, err)
+					prevError = fmt.Errorf("%w\n%w", prevError, err)
 				}
 			} else {
 				seen[name] = void
@@ -130,7 +130,7 @@ func loadUnitDropins(unit *parser.UnitFile, sourcePaths []string) error {
 	var prevError error
 	reportError := func(err error) {
 		if prevError != nil {
-			err = fmt.Errorf("%s\n%s", prevError, err)
+			err = fmt.Errorf("%w\n%w", prevError, err)
 		}
 		prevError = err
 	}

@@ -1564,7 +1564,7 @@ func (c *Container) pause() error {
 		if err := c.removeTransientFiles(context.Background(),
 			c.config.StartupHealthCheckConfig != nil && !c.state.StartupHCPassed,
 			c.state.HCUnitName); err != nil {
-			return fmt.Errorf("failed to remove HealthCheck timer: %v", err)
+			return fmt.Errorf("failed to remove HealthCheck timer: %w", err)
 		}
 	}
 
@@ -2359,7 +2359,7 @@ func (c *Container) postDeleteHooks(ctx context.Context) error {
 				)
 				if err != nil {
 					logrus.Warnf("Container %s: poststop hook %d: %v", c.ID(), i, err)
-					if hookErr != err {
+					if !errors.Is(hookErr, err) {
 						logrus.Debugf("container %s: poststop hook %d (hook error): %v", c.ID(), i, hookErr)
 					}
 					stdoutString := stdout.String()
@@ -2494,7 +2494,7 @@ func (c *Container) setupOCIHooks(ctx context.Context, config *spec.Spec) (map[s
 	)
 	if err != nil {
 		logrus.Warnf("Container %s: precreate hook: %v", c.ID(), err)
-		if hookErr != nil && hookErr != err {
+		if hookErr != nil && !errors.Is(hookErr, err) {
 			logrus.Debugf("container %s: precreate hook (hook error): %v", c.ID(), hookErr)
 		}
 		return nil, err
