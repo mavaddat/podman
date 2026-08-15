@@ -269,8 +269,14 @@ func (s *PodmanSession) ErrorToString() string {
 // ErrorToStringArray returns the stderr output as a []string
 // where each array item is a line split by newline
 func (s *PodmanSession) ErrorToStringArray() []string {
+	var results []string
 	output := string(s.Err.Contents())
-	return strings.Split(output, "\n")
+	for line := range strings.SplitSeq(output, "\n") {
+		if line != "" {
+			results = append(results, line)
+		}
+	}
+	return results
 }
 
 // GrepString takes session output and behaves like grep. it returns a bool
