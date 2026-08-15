@@ -198,7 +198,11 @@ function run_bindings() {
 }
 
 function run_bud() {
-    $SUDO ./test/buildah-bud/run-buildah-bud-tests |& logformatter
+    local args=()
+    if [[ "$MODE" == "remote" ]]; then
+        args+=(--remote)
+    fi
+    $SUDO ./test/buildah-bud/run-buildah-bud-tests "${args[@]}" |& logformatter
 }
 
 function run_compose_v2() {
