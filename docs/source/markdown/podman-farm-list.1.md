@@ -25,6 +25,10 @@ Valid placeholders for the Go template listed below:
 | .Name           | Farm name                                                             |
 | .ReadWrite      | Indicates if this farm can be modified using the podman farm commands |
 
+#### **--quiet**, **-q**
+
+Print farm output in quiet mode. Only print the farm names.
+
 ## EXAMPLE
 
 List all farms:
@@ -61,6 +65,13 @@ $ podman farm list --format json
 Show only farm names:
 ```
 $ podman farm list --format "{{.Name}}"
+farm1
+farm2
+```
+
+Show only farm names using **--quiet**:
+```
+$ podman farm list --quiet
 farm1
 farm2
 ```
