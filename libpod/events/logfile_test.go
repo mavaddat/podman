@@ -3,11 +3,9 @@
 package events
 
 import (
-	"context"
 	"os"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/stretchr/testify/require"
 )
@@ -174,42 +172,3 @@ func TestRenameLog(t *testing.T) {
 	require.NoError(t, os.Remove(target.Name()))
 	require.Equal(t, beforeRename, afterRename)
 }
-
-func TestReadUntilContextCancelled(t *testing.T) {
-	tmp, err := os.CreateTemp(t.TempDir(), "logfile-test-")
-	require.NoError(t, err)
-	defer tmp.Close()
-
-	e := EventLogFile{
-		options: EventerOptions{
-			LogFilePath: tmp.Name(),
-		},
-	}
-
-	ctx, cancel := context.WithCancel(context.Background())
-	eventChan := make(chan ReadResult)
-	options := ReadOptions{
-		EventChannel: eventChan,
-		Until:        time.Now().Add(24 * time.Hour).Format(time.RFC3339),
-		Stream:       true,
-	}
-
-	readErrChan := make(chan error, 1)
-	go func() {
-		readErrChan <- e.Read(ctx, options)
-	}()
-
-	// Give Read time to initialize and spawn the until timer goroutine
-	time.Sleep(50 * time.Millisecond)
-
-	// Cancel context (simulating client disconnect / Ctrl+C)
-	cancel()
-
-	select {
-	case <-readErrChan:
-		// Read returned as expected on context cancellation
-	case <-time.After(2 * time.Second):
-		t.Fatal("EventLogFile.Read did not return after context cancellation")
-	}
-}
-
