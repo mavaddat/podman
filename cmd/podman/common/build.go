@@ -731,7 +731,7 @@ func buildFlagsWrapperToOptions(c *cobra.Command, contextDir string, flags *Buil
 // otherwise it returns true
 func useLayers() string {
 	layers := os.Getenv("BUILDAH_LAYERS")
-	if strings.ToLower(layers) == "false" || layers == "0" {
+	if strings.EqualFold(layers, "false") || layers == "0" {
 		return "false"
 	}
 	return "true"

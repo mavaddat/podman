@@ -1021,5 +1021,5 @@ func promptUpdateSystemConn() (bool, error) {
 	if err != nil {
 		return false, err
 	}
-	return strings.ToLower(answer)[0] == 'y', nil
+	return len(answer) > 0 && (answer[0] == 'y' || answer[0] == 'Y'), nil
 }
