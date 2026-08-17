@@ -321,10 +321,8 @@ func exposePorts(pm rkport.Manager, portMappings []types.PortMapping, childIP st
 					ChildIP:    childIP,
 				}
 
-				for _, spec = range splitDualStackSpecIfWsl(spec) {
-					if err := validateAndAddPort(ctx, pm, spec); err != nil {
-						return err
-					}
+				if err := validateAndAddPort(ctx, pm, spec); err != nil {
+					return err
 				}
 			}
 		}
