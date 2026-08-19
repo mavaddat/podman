@@ -139,7 +139,7 @@ require (
 	github.com/miekg/pkcs11 v1.1.2 // indirect
 	github.com/mistifyio/go-zfs/v4 v4.0.0 // indirect
 	github.com/moby/buildkit v0.31.2 // indirect
-	github.com/moby/go-archive v0.2.0 // indirect
+	github.com/moby/go-archive v0.3.0 // indirect
 	github.com/moby/patternmatcher v0.6.1 // indirect
 	github.com/moby/sys/devices v0.1.0 // indirect
 	github.com/moby/sys/mountinfo v0.7.2 // indirect
