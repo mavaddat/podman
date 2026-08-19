@@ -48,7 +48,7 @@ require (
 	github.com/nxadm/tail v1.4.11
 	github.com/onsi/ginkgo/v2 v2.32.1
 	github.com/onsi/gomega v1.42.1
-	github.com/opencontainers/cgroups v0.0.9
+	github.com/opencontainers/cgroups v0.1.0
 	github.com/opencontainers/go-digest v1.0.0
 	github.com/opencontainers/image-spec v1.1.1
 	github.com/opencontainers/runtime-spec v1.3.0
