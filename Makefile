@@ -283,6 +283,7 @@ help: ## Print this help message
 .PHONY: .check-self-tests
 .check-self-tests:
 	hack/markdown-preprocess.t
+	hack/swagger-check.t
 	hack/ci/pr-removes-fixed-skips.t
 	hack/ci/pr-should-include-tests.t
 	hack/ci/logformatter.t
