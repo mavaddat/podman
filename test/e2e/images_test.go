@@ -3,9 +3,10 @@
 package integration
 
 import (
+	"cmp"
 	"encoding/json"
 	"fmt"
-	"sort"
+	"slices"
 	"strings"
 
 	"github.com/docker/go-units"
@@ -322,24 +323,22 @@ WORKDIR /test
 		}
 
 		sortedArr := sortValueTest("created", 0, "CreatedAt")
-		Expect(sort.SliceIsSorted(sortedArr, func(i, j int) bool { return sortedArr[i] > sortedArr[j] })).To(BeTrue())
+		Expect(slices.IsSortedFunc(sortedArr, func(a, b string) int { return cmp.Compare(b, a) })).To(BeTrue())
 
 		sortedArr = sortValueTest("id", 0, "ID")
-		Expect(sort.SliceIsSorted(sortedArr, func(i, j int) bool { return sortedArr[i] < sortedArr[j] })).To(BeTrue())
+		Expect(slices.IsSorted(sortedArr)).To(BeTrue())
 
 		sortedArr = sortValueTest("repository", 0, "Repository")
-		Expect(sort.SliceIsSorted(sortedArr, func(i, j int) bool { return sortedArr[i] < sortedArr[j] })).To(BeTrue())
+		Expect(slices.IsSorted(sortedArr)).To(BeTrue())
 
 		sortedArr = sortValueTest("size", 0, "Size")
-		Expect(sort.SliceIsSorted(sortedArr, func(i, j int) bool {
-			size1, _ := units.FromHumanSize(sortedArr[i])
-			size2, _ := units.FromHumanSize(sortedArr[j])
-			return size1 < size2
+		Expect(slices.IsSortedFunc(sortedArr, func(a, b string) int {
+			size1, _ := units.FromHumanSize(a)
+			size2, _ := units.FromHumanSize(b)
+			return cmp.Compare(size1, size2)
 		})).To(BeTrue())
 		sortedArr = sortValueTest("tag", 0, "Tag")
-		Expect(sort.SliceIsSorted(sortedArr,
-			func(i, j int) bool { return sortedArr[i] < sortedArr[j] })).
-			To(BeTrue())
+		Expect(slices.IsSorted(sortedArr)).To(BeTrue())
 
 		sortValueTest("badvalue", 125, "Tag")
 		sortValueTest("id", 125, "badvalue")

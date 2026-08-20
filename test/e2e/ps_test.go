@@ -3,9 +3,10 @@
 package integration
 
 import (
+	"cmp"
 	"fmt"
 	"regexp"
-	"sort"
+	"slices"
 	"strconv"
 
 	"github.com/docker/go-units"
@@ -507,18 +508,18 @@ var _ = Describe("Podman ps", func() {
 		// TODO: This may be broken - the test was running without the
 		// ability to perform any sorting for months and succeeded
 		// without error.
-		Expect(sort.SliceIsSorted(sortedArr, func(i, j int) bool {
+		Expect(slices.IsSortedFunc(sortedArr, func(a, b string) int {
 			r := regexp.MustCompile(`^\S+\s+\(virtual (\S+)\)`)
-			matches1 := r.FindStringSubmatch(sortedArr[i])
-			matches2 := r.FindStringSubmatch(sortedArr[j])
+			matches1 := r.FindStringSubmatch(a)
+			matches2 := r.FindStringSubmatch(b)
 
 			// sanity check in case an oddly formatted size appears
 			if len(matches1) < 2 || len(matches2) < 2 {
-				return sortedArr[i] < sortedArr[j]
+				return cmp.Compare(a, b)
 			}
 			size1, _ := units.FromHumanSize(matches1[1])
 			size2, _ := units.FromHumanSize(matches2[1])
-			return size1 < size2
+			return cmp.Compare(size1, size2)
 		})).To(BeTrue(), "slice is sorted")
 	})
 
@@ -538,7 +539,7 @@ var _ = Describe("Podman ps", func() {
 		Expect(session.OutputToString()).ToNot(ContainSubstring("COMMAND"))
 
 		sortedArr := session.OutputToStringArray()
-		Expect(sort.SliceIsSorted(sortedArr, func(i, j int) bool { return sortedArr[i] < sortedArr[j] })).To(BeTrue(), "slice is sorted")
+		Expect(slices.IsSorted(sortedArr)).To(BeTrue(), "slice is sorted")
 	})
 
 	It("podman --pod", func() {

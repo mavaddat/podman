@@ -1,10 +1,11 @@
 package farm
 
 import (
+	"cmp"
 	"errors"
 	"fmt"
 	"os"
-	"sort"
+	"slices"
 
 	"github.com/spf13/cobra"
 	"go.podman.io/common/pkg/completion"
@@ -68,8 +69,8 @@ func list(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
-	sort.Slice(farms, func(i, j int) bool {
-		return farms[i].Name < farms[j].Name
+	slices.SortFunc(farms, func(a, b config.Farm) int {
+		return cmp.Compare(a.Name, b.Name)
 	})
 
 	rpt := report.New(os.Stdout, cmd.Name())
