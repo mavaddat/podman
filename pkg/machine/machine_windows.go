@@ -128,7 +128,7 @@ func LaunchWinProxy(opts WinProxyOpts, noInfo bool) {
 func launchWinProxy(opts WinProxyOpts) (bool, string, error) {
 	machinePipe := env.WithPodmanPrefix(opts.Name)
 	if !PipeNameAvailable(machinePipe, MachineNameWait) {
-		return false, "", fmt.Errorf("could not start api proxy since expected pipe is not available: %s", machinePipe)
+		return false, "", fmt.Errorf("could not start api proxy since expected pipe is not available: %s (an existing proxy process like win-sshproxy or gvproxy may still be running from a previous machine session; try terminating it and retrying)", machinePipe)
 	}
 
 	globalName := PipeNameAvailable(GlobalNamedPipe, GlobalNameWait)
