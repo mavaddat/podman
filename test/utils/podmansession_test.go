@@ -27,7 +27,13 @@ var _ = Describe("PodmanSession test", func() {
 	})
 
 	It("Test ErrorToStringArray", func() {
-		Expect(session.ErrorToStringArray()).To(Equal([]string{"PodmanSession", "test", "Podman Session", ""}))
+		Expect(session.ErrorToStringArray()).To(Equal([]string{"PodmanSession", "test", "Podman Session"}))
+	})
+
+	It("Test ErrorToStringArray with empty output", func() {
+		session = StartFakeCmdSession([]string{})
+		session.WaitWithDefaultTimeout()
+		Expect(session.ErrorToStringArray()).To(BeEmpty())
 	})
 
 	It("Test GrepString", func() {
