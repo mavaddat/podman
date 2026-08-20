@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -100,11 +101,11 @@ func extractQuadletFiles(tempDir string, r io.ReadCloser) ([]string, error) {
 
 	// Collect all files from the extracted directory
 	var filePaths []string
-	err = filepath.Walk(quadletDir, func(path string, info os.FileInfo, err error) error {
+	err = filepath.WalkDir(quadletDir, func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
 			return err
 		}
-		if !info.IsDir() {
+		if !d.IsDir() {
 			filePaths = append(filePaths, path)
 		}
 		return nil
