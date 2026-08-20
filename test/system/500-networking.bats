@@ -1260,6 +1260,35 @@ EOF
 }
 
 # bats test_tags=ci:parallel
+@test "podman run - verify dual-stack port binds" {
+    myport=$(random_free_port)
+    cname="c1-$(safename)"
+
+    netmodes=("bridge")
+    if is_rootless; then
+        netmodes+=("pasta")
+    fi
+
+    for netmode in "${netmodes[@]}"; do
+        run_podman run -d --name $cname -p $myport:8080 $IMAGE sleep inf
+
+        run -0 ss -tnlH state all sport = $myport
+        assert "$output" =~ "\*:$myport"
+
+        run_podman rm -f -t0 $cname
+
+        # Now again but with explcilt "0.0.0.0" and "[::]" binds.
+        run_podman run -d --name $cname -p "0.0.0.0:$myport:8080" -p "[::]:$myport:8080" $IMAGE sleep inf
+
+        run -0 ss -tnlH state all sport = $myport
+        assert "$output" =~ "0\.0\.0\.0:$myport"
+        assert "$output" =~ "\[::\]:$myport"
+
+        run_podman rm -f -t0 $cname
+    done
+}
+
+# bats test_tags=ci:parallel
 @test "podman run - test force_port_listen containers.conf option" {
     skip_if_rootless "force_port_listen is only used as root"
     skip_if_remote "force_port_listen would need to be set on the server side"
