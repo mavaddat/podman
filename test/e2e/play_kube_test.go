@@ -789,7 +789,12 @@ spec:
   {{ range . }}
   - name: {{ .Name }}
     {{- if (eq .VolumeType "EmptyDir") }}
+    {{- if .EmptyDir.Medium }}
+    emptyDir:
+      medium: {{ .EmptyDir.Medium }}
+    {{- else }}
     emptyDir: {}
+    {{- end }}
     {{- end }}
     {{- if (eq .VolumeType "HostPath") }}
     hostPath:
@@ -2190,7 +2195,9 @@ type SecretVol struct {
 	DefaultMode int32
 }
 
-type EmptyDir struct{}
+type EmptyDir struct {
+	Medium string
+}
 
 type Volume struct {
 	VolumeType string
@@ -2268,6 +2275,14 @@ func getEmptyDirVolume() *Volume {
 		VolumeType: "EmptyDir",
 		Name:       defaultVolName,
 		EmptyDir:   EmptyDir{},
+	}
+}
+
+func getMemoryEmptyDirVolume() *Volume {
+	return &Volume{
+		VolumeType: "EmptyDir",
+		Name:       defaultVolName,
+		EmptyDir:   EmptyDir{Medium: "Memory"},
 	}
 }
 
@@ -4465,6 +4480,30 @@ spec:
 		podmanTest.PodmanExitCleanly("pod", "rm", "-f", podName)
 		volList2 := podmanTest.PodmanExitCleanly("volume", "ls", "-q")
 		Expect(volList2.OutputToString()).To(Equal(""))
+	})
+
+	It("with memory backed emptyDir volume shared between containers", func() {
+		podName := "test-pod"
+		ctrName1 := "vol-test-ctr"
+		ctrName2 := "vol-test-ctr-2"
+		ctr1 := getCtr(withVolumeMount("/test-emptydir", "", false), withImage(CITEST_IMAGE), withName(ctrName1))
+		ctr2 := getCtr(withVolumeMount("/test-emptydir", "", false), withImage(CITEST_IMAGE), withName(ctrName2))
+		pod := getPod(withPodName(podName), withVolume(getMemoryEmptyDirVolume()), withCtr(ctr1), withCtr(ctr2))
+		err = generateKubeYaml("pod", pod, kubeYaml)
+		Expect(err).ToNot(HaveOccurred())
+
+		podmanTest.PodmanExitCleanly("kube", "play", kubeYaml)
+
+		fsType := podmanTest.PodmanExitCleanly("exec", podName+"-"+ctrName1, "stat", "-f", "-c", "%T", "/test-emptydir")
+		Expect(fsType.OutputToString()).To(Equal("tmpfs"))
+
+		podmanTest.PodmanExitCleanly("exec", podName+"-"+ctrName1, "sh", "-c", "echo shared-data > /test-emptydir/file")
+		data := podmanTest.PodmanExitCleanly("exec", podName+"-"+ctrName2, "cat", "/test-emptydir/file")
+		Expect(data.OutputToString()).To(Equal("shared-data"))
+
+		podmanTest.PodmanExitCleanly("pod", "rm", "-f", podName)
+		volList := podmanTest.PodmanExitCleanly("volume", "ls", "-q")
+		Expect(volList.OutputToString()).To(Equal(""))
 	})
 
 	It("applies labels to pods", func() {
