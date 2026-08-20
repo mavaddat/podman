@@ -634,11 +634,12 @@ func LibpodToContainerJSON(l *libpod.Container, sz bool) (*handlers.LegacyImageI
 	var healthcheck *container.HealthConfig
 	if inspect.Config.Healthcheck != nil {
 		healthcheck = &container.HealthConfig{
-			Test:        inspect.Config.Healthcheck.Test,
-			Interval:    inspect.Config.Healthcheck.Interval,
-			Timeout:     inspect.Config.Healthcheck.Timeout,
-			StartPeriod: inspect.Config.Healthcheck.StartPeriod,
-			Retries:     inspect.Config.Healthcheck.Retries,
+			Test:          inspect.Config.Healthcheck.Test,
+			Interval:      inspect.Config.Healthcheck.Interval,
+			Timeout:       inspect.Config.Healthcheck.Timeout,
+			StartPeriod:   inspect.Config.Healthcheck.StartPeriod,
+			StartInterval: inspect.Config.Healthcheck.StartInterval,
+			Retries:       inspect.Config.Healthcheck.Retries,
 		}
 	}
 
