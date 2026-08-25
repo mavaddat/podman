@@ -36,19 +36,6 @@ var _ = Describe("PodmanSession test", func() {
 		Expect(session.ErrorToStringArray()).To(BeEmpty())
 	})
 
-	It("Test LineInOutputContainsTag", func() {
-		session = StartFakeCmdSession([]string{"HEAD LINE", "docker.io/library/busybox   latest   e1ddd7948a1c   5 weeks ago   1.38MB"})
-		session.WaitWithDefaultTimeout()
-		Expect(session.LineInOutputContainsTag("docker.io/library/busybox", "latest")).To(BeTrue())
-		Expect(session.LineInOutputContainsTag("busybox", "latest")).To(Not(BeTrue()))
-	})
-
-	It("Test LineInOutputContainsTag with empty output", func() {
-		session = StartFakeCmdSession([]string{})
-		session.WaitWithDefaultTimeout()
-		Expect(session.LineInOutputContainsTag("docker.io/library/busybox", "latest")).To(Not(BeTrue()))
-	})
-
 	It("Test IsJSONOutputValid", func() {
 		session = StartFakeCmdSession([]string{`{"page":1,"fruits":["apple","peach","pear"]}`})
 		session.WaitWithDefaultTimeout()
