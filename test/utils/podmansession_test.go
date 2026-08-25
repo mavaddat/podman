@@ -36,12 +36,6 @@ var _ = Describe("PodmanSession test", func() {
 		Expect(session.ErrorToStringArray()).To(BeEmpty())
 	})
 
-	It("Test LineInOutputContains", func() {
-		Expect(session.LineInOutputContains("Podman")).To(BeTrue())
-		Expect(session.LineInOutputContains("Session")).To(BeTrue())
-		Expect(session.LineInOutputContains("I am not here")).To(Not(BeTrue()))
-	})
-
 	It("Test LineInOutputContainsTag", func() {
 		session = StartFakeCmdSession([]string{"HEAD LINE", "docker.io/library/busybox   latest   e1ddd7948a1c   5 weeks ago   1.38MB"})
 		session.WaitWithDefaultTimeout()

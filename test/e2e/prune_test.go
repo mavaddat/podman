@@ -626,7 +626,7 @@ var _ = Describe("Podman prune", func() {
 		// Build will never finish so let's wait for build to ask for SIGKILL to simulate a failed build that leaves stage containers.
 		matchedOutput := false
 		for range 900 {
-			if build.LineInOutputContains("Please use signal 9") {
+			if strings.Contains(build.OutputToString(), "Please use signal 9") {
 				matchedOutput = true
 				build.Signal(syscall.SIGKILL)
 				break

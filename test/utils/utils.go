@@ -279,17 +279,6 @@ func (s *PodmanSession) ErrorToStringArray() []string {
 	return results
 }
 
-// LineInOutputContains returns true if a line in a
-// session output contains the supplied string
-func (s *PodmanSession) LineInOutputContains(term string) bool {
-	for _, i := range s.OutputToStringArray() {
-		if strings.Contains(i, term) {
-			return true
-		}
-	}
-	return false
-}
-
 // LineInOutputContainsTag returns true if a line in the
 // session's output contains the repo-tag pair as returned
 // by podman-images(1).
