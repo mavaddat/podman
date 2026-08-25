@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"syscall"
 	"time"
 
@@ -178,9 +179,13 @@ var _ = Describe("Podman prune", func() {
 		none := podmanTest.Podman([]string{"images", "-a"})
 		none.WaitWithDefaultTimeout()
 		Expect(none).Should(ExitCleanly())
-		hasNone, result := none.GrepString("<none>")
-		Expect(result).To(HaveLen(2))
-		Expect(hasNone).To(BeTrue())
+		noneLines := 0
+		for _, line := range none.OutputToStringArray() {
+			if strings.Contains(line, "<none>") {
+				noneLines++
+			}
+		}
+		Expect(noneLines).To(Equal(2), "<none> lines in images -a")
 
 		prune := podmanTest.Podman([]string{"image", "prune", "-f"})
 		prune.WaitWithDefaultTimeout()
@@ -189,10 +194,8 @@ var _ = Describe("Podman prune", func() {
 		after := podmanTest.Podman([]string{"images", "-a"})
 		after.WaitWithDefaultTimeout()
 		Expect(after).Should(ExitCleanly())
-		hasNoneAfter, result := after.GrepString("<none>")
-		Expect(hasNoneAfter).To(BeTrue())
+		Expect(after.OutputToStringArray()).To(ContainElement(ContainSubstring("<none>")))
 		Expect(len(after.OutputToStringArray())).To(BeNumerically(">", 1))
-		Expect(result).ToNot(BeEmpty())
 	})
 
 	It("podman image prune unused images", func() {

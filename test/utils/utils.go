@@ -279,23 +279,6 @@ func (s *PodmanSession) ErrorToStringArray() []string {
 	return results
 }
 
-// GrepString takes session output and behaves like grep. it returns a bool
-// if successful and an array of strings on positive matches
-func (s *PodmanSession) GrepString(term string) (bool, []string) {
-	var (
-		greps   []string
-		matches bool
-	)
-
-	for _, line := range s.OutputToStringArray() {
-		if strings.Contains(line, term) {
-			matches = true
-			greps = append(greps, line)
-		}
-	}
-	return matches, greps
-}
-
 // LineInOutputContains returns true if a line in a
 // session output contains the supplied string
 func (s *PodmanSession) LineInOutputContains(term string) bool {

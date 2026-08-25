@@ -36,16 +36,6 @@ var _ = Describe("PodmanSession test", func() {
 		Expect(session.ErrorToStringArray()).To(BeEmpty())
 	})
 
-	It("Test GrepString", func() {
-		match, backStr := session.GrepString("Session")
-		Expect(match).To(BeTrue())
-		Expect(backStr).To(Equal([]string{"PodmanSession", "Podman Session"}))
-
-		match, backStr = session.GrepString("I am not here")
-		Expect(match).To(Not(BeTrue()))
-		Expect(backStr).To(BeNil())
-	})
-
 	It("Test LineInOutputContains", func() {
 		Expect(session.LineInOutputContains("Podman")).To(BeTrue())
 		Expect(session.LineInOutputContains("Session")).To(BeTrue())
