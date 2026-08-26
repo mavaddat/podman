@@ -279,17 +279,6 @@ func (s *PodmanSession) ErrorToStringArray() []string {
 	return results
 }
 
-// IsJSONOutputValid attempts to unmarshal the session buffer
-// and if successful, returns true, else false
-func (s *PodmanSession) IsJSONOutputValid() bool {
-	var i any
-	if err := json.Unmarshal(s.Out.Contents(), &i); err != nil {
-		GinkgoWriter.Println(err)
-		return false
-	}
-	return true
-}
-
 // WaitWithDefaultTimeout waits for process finished with DefaultWaitTimeout
 func (s *PodmanSession) WaitWithDefaultTimeout() {
 	s.WaitWithTimeout(DefaultWaitTimeout)
