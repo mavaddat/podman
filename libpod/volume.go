@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"io"
 	"maps"
-	"os"
 	"time"
 
 	"github.com/sirupsen/logrus"
@@ -347,11 +346,11 @@ func (v *Volume) Import(r io.Reader) error {
 		return fmt.Errorf("extracting into volume %s: %w", v.Name(), err)
 	}
 
-	contents, err := os.ReadDir(mountPoint)
+	empty, err := isDirEmpty(mountPoint)
 	if err != nil {
 		return fmt.Errorf("reading contents of imported volume %s: %w", v.Name(), err)
 	}
-	if len(contents) != 0 {
+	if !empty {
 		v.lock.Lock()
 		defer v.lock.Unlock()
 		if err := v.update(); err != nil {
