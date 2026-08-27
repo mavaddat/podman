@@ -36,14 +36,14 @@ var _ = Describe("PodmanSession test", func() {
 		Expect(session.ErrorToStringArray()).To(BeEmpty())
 	})
 
-	It("Test IsJSONOutputValid", func() {
+	It("Test BeValidJSON", func() {
 		session = StartFakeCmdSession([]string{`{"page":1,"fruits":["apple","peach","pear"]}`})
 		session.WaitWithDefaultTimeout()
-		Expect(session.IsJSONOutputValid()).To(BeTrue())
+		Expect(session.OutputToString()).To(BeValidJSON())
 
 		session = StartFakeCmdSession([]string{"I am not JSON"})
 		session.WaitWithDefaultTimeout()
-		Expect(session.IsJSONOutputValid()).To(Not(BeTrue()))
+		Expect(session.OutputToString()).ToNot(BeValidJSON())
 	})
 
 	It("Test WaitWithDefaultTimeout", func() {
