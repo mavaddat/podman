@@ -197,6 +197,8 @@ func AddArtifact(ctx context.Context, name string, options *AddArtifactOptions) 
 		ArtifactExcludeTitles: options.ExcludeTitles,
 		ArtifactSubject:       options.Subject,
 		ArtifactAnnotations:   options.Annotations,
+
+		IndexSubject: options.IndexSubject,
 	}
 	if len(options.Files) > 0 {
 		optionsv4.WithArtifactFiles(options.Files)
