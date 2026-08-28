@@ -27,6 +27,15 @@ var _ = Describe("Podman push", func() {
 		podmanTest.AddImageToRWStore(ALPINE)
 	})
 
+	It("podman push --sign-by errors on remote", func() {
+		SkipIfNotRemote("Signing is only rejected by the remote client")
+		// Signing is not implemented for remote clients. Make sure we say so
+		// rather than pushing an unsigned image and reporting success.
+		session := podmanTest.Podman([]string{"push", "-q", "--sign-by", "foo@bar.com", ALPINE, "docker://localhost:5000/my-alpine"})
+		session.WaitWithDefaultTimeout()
+		Expect(session).Should(ExitWithError(125, "signing is not supported for remote clients"))
+	})
+
 	It("podman push to containers/storage", func() {
 		SkipIfRemote("Remote push does not support containers-storage transport")
 		session := podmanTest.Podman([]string{"push", "-q", ALPINE, "containers-storage:busybox:test"})

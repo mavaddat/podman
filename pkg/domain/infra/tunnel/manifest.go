@@ -187,6 +187,9 @@ func (ir *ImageEngine) ManifestPush(ctx context.Context, name, destination strin
 	if opts.Signers != nil {
 		return "", fmt.Errorf("forwarding Signers is not supported for remote clients")
 	}
+	if opts.SignBy != "" || opts.SignBySigstorePrivateKeyFile != "" {
+		return "", fmt.Errorf("signing is not supported for remote clients")
+	}
 
 	options := new(images.PushOptions)
 	options.WithUsername(opts.Username).WithPassword(opts.Password).WithAuthfile(opts.Authfile).WithRemoveSignatures(opts.RemoveSignatures).WithAll(opts.All).WithFormat(opts.Format).WithCompressionFormat(opts.CompressionFormat).WithQuiet(opts.Quiet).WithProgressWriter(opts.Writer).WithAddCompression(opts.AddCompression).WithForceCompressionFormat(opts.ForceCompressionFormat)
