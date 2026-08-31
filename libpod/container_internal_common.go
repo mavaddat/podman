@@ -339,7 +339,14 @@ func (c *Container) generateSpec(ctx context.Context) (s *spec.Spec, cleanupFunc
 		if overlayFlag {
 			var overlayMount spec.Mount
 			var overlayOpts *overlay.Options
-			contentDir, err := overlay.TempDir(c.config.StaticDir, c.RootUID(), c.RootGID())
+			// For idmapped volumes the backing dirs must be owned by real
+			// root (0) so the runtime's identity shift surfaces them as the
+			// container root.
+			backingUID, backingGID := c.RootUID(), c.RootGID()
+			if hasIdmapOption(namedVol.Options) {
+				backingUID, backingGID = 0, 0
+			}
+			contentDir, err := overlay.TempDir(c.config.StaticDir, backingUID, backingGID)
 			if err != nil {
 				return nil, nil, err
 			}
@@ -354,8 +361,8 @@ func (c *Container) generateSpec(ctx context.Context) (s *spec.Spec, cleanupFunc
 			}
 
 			overlayOpts = &overlay.Options{
-				RootUID:                c.RootUID(),
-				RootGID:                c.RootGID(),
+				RootUID:                backingUID,
+				RootGID:                backingGID,
 				UpperDirOptionFragment: upperDir,
 				WorkDirOptionFragment:  workDir,
 				GraphOpts:              c.runtime.store.GraphOptions(),
@@ -379,6 +386,12 @@ func (c *Container) generateSpec(ctx context.Context) (s *spec.Spec, cleanupFunc
 					}
 
 					if err := c.ChangeHostPathOwnership(contentDir, true, int(hostUID), int(hostGID)); err != nil {
+						return nil, nil, err
+					}
+				}
+				if isIdmapOption(o) {
+					overlayMount.UIDMappings, overlayMount.GIDMappings, err = parseIDMapMountOption(c.config.IDMappings, o)
+					if err != nil {
 						return nil, nil, err
 					}
 				}
@@ -489,7 +502,14 @@ func (c *Container) generateSpec(ctx context.Context) (s *spec.Spec, cleanupFunc
 		if err != nil {
 			return nil, nil, err
 		}
-		contentDir, err := overlay.TempDir(c.config.StaticDir, c.RootUID(), c.RootGID())
+		// For idmapped volumes the backing dirs must be owned by real root
+		// (0) so the runtime's identity shift surfaces them as the container
+		// root.
+		backingUID, backingGID := c.RootUID(), c.RootGID()
+		if hasIdmapOption(overlayVol.Options) {
+			backingUID, backingGID = 0, 0
+		}
+		contentDir, err := overlay.TempDir(c.config.StaticDir, backingUID, backingGID)
 		if err != nil {
 			return nil, nil, err
 		}
@@ -498,8 +518,8 @@ func (c *Container) generateSpec(ctx context.Context) (s *spec.Spec, cleanupFunc
 			workDir = filepath.Join(contentDir, "work")
 		}
 		overlayOpts := &overlay.Options{
-			RootUID:                c.RootUID(),
-			RootGID:                c.RootGID(),
+			RootUID:                backingUID,
+			RootGID:                backingGID,
 			UpperDirOptionFragment: upperDir,
 			WorkDirOptionFragment:  workDir,
 			GraphOpts:              c.runtime.store.GraphOptions(),
@@ -524,6 +544,12 @@ func (c *Container) generateSpec(ctx context.Context) (s *spec.Spec, cleanupFunc
 				}
 
 				if err := c.ChangeHostPathOwnership(contentDir, true, int(hostUID), int(hostGID)); err != nil {
+					return nil, nil, err
+				}
+			}
+			if isIdmapOption(o) {
+				overlayMount.UIDMappings, overlayMount.GIDMappings, err = parseIDMapMountOption(c.config.IDMappings, o)
+				if err != nil {
 					return nil, nil, err
 				}
 			}
