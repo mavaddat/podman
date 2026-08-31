@@ -298,6 +298,10 @@ func (c *Container) generateSpec(ctx context.Context) (s *spec.Spec, cleanupFunc
 		return nil, nil, err
 	}
 
+	// If the storage owner is not mapped into the user namespace, the runtime
+	// cannot mount overlay volumes from inside it.
+	forceOverlayMount := !hasCurrentUserMapped(c)
+
 	// Add named volumes
 	for _, namedVol := range c.config.NamedVolumes {
 		volume, err := c.runtime.GetVolume(namedVol.Name)
@@ -340,12 +344,27 @@ func (c *Container) generateSpec(ctx context.Context) (s *spec.Spec, cleanupFunc
 				return nil, nil, err
 			}
 
+			if forceOverlayMount {
+				if upperDir == "" {
+					upperDir = filepath.Join(contentDir, "upper")
+				}
+				if workDir == "" {
+					workDir = filepath.Join(contentDir, "work")
+				}
+			}
+
 			overlayOpts = &overlay.Options{
 				RootUID:                c.RootUID(),
 				RootGID:                c.RootGID(),
 				UpperDirOptionFragment: upperDir,
 				WorkDirOptionFragment:  workDir,
 				GraphOpts:              c.runtime.store.GraphOptions(),
+				ForceMount:             forceOverlayMount,
+			}
+			if forceOverlayMount {
+				// podman mounts the overlay itself, so it must apply the
+				// container mount label; otherwise the runtime would.
+				overlayOpts.MountLabel = c.MountLabel()
 			}
 
 			overlayMount, err = overlay.MountWithOptions(contentDir, mountPoint, namedVol.Dest, overlayOpts)
@@ -394,7 +413,7 @@ func (c *Container) generateSpec(ctx context.Context) (s *spec.Spec, cleanupFunc
 				m.Source = safeMount.mountPoint
 				continue
 			}
-			if o == "idmap" || strings.HasPrefix(o, "idmap=") {
+			if isIdmapOption(o) {
 				var err error
 				m.UIDMappings, m.GIDMappings, err = parseIDMapMountOption(c.config.IDMappings, o)
 				if err != nil {
@@ -474,12 +493,22 @@ func (c *Container) generateSpec(ctx context.Context) (s *spec.Spec, cleanupFunc
 		if err != nil {
 			return nil, nil, err
 		}
+		if forceOverlayMount && upperDir == "" && workDir == "" {
+			upperDir = filepath.Join(contentDir, "upper")
+			workDir = filepath.Join(contentDir, "work")
+		}
 		overlayOpts := &overlay.Options{
 			RootUID:                c.RootUID(),
 			RootGID:                c.RootGID(),
 			UpperDirOptionFragment: upperDir,
 			WorkDirOptionFragment:  workDir,
 			GraphOpts:              c.runtime.store.GraphOptions(),
+			ForceMount:             forceOverlayMount,
+		}
+		if forceOverlayMount {
+			// podman mounts the overlay itself, so it must apply the
+			// container mount label; otherwise the runtime would.
+			overlayOpts.MountLabel = c.MountLabel()
 		}
 
 		overlayMount, err := overlay.MountWithOptions(contentDir, overlayVol.Source, overlayVol.Dest, overlayOpts)
@@ -533,11 +562,23 @@ func (c *Container) generateSpec(ctx context.Context) (s *spec.Spec, cleanupFunc
 		}
 
 		var overlayMount spec.Mount
-		if volume.ReadWrite {
-			overlayMount, err = overlay.Mount(contentDir, imagePath, volume.Dest, c.RootUID(), c.RootGID(), c.runtime.store.GraphOptions())
-		} else {
-			overlayMount, err = overlay.MountReadOnly(contentDir, imagePath, volume.Dest, c.RootUID(), c.RootGID(), c.runtime.store.GraphOptions())
+		overlayOpts := &overlay.Options{
+			RootUID:    c.RootUID(),
+			RootGID:    c.RootGID(),
+			GraphOpts:  c.runtime.store.GraphOptions(),
+			ReadOnly:   !volume.ReadWrite,
+			ForceMount: forceOverlayMount,
 		}
+		if forceOverlayMount {
+			// podman mounts the overlay itself, so it must apply the
+			// container mount label; otherwise the runtime would.
+			overlayOpts.MountLabel = c.MountLabel()
+		}
+		if forceOverlayMount && volume.ReadWrite {
+			overlayOpts.UpperDirOptionFragment = filepath.Join(contentDir, "upper")
+			overlayOpts.WorkDirOptionFragment = filepath.Join(contentDir, "work")
+		}
+		overlayMount, err = overlay.MountWithOptions(contentDir, imagePath, volume.Dest, overlayOpts)
 		if err != nil {
 			return nil, nil, fmt.Errorf("creating overlay mount for image %q failed: %w", volume.Source, err)
 		}
@@ -3004,13 +3045,14 @@ func (c *Container) createSecretMountDir(runPath string) error {
 	return err
 }
 
+// isIdmapOption reports whether a single volume option requests idmapping
+// (the "idmap" or "idmap=..." option).
+func isIdmapOption(o string) bool {
+	return o == "idmap" || strings.HasPrefix(o, "idmap=")
+}
+
 func hasIdmapOption(options []string) bool {
-	for _, o := range options {
-		if o == "idmap" || strings.HasPrefix(o, "idmap=") {
-			return true
-		}
-	}
-	return false
+	return slices.ContainsFunc(options, isIdmapOption)
 }
 
 // Fix ownership and permissions of the specified volume if necessary.
