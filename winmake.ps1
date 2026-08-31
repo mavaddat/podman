@@ -113,13 +113,13 @@ function Win-SSHProxy {
         $match = Select-String -Path "$PSScriptRoot\go.mod" -Pattern 'github.com/containers/gvisor-tap-vsock\s+(v[\d\.]+)'
         $Version = $match.Matches.Groups[1].Value
     }
-    Write-Host "Downloading gvproxy version $version"
+    Write-Host "Downloading gvproxy and win-sshproxy version $version"
     if ($architecture -eq 'amd64') {
         curl.exe --fail -sSL -o './bin/windows/gvproxy.exe' --retry 5 "https://github.com/containers/gvisor-tap-vsock/releases/download/$Version/gvproxy-windowsgui.exe"
         curl.exe --fail -sSL -o './bin/windows/win-sshproxy.exe' --retry 5 "https://github.com/containers/gvisor-tap-vsock/releases/download/$Version/win-sshproxy.exe"
     }
     else {
-        curl.exe --fail -sSL -o './bin/windows/gvproxy.exe' --retry 5 "https://github.com/containers/gvisor-tap-vsock/releases/download/$Version/gvproxy-windows-arm64.exe"
+        curl.exe --fail -sSL -o './bin/windows/gvproxy.exe' --retry 5 "https://github.com/containers/gvisor-tap-vsock/releases/download/$Version/gvproxy-arm64.exe"
         curl.exe --fail -sSL -o './bin/windows/win-sshproxy.exe' --retry 5 "https://github.com/containers/gvisor-tap-vsock/releases/download/$Version/win-sshproxy-arm64.exe"
     }
 }
