@@ -22,6 +22,7 @@ import (
 	"go.podman.io/podman/v6/pkg/machine/env"
 	"go.podman.io/podman/v6/pkg/machine/sockets"
 	"go.podman.io/storage/pkg/fileutils"
+	"golang.org/x/sys/windows"
 )
 
 const (
@@ -170,6 +171,9 @@ func launchWinProxy(opts WinProxyOpts) (bool, string, error) {
 	args = append(args, hostURL.String(), dest, opts.IdentityPath)
 
 	cmd := exec.Command(command, args...)
+	cmd.SysProcAttr = &syscall.SysProcAttr{
+		CreationFlags: windows.DETACHED_PROCESS,
+	}
 	logrus.Debugf("winssh command: %s %v", command, args)
 	if err := cmd.Start(); err != nil {
 		return globalName, "", err

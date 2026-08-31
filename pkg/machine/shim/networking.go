@@ -81,6 +81,7 @@ func startHostForwarder(mc *vmconfigs.MachineConfig, provider vmconfigs.VMProvid
 	}
 
 	c := cmd.Cmd(binary)
+	setGvproxyProcessAttributes(c)
 
 	logrus.Debugf("gvproxy command-line: %s %s", binary, strings.Join(cmd.ToCmdline(), " "))
 	if err := c.Start(); err != nil {

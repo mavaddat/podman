@@ -10,6 +10,7 @@ import (
 	"os/exec"
 	"os/user"
 	"path/filepath"
+	"syscall"
 
 	"github.com/Microsoft/go-winio"
 	gvproxy "github.com/containers/gvisor-tap-vsock/pkg/types"
@@ -25,6 +26,7 @@ import (
 	"go.podman.io/podman/v6/pkg/machine/vmconfigs"
 	"go.podman.io/podman/v6/pkg/machine/windows"
 	"go.podman.io/podman/v6/pkg/systemd/parser"
+	syswindows "golang.org/x/sys/windows"
 )
 
 type HyperVStubber struct {
@@ -271,6 +273,12 @@ func (h HyperVStubber) MountVolumesToVM(mc *vmconfigs.MachineConfig, _ bool) err
 	logrus.Debugf("Going to start 9p server using command: %s %v", executable, p9ServerArgs)
 
 	fsCmd := exec.Command(executable, p9ServerArgs...)
+	// Set SysProcAttr CREATE_NO_WINDOW or
+	// the server9p process will be killed
+	// when the parent window is closed
+	fsCmd.SysProcAttr = &syscall.SysProcAttr{
+		CreationFlags: syswindows.CREATE_NO_WINDOW,
+	}
 
 	if logrus.IsLevelEnabled(logrus.DebugLevel) {
 		log, err := logCommandToFile(fsCmd, "podman-machine-server9.log")
