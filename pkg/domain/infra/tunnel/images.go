@@ -274,6 +274,9 @@ func (ir *ImageEngine) Push(_ context.Context, source string, destination string
 	if opts.Signers != nil {
 		return nil, fmt.Errorf("forwarding Signers is not supported for remote clients")
 	}
+	if opts.SignBy != "" || opts.SignBySigstorePrivateKeyFile != "" {
+		return nil, fmt.Errorf("signing is not supported for remote clients")
+	}
 	if opts.OciEncryptConfig != nil {
 		return nil, fmt.Errorf("encryption is not supported for remote clients")
 	}

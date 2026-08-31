@@ -69,6 +69,13 @@ func (ir *ImageEngine) ArtifactRm(_ context.Context, opts entities.ArtifactRemov
 }
 
 func (ir *ImageEngine) ArtifactPush(_ context.Context, name string, opts entities.ArtifactPushOptions) (*entities.ArtifactPushReport, error) {
+	if opts.Signers != nil {
+		return nil, fmt.Errorf("forwarding Signers is not supported for remote clients")
+	}
+	if opts.SignBy != "" || opts.SignBySigstorePrivateKeyFile != "" {
+		return nil, fmt.Errorf("signing is not supported for remote clients")
+	}
+
 	options := artifacts.PushOptions{
 		Username:   &opts.Username,
 		Password:   &opts.Password,
