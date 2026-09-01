@@ -170,6 +170,13 @@ type PushOptions struct {
 	// Quiet can be specified to suppress progress when pushing.
 	Quiet *bool
 
+	// OS to select a platform-specific image from a manifest list.
+	OS *string
+	// Arch to select a platform-specific image from a manifest list.
+	Arch *string
+	// Variant to select a platform-specific image from a manifest list.
+	Variant *string
+
 	// Manifest of the pushed image.  Set by images.Push.
 	ManifestDigest *string
 }

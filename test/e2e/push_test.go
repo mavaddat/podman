@@ -535,4 +535,66 @@ var _ = Describe("Podman push", func() {
 		session.WaitWithDefaultTimeout()
 		Expect(session).Should(ExitCleanly())
 	})
+
+	It("podman push --platform from manifest list", func() {
+		if runtime.GOARCH == "ppc64le" {
+			Skip("No registry image for ppc64le")
+		}
+		if isRootless() {
+			err := podmanTest.RestoreArtifact(REGISTRY_IMAGE)
+			Expect(err).ToNot(HaveOccurred())
+		}
+		lock := GetPortLock("5006")
+		defer lock.Unlock()
+		session := podmanTest.Podman([]string{"run", "-d", "--name", "registry", "-p", "5006:5000", REGISTRY_IMAGE, "/entrypoint.sh", "/etc/docker/registry/config.yml"})
+		session.WaitWithDefaultTimeout()
+		Expect(session).Should(ExitCleanly())
+
+		if !WaitContainerReady(podmanTest, "registry", "listening on", 20, 1) {
+			Skip("Cannot start docker registry.")
+		}
+
+		session = podmanTest.Podman([]string{"build", "-q", "--platform", "linux/amd64", "-t", "img1", "build/basicalpine"})
+		session.WaitWithDefaultTimeout()
+		Expect(session).Should(ExitCleanly())
+
+		session = podmanTest.Podman([]string{"build", "-q", "--platform", "linux/arm64", "-t", "img2", "build/basicalpine"})
+		session.WaitWithDefaultTimeout()
+		Expect(session).Should(ExitCleanly())
+
+		session = podmanTest.Podman([]string{"manifest", "create", "mlist"})
+		session.WaitWithDefaultTimeout()
+		Expect(session).Should(ExitCleanly())
+
+		session = podmanTest.Podman([]string{"manifest", "add", "mlist", "containers-storage:localhost/img1"})
+		session.WaitWithDefaultTimeout()
+		Expect(session).Should(ExitCleanly())
+
+		session = podmanTest.Podman([]string{"manifest", "add", "mlist", "containers-storage:localhost/img2"})
+		session.WaitWithDefaultTimeout()
+		Expect(session).Should(ExitCleanly())
+
+		push := podmanTest.Podman([]string{"push", "-q", "--tls-verify=false", "--platform", "linux/arm64", "mlist", "localhost:5006/mtest"})
+		push.WaitWithDefaultTimeout()
+		Expect(push).Should(ExitCleanly())
+
+		// Verify we pushed a single manifest, not a manifest list/index
+		// (manifest lists have a "manifests" array, single manifests don't)
+		skopeo := SystemExec("skopeo", []string{"inspect", "--raw", "--tls-verify=false", "docker://localhost:5006/mtest"})
+		skopeo.WaitWithDefaultTimeout()
+		Expect(skopeo).Should(ExitCleanly())
+		Expect(skopeo.OutputToString()).ToNot(ContainSubstring(`"manifests"`))
+
+		// Verify correct architecture and no other platforms
+		skopeo = SystemExec("skopeo", []string{"inspect", "--tls-verify=false", "docker://localhost:5006/mtest"})
+		skopeo.WaitWithDefaultTimeout()
+		Expect(skopeo).Should(ExitCleanly())
+		output := skopeo.OutputToString()
+		Expect(output).To(ContainSubstring(`"Architecture": "arm64"`))
+		Expect(output).ToNot(ContainSubstring(`"amd64"`))
+
+		push = podmanTest.Podman([]string{"push", "-q", "--tls-verify=false", "--platform", "linux/s390x", "mlist", "localhost:5006/mtest"})
+		push.WaitWithDefaultTimeout()
+		Expect(push).Should(ExitWithError(125, "no image found in image index for architecture"))
+	})
 })
