@@ -416,8 +416,7 @@ func (c *Container) generateSpec(ctx context.Context) (s *spec.Spec, cleanupFunc
 		m := &g.Config.Mounts[i]
 		var options []string
 		for _, o := range m.Options {
-			if strings.HasPrefix(o, "subpath=") {
-				subpath := strings.Split(o, "=")[1]
+			if subpath, ok := strings.CutPrefix(o, "subpath="); ok {
 				safeMount, err := c.safeMountSubPath(m.Source, subpath)
 				if err != nil {
 					return nil, nil, err
