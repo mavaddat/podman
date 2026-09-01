@@ -201,9 +201,6 @@ github.com/cyphar/filepath-securejoin/pathrs-lite/internal/kernelversion
 github.com/cyphar/filepath-securejoin/pathrs-lite/internal/linux
 github.com/cyphar/filepath-securejoin/pathrs-lite/internal/procfs
 github.com/cyphar/filepath-securejoin/pathrs-lite/procfs
-# github.com/davecgh/go-spew v1.1.2-0.20180830191138-d8f796af33cc
-## explicit
-github.com/davecgh/go-spew/spew
 # github.com/digitalocean/go-libvirt v0.0.0-20220804181439-8648fbde413e
 ## explicit; go 1.15
 github.com/digitalocean/go-libvirt
@@ -225,7 +222,7 @@ github.com/distribution/reference
 ## explicit
 github.com/docker/distribution/registry/api/errcode
 github.com/docker/distribution/registry/api/v2
-# github.com/docker/docker-credential-helpers v0.9.8
+# github.com/docker/docker-credential-helpers v0.9.9
 ## explicit; go 1.21
 github.com/docker/docker-credential-helpers/client
 github.com/docker/docker-credential-helpers/credentials
@@ -374,7 +371,7 @@ github.com/lufia/plan9stats
 github.com/manifoldco/promptui
 github.com/manifoldco/promptui/list
 github.com/manifoldco/promptui/screenbuf
-# github.com/mattn/go-runewidth v0.0.27
+# github.com/mattn/go-runewidth v0.0.28
 ## explicit; go 1.23
 github.com/mattn/go-runewidth
 # github.com/mattn/go-shellwords v1.0.14
@@ -572,9 +569,6 @@ github.com/pkg/sftp/internal/encoding/ssh/filexfer/openssh
 # github.com/planetscale/vtprotobuf v0.6.1-0.20240319094008-0393e58bdf10
 ## explicit; go 1.20
 github.com/planetscale/vtprotobuf/protohelpers
-# github.com/pmezard/go-difflib v1.0.1-0.20181226105442-5d4384ee4fb2
-## explicit
-github.com/pmezard/go-difflib/difflib
 # github.com/power-devops/perfstat v0.0.0-20240221224432-82ca36839d55
 ## explicit; go 1.14
 github.com/power-devops/perfstat
@@ -595,10 +589,10 @@ github.com/rootless-containers/rootlesskit/v2/pkg/port/builtin/parent/tcp
 github.com/rootless-containers/rootlesskit/v2/pkg/port/builtin/parent/udp
 github.com/rootless-containers/rootlesskit/v2/pkg/port/builtin/parent/udp/udpproxy
 github.com/rootless-containers/rootlesskit/v2/pkg/port/portutil
-# github.com/seccomp/libseccomp-golang v0.11.1
+# github.com/seccomp/libseccomp-golang v0.12.0
 ## explicit; go 1.19
 github.com/seccomp/libseccomp-golang
-# github.com/secure-systems-lab/go-securesystemslib v0.11.0
+# github.com/secure-systems-lab/go-securesystemslib v0.11.1
 ## explicit; go 1.25.0
 github.com/secure-systems-lab/go-securesystemslib/encrypted
 # github.com/shirou/gopsutil/v4 v4.26.8
@@ -628,8 +622,8 @@ github.com/sigstore/sigstore/pkg/signature/payload
 ## explicit; go 1.23
 github.com/sirupsen/logrus
 github.com/sirupsen/logrus/hooks/syslog
-# github.com/skeema/knownhosts v1.3.2
-## explicit; go 1.24.0
+# github.com/skeema/knownhosts v1.3.3
+## explicit; go 1.25.0
 github.com/skeema/knownhosts
 # github.com/smallstep/pkcs7 v0.2.1
 ## explicit; go 1.14
@@ -683,7 +677,7 @@ github.com/vbatts/tar-split/tar/storage
 # github.com/vbauerster/cupwriter v0.0.4
 ## explicit; go 1.25.0
 github.com/vbauerster/cupwriter
-# github.com/vbauerster/mpb/v8 v8.15.2
+# github.com/vbauerster/mpb/v8 v8.16.0
 ## explicit; go 1.25.0
 github.com/vbauerster/mpb/v8
 github.com/vbauerster/mpb/v8/decor
@@ -780,7 +774,7 @@ go.podman.io/buildah/pkg/sshagent
 go.podman.io/buildah/pkg/util
 go.podman.io/buildah/pkg/volumes
 go.podman.io/buildah/util
-# go.podman.io/common v0.69.1-0.20260812091434-8c2ac6b8236f
+# go.podman.io/common v0.69.2-0.20260901143941-d3fec9c37dde
 ## explicit; go 1.25.7
 go.podman.io/common/internal
 go.podman.io/common/libimage
@@ -846,7 +840,7 @@ go.podman.io/common/pkg/umask
 go.podman.io/common/pkg/util
 go.podman.io/common/pkg/version
 go.podman.io/common/version
-# go.podman.io/image/v5 v5.41.1-0.20260812091434-8c2ac6b8236f
+# go.podman.io/image/v5 v5.41.2-0.20260901143941-d3fec9c37dde
 ## explicit; go 1.25.7
 go.podman.io/image/v5/copy
 go.podman.io/image/v5/directory
@@ -923,7 +917,7 @@ go.podman.io/image/v5/transports
 go.podman.io/image/v5/transports/alltransports
 go.podman.io/image/v5/types
 go.podman.io/image/v5/version
-# go.podman.io/storage v1.64.1-0.20260812091434-8c2ac6b8236f
+# go.podman.io/storage v1.64.1-0.20260901143941-d3fec9c37dde
 ## explicit; go 1.25.0
 go.podman.io/storage
 go.podman.io/storage/drivers
