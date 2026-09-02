@@ -353,8 +353,7 @@ func Modify(ctx context.Context, name string, images []string, options *ModifyOp
 		// upload the files in another goroutine
 		writer := multipart.NewWriter(bodyWriter)
 		artifactContentType = writer.FormDataContentType()
-		artifactWriterGroup.Add(1)
-		go func() {
+		artifactWriterGroup.Go(func() {
 			defer bodyWriter.Close()
 			defer writer.Close()
 			// start with the body we would have uploaded if we weren't
@@ -402,7 +401,7 @@ func Modify(ctx context.Context, name string, images []string, options *ModifyOp
 					break
 				}
 			}
-		}()
+		})
 	}
 
 	header, err := auth.MakeXRegistryAuthHeader(&imageTypes.SystemContext{AuthFilePath: options.GetAuthfile()}, options.GetUsername(), options.GetPassword())
