@@ -188,10 +188,6 @@ func seccompProfile(profileType v1.SeccompProfileType, localhostProfile *string)
 	return &v1.SeccompProfile{Type: profileType, LocalhostProfile: localhostProfile}
 }
 
-func stringPtr(value string) *string {
-	return &value
-}
-
 func TestSetupSecurityContextSeccompProfile(t *testing.T) {
 	profileRoot := t.TempDir()
 	defaultPath, err := libpod.DefaultSeccompPath()
@@ -216,14 +212,14 @@ func TestSetupSecurityContextSeccompProfile(t *testing.T) {
 		{
 			name: "pod profile",
 			pod: &v1.PodSecurityContext{
-				SeccompProfile: seccompProfile(v1.SeccompProfileTypeLocalhost, stringPtr("profiles/pod.json")),
+				SeccompProfile: seccompProfile(v1.SeccompProfileTypeLocalhost, new("profiles/pod.json")),
 			},
 			expected: filepath.Join(profileRoot, "profiles/pod.json"),
 		},
 		{
 			name: "container overrides pod",
 			ctr: &v1.SecurityContext{
-				SeccompProfile: seccompProfile(v1.SeccompProfileTypeLocalhost, stringPtr("profiles/container.json")),
+				SeccompProfile: seccompProfile(v1.SeccompProfileTypeLocalhost, new("profiles/container.json")),
 			},
 			pod: &v1.PodSecurityContext{
 				SeccompProfile: seccompProfile(v1.SeccompProfileTypeUnconfined, nil),
@@ -251,7 +247,7 @@ func TestSetupSecurityContextSeccompProfile(t *testing.T) {
 			pod: &v1.PodSecurityContext{
 				SeccompProfile: seccompProfile(
 					v1.SeccompProfileTypeLocalhost,
-					stringPtr("profiles/pod.json"),
+					new("profiles/pod.json"),
 				),
 			},
 			seccompAnnotationPaths: &SeccompAnnotationPaths{
@@ -283,7 +279,7 @@ func TestSetupSecurityContextSeccompProfile(t *testing.T) {
 			ctr: &v1.SecurityContext{
 				SeccompProfile: seccompProfile(
 					v1.SeccompProfileTypeLocalhost,
-					stringPtr("/etc/seccomp.json"),
+					new("/etc/seccomp.json"),
 				),
 			},
 			expectedError: "must be a relative path",
@@ -293,7 +289,7 @@ func TestSetupSecurityContextSeccompProfile(t *testing.T) {
 			ctr: &v1.SecurityContext{
 				SeccompProfile: seccompProfile(
 					v1.SeccompProfileTypeLocalhost,
-					stringPtr("profiles/../seccomp.json"),
+					new("profiles/../seccomp.json"),
 				),
 			},
 			expectedError: "must not contain '..'",
