@@ -129,8 +129,7 @@ func convertTimeString(query string) reflect.Value {
 			return reflect.ValueOf(t)
 		}
 
-		var parseErr *time.ParseError
-		if errors.As(err, &parseErr) {
+		if _, ok := errors.AsType[*time.ParseError](err); ok {
 			// Try next format
 			continue
 		} else {

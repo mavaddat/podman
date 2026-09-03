@@ -1115,8 +1115,7 @@ func SkipIfSystemdNotRunning(reason string) {
 	cmd := exec.Command("systemctl", "list-units")
 	err := cmd.Run()
 	if err != nil {
-		var execErr *exec.Error
-		if errors.As(err, &execErr) {
+		if _, ok := errors.AsType[*exec.Error](err); ok {
 			Skip("[notSystemd]: not running " + reason)
 		}
 		Expect(err).ToNot(HaveOccurred())
