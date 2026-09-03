@@ -67,6 +67,7 @@ type AddArtifactOptions struct {
 	LayerType     *string           `json:"artifact_layer_type,omitempty"`
 	ExcludeTitles *bool             `json:"artifact_exclude_titles,omitempty"`
 	Subject       *string           `json:"artifact_subject,omitempty"`
+	IndexSubject  *string           `json:"subject,omitempty"` // IndexSubject is a subject value to set in the manifest list itself
 	Annotations   map[string]string `json:"artifact_annotations,omitempty"`
 	Files         []string          `json:"artifact_files,omitempty"`
 }
@@ -87,6 +88,7 @@ type ModifyOptions struct {
 
 	Annotations      map[string]string // Annotations to add to the entries for Images in the manifest list
 	IndexAnnotations map[string]string `json:"index_annotations" schema:"index_annotations"` // Annotations to add to the manifest list as a whole
+	IndexSubject     *string           `json:"subject" schema:"subject"`                     // IndexSubject is a subject value to set in the manifest list itself
 	Arch             *string           // Arch overrides the architecture for the image
 	Features         []string          // Feature list for the image
 	OS               *string           // OS overrides the operating system for the image

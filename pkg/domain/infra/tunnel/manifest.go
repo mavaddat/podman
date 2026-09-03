@@ -117,6 +117,9 @@ func (ir *ImageEngine) ManifestAddArtifact(_ context.Context, name string, files
 	options.WithType(opts.Type).WithConfigType(opts.ConfigType).WithLayerType(opts.LayerType)
 	options.WithConfig(opts.Config)
 	options.WithExcludeTitles(opts.ExcludeTitles).WithSubject(opts.Subject)
+	if opts.IndexSubject != "" {
+		options.WithIndexSubject(opts.IndexSubject)
+	}
 	options.WithAnnotations(opts.ArtifactAnnotations)
 	options.WithFiles(files)
 	id, err := manifests.AddArtifact(ir.ClientCtx, name, options)
@@ -130,6 +133,9 @@ func (ir *ImageEngine) ManifestAddArtifact(_ context.Context, name string, files
 func (ir *ImageEngine) ManifestAnnotate(_ context.Context, name, images string, opts entities.ManifestAnnotateOptions) (string, error) {
 	options := new(manifests.ModifyOptions).WithArch(opts.Arch).WithVariant(opts.Variant)
 	options.WithFeatures(opts.Features).WithOS(opts.OS).WithOSVersion(opts.OSVersion)
+	if opts.IndexSubject != "" {
+		options.WithIndexSubject(opts.IndexSubject)
+	}
 
 	annotations, err := mergeAnnotations(opts.Annotations, opts.Annotation)
 	if err != nil {
