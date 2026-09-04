@@ -106,6 +106,7 @@ func (s *APIServer) registerImagesHandlers(r *mux.Router) error {
 	//        - `label=key` or `label="key=value"` of an image label
 	//        - `reference`=(`<image-name>[:<tag>]`)
 	//        - `since`=(`<image-name>[:<tag>]`,  `<image id>` or `<image@digest>`)
+	//        - `until=<timestamp>` List images created before this timestamp. The `<timestamp>` can be Unix timestamps, date formatted timestamps, or Go duration strings (e.g. `10m`, `1h30m`) computed relative to the machine’s time.
 	//     type: string
 	//   - name: digests
 	//     in: query
@@ -978,6 +979,7 @@ func (s *APIServer) registerImagesHandlers(r *mux.Router) error {
 	//        - `reference`=(`<image-name>[:<tag>]`)
 	//        - `id`=(`<image-id>`)
 	//        - `since`=(`<image-name>[:<tag>]`,  `<image id>` or `<image@digest>`)
+	//        - `until=<timestamp>` List images created before this timestamp. The `<timestamp>` can be Unix timestamps, date formatted timestamps, or Go duration strings (e.g. `10m`, `1h30m`) computed relative to the machine’s time.
 	//     type: string
 	// produces:
 	// - application/json
