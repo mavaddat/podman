@@ -219,8 +219,7 @@ func composeProviderExec(args []string, stdout io.Writer, stderr io.Writer, warn
 
 	if err := cmd.Run(); err != nil {
 		// Make sure podman returns with the same exit code as the compose provider.
-		var exitErr *exec.ExitError
-		if errors.As(err, &exitErr) {
+		if exitErr, ok := errors.AsType[*exec.ExitError](err); ok {
 			registry.SetExitCode(exitErr.ExitCode())
 		}
 		// Format the error to make it explicit that error did not come
